@@ -7,3 +7,6 @@ build:
 
 test:
 	$(GO) test ./...
+
+tck:
+	./test/tck/run.sh

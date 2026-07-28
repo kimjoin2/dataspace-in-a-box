@@ -1,0 +1,13 @@
+# Connector configuration for the TCK harness only.
+#
+# public_url uses the Compose service name because the TCK addresses the
+# connector by that name on the shared network. dev_mode permits plain http,
+# which is the relaxation DECISIONS.md section 13 carves out for running
+# without a reverse proxy.
+public_url: http://dsbox:8080
+dev_mode: true
+dsp_addr: 0.0.0.0:8080
+
+# Bound to all interfaces so the harness can poll readiness from the host.
+# This is a test-only relaxation of the localhost default.
+mgmt_addr: 0.0.0.0:8081

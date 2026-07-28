@@ -1,0 +1,21 @@
+# The TCK and the connector talk to each other in both directions, so both run
+# as services on one Compose network and address each other by service name.
+# Running the connector on the host instead would behave differently on macOS
+# and Linux.
+services:
+  dsbox:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    volumes:
+      - ./dsbox.yaml:/etc/dsbox/config.yaml:ro
+    ports:
+      # Management port, published for the readiness probe only.
+      - "127.0.0.1:8081:8081"
+
+  tck:
+    image: eclipsedataspacetck/dsp-tck-runtime@sha256:45cfafa40486714d441057bc6063653a1feebb95444f721974147cb0dd7416ad
+    depends_on:
+      - dsbox
+    volumes:
+      - ./config.properties:/etc/tck/config.properties:ro
