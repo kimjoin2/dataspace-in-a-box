@@ -935,19 +935,37 @@ Observed result lines:
 - Consumes: `tck-output.txt` from Task 4
 - Produces: a connector where every `MET` test passes
 
-- [ ] **Step 1: Turn each MET failure into a Go test**
+- [ ] **Step 1: Pin the TCK-required values in a permanent test**
 
-For every failing `MET` test, add a case to `internal/dsp/version_test.go` asserting the behavior the TCK says it expects. Write the assertion from the TCK's own message, not from a guess about what it meant. For example, if the TCK reports that it expected the context value `https://w3id.org/dspace/2025/1/context.json`, the test becomes:
+Task 2's tests compare the response against the package constants, so they prove the document is wired up but not that its values are right — change a constant and both sides of the assertion move together. Add a test that pins the literal strings the TCK requires, and keep it. It is the only thing that will catch a later edit to a value the TCK is authoritative about.
+
+Take each literal from the TCK's own message, not from a guess about what it meant. Add to `internal/dsp/version_test.go`:
 
 ```go
-func TestContextMatchesTCKExpectation(t *testing.T) {
-	if ContextURL != "https://w3id.org/dspace/2025/1/context.json" {
-		t.Errorf("ContextURL = %q, want the value the TCK requires", ContextURL)
+// The TCK is authoritative for these values. If this test fails, do not edit
+// the literal to match the code — change the code and re-run `make tck`.
+func TestVersionDocumentPinsTCKRequiredValues(t *testing.T) {
+	doc := versionDocument()
+
+	if got, want := doc.Context[0], "PASTE_CONTEXT_URL_THE_TCK_REQUIRES"; got != want {
+		t.Errorf("@context = %q, want %q", got, want)
+	}
+	v := doc.ProtocolVersions[0]
+	if got, want := v.Version, "2025-1"; got != want {
+		t.Errorf("version = %q, want %q", got, want)
+	}
+	if got, want := v.Path, "PASTE_PATH_THE_TCK_REQUIRES"; got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+	if got, want := v.Binding, "PASTE_BINDING_THE_TCK_REQUIRES"; got != want {
+		t.Errorf("binding = %q, want %q", got, want)
 	}
 }
 ```
 
-Delete this scaffold test once the constant is corrected and the behavioral tests in Task 2 cover the value; a test that only restates a constant earns its place for one commit, not forever.
+Replace each `PASTE_*` literal using `tck-output.txt` from Task 4. Where the TCK raised no objection to a value, the literal is the one already in `version.go`. No `PASTE_*` string may survive this task.
+
+If a MET failure concerns something other than these four values — a missing route, a required header, a status code — add a test asserting that behavior in the same file instead.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
