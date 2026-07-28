@@ -45,6 +45,30 @@ func TestVersionEndpointRejectsPost(t *testing.T) {
 	}
 }
 
+// TestVersionDocumentPinsTCKRequiredValues pins the values against which the
+// official TCK's MET:01-01 ("Verify metadata request") succeeded, captured in
+// tck-output.txt (2026-07-28 run). A passing TCK run does not reveal which
+// fields it inspected, so this only records what the TCK accepted, not what
+// it affirmatively requires byte-for-byte. If this test fails, do not edit
+// the literal to match the code — change the code and re-run `make tck`.
+func TestVersionDocumentPinsTCKRequiredValues(t *testing.T) {
+	doc := versionDocument()
+
+	if got, want := doc.Context[0], "https://w3id.org/dspace/2025/1/context.jsonld"; got != want {
+		t.Errorf("@context = %q, want %q", got, want)
+	}
+	v := doc.ProtocolVersions[0]
+	if got, want := v.Version, "2025-1"; got != want {
+		t.Errorf("version = %q, want %q", got, want)
+	}
+	if got, want := v.Path, "/2025-1"; got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+	if got, want := v.Binding, "HTTPS"; got != want {
+		t.Errorf("binding = %q, want %q", got, want)
+	}
+}
+
 func TestUnknownPathIsNotFound(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/2025-1/catalog/request", nil)
 	rec := httptest.NewRecorder()
