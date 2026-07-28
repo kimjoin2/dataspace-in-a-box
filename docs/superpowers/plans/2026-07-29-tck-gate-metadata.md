@@ -937,6 +937,8 @@ Observed result lines:
 - Consumes: `tck-output.txt` from Task 4
 - Produces: a connector where every `MET` test passes
 
+> **Amended during execution.** Task 4's first run already passed `MET:01-01`, the suite's only test — the values read from the specification turned out to be the ones the TCK accepts, and the failing suites were all protocols this milestone does not implement. So no constant needs correcting here. What remains is the part that still earns its place: pinning those values in a permanent test so a later edit cannot silently change what the TCK validated, then confirming the suite still passes. Steps 3 and 6 are no-ops unless something changed since that run; say so in the report rather than inventing work.
+
 - [ ] **Step 1: Pin the TCK-required values in a permanent test**
 
 Task 2's tests compare the response against the package constants, so they prove the document is wired up but not that its values are right — change a constant and both sides of the assertion move together. Add a test that pins the literal strings the TCK requires, and keep it. It is the only thing that will catch a later edit to a value the TCK is authoritative about.
@@ -1017,7 +1019,19 @@ what the specification reading implied. Design document amended to match."
 - Consumes: `tck-output.txt` produced by `test/tck/run.sh` (Task 4)
 - Produces: `go run ./cmd/tckgate <file>` exiting 0 only when every whitelisted suite passed
 
-The TCK reports through stdout; upstream's own TestContainers example keys on the phrases `test run complete` and `there were failing tests`, so those are the markers this gate uses too. The per-test line shape comes from the fixture, not from a guess.
+The TCK reports through stdout. Task 4's run settled the format, and these are the verified line shapes — not upstream documentation, and not a guess:
+
+```
+[2026-07-28T17:33:51.948227174] SUCCESSFUL: MET:01-01
+[2026-07-28T17:33:52.263217216] FAILED: CAT:01-01
+[2026-07-28T17:33:52.284594549] Passed tests: 1
+[2026-07-28T17:33:52.284721882] Failed tests: 58
+[2026-07-28T17:33:52.312156257] Test run complete
+```
+
+Two corrections to what this plan originally assumed. The outcome precedes the identifier on a result line, not the other way round. And the phrase `there were failing tests`, which upstream's own TestContainers example keys on, **does not appear in this TCK version's output at all** — `Test run complete` is the only usable marker, so the gate must derive failure from the per-test lines rather than from a summary phrase.
+
+Test identifiers are colon-separated: `MET:01-01`, `CN_C:03-04`. The metadata suite has exactly one test, `MET:01-01`.
 
 - [ ] **Step 1: Capture real fixtures**
 
@@ -1122,11 +1136,16 @@ import (
 // only when its protocol is implemented.
 var whitelist = []string{"MET"}
 
-// resultLine matches one test result in the TCK's stdout. Group 1 is the test
-// identifier, group 2 is the outcome. Derived from real output; see
-// testdata/passing.txt.
-var resultLine = regexp.MustCompile(`(?i)\b(MET|CAT|CN_C|CN|TP_C|TP)[_:][\w:._-]*\b.*\b(successful|passed|failed)\b`)
+// resultLine matches one per-test result in the TCK's stdout. Group 1 is the
+// outcome, group 2 the test identifier. Verified against real output:
+//
+//	[2026-07-28T17:33:51.948227174] SUCCESSFUL: MET:01-01
+//	[2026-07-28T17:33:52.263217216] FAILED: CAT:01-01
+var resultLine = regexp.MustCompile(`\b(SUCCESSFUL|FAILED):\s*([A-Z_]+:[\d-]+)`)
 
+// completionMarker is the only reliable end-of-run signal this TCK version
+// emits. It does not print the "there were failing tests" phrase upstream's
+// own example keys on, so failure is derived from the per-test lines.
 const completionMarker = "test run complete"
 
 // Report is the gate's verdict over one TCK run.
@@ -1165,22 +1184,25 @@ func evaluate(output string, prefixes []string) (Report, error) {
 		if m == nil {
 			continue
 		}
-		id, outcome := strings.ToUpper(m[1]), strings.ToLower(m[2])
+		outcome, id := m[1], m[2]
 		if !matchesAny(id, prefixes) {
 			report.Skipped++
 			continue
 		}
 		report.Required++
-		if outcome == "failed" {
+		if outcome == "FAILED" {
 			report.Failed = append(report.Failed, strings.TrimSpace(line))
 		}
 	}
 	return report, nil
 }
 
+// matchesAny reports whether id belongs to one of the given suites. The colon
+// matters: without it the prefix "CN" would also swallow every "CN_C:" test,
+// silently gating a suite nobody declared done.
 func matchesAny(id string, prefixes []string) bool {
 	for _, prefix := range prefixes {
-		if strings.HasPrefix(id, prefix) {
+		if strings.HasPrefix(id, prefix+":") {
 			return true
 		}
 	}
