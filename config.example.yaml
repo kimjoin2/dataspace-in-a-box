@@ -1,0 +1,15 @@
+# The connector's external address, as seen by other participants.
+# Required. Behind a reverse proxy the connector cannot determine this itself,
+# so it is never inferred from request headers. No trailing slash.
+public_url: https://connector.example.org
+
+# Permit a plain http public_url. Only for local demos and the TCK harness,
+# which run without a reverse proxy.
+dev_mode: false
+
+# Listen address for public DSP endpoints.
+dsp_addr: 0.0.0.0:8080
+
+# Listen address for the management API. Localhost by default: exposing it is
+# a deliberate act, not an accident.
+mgmt_addr: 127.0.0.1:8081
