@@ -57,8 +57,6 @@ protocol is declared done.
 
 ## Commands
 
-<!-- fill in as they exist -->
-
 - Test: `go test ./...`
-- TCK: TBD
-- Build: TBD
+- TCK: `make tck` (runs the harness, then the gate)
+- Build: `make build`

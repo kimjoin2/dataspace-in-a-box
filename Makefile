@@ -10,3 +10,4 @@ test:
 
 tck:
 	./test/tck/run.sh
+	$(GO) run ./cmd/tckgate tck-output.txt
