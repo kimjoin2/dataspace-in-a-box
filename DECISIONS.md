@@ -118,6 +118,10 @@ assigned rights, relicensing and any future commercial arrangement break.
 
 - https://fsl.software/
 
+**Note on naming.** The canonical abbreviation for this variant is now
+`FSL-1.1-ALv2`; the `FSL-1.1-Apache-2.0` name redirects to it upstream. Same
+license, and `LICENSE.md` carries the current text verbatim.
+
 **Trade-off accepted.** FSL is not OSI-approved open source. The README must say
 "Fair Source / source-available", and some organizations will decline on policy
 grounds regardless of the actual terms.
