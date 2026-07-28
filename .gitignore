@@ -1,0 +1,12 @@
+# Build output
+/dsbox
+/dist/
+
+# Runtime data (data_dir default)
+/data/
+
+# Local configuration that may hold a management token
+/config.local.yaml
+
+# OS
+.DS_Store
