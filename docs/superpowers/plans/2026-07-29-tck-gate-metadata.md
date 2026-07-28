@@ -1189,7 +1189,7 @@ func main() {
 }
 ```
 
-Note the redundancy between `inWhitelist` and `matchesAny`: delete `inWhitelist` and keep `matchesAny`, which takes the prefixes as a parameter and is therefore testable. If you kept both, the tests still pass and the code is worse.
+`matchesAny` takes the prefixes as a parameter rather than reading the package-level `whitelist`, which is what makes it testable with a different whitelist than the one `main` uses.
 
 - [ ] **Step 5: Run the tests, adjusting the pattern until they pass**
 
