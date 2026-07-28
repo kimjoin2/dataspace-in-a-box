@@ -29,10 +29,31 @@ var resultLine = regexp.MustCompile(`\b(SUCCESSFUL|FAILED):\s*([A-Z_]+:[\d-]+)`)
 // own example keys on, so failure is derived from the per-test lines.
 const completionMarker = "test run complete"
 
+// completionTimestampPrefix matches the timestamp the TCK prefixes onto every
+// line it prints, e.g. "[2026-07-28T17:44:57.951351385] ". Stripping it lets
+// hasCompletionMarker compare a line's remaining content against
+// completionMarker exactly, rather than searching for the phrase anywhere in
+// the output — which would also match a failure message that merely mentions
+// it in prose.
+var completionTimestampPrefix = regexp.MustCompile(`^\[[^\]]*\]\s*`)
+
+// hasCompletionMarker reports whether output contains a line that, once its
+// timestamp prefix is stripped and it is trimmed and lowercased, is exactly
+// completionMarker.
+func hasCompletionMarker(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		content := completionTimestampPrefix.ReplaceAllString(line, "")
+		if strings.ToLower(strings.TrimSpace(content)) == completionMarker {
+			return true
+		}
+	}
+	return false
+}
+
 // Report is the gate's verdict over one TCK run.
 type Report struct {
 	Required int      // whitelisted tests seen
-	Failed   []string // whitelisted tests that did not pass
+	Failed   []string // full result lines (timestamp included) for whitelisted tests that did not pass
 	Skipped  int      // results outside the whitelist, reported but not gating
 }
 
@@ -46,6 +67,9 @@ func (r Report) String() string {
 	if r.Required == 0 {
 		return "no required tests were recognized in the output"
 	}
+	// Each entry starts with its timestamp, so this sorts by run order rather
+	// than by test identifier. That is fine here: the timestamps are useful
+	// in the printed output, and this report exists to be read, not diffed.
 	sort.Strings(r.Failed)
 	return fmt.Sprintf("%d of %d required tests failed: %s",
 		len(r.Failed), r.Required, strings.Join(r.Failed, ", "))
@@ -55,7 +79,7 @@ func (r Report) String() string {
 // when the run did not finish, because an incomplete run proves nothing and
 // must never be mistaken for a pass.
 func evaluate(output string, prefixes []string) (Report, error) {
-	if !strings.Contains(strings.ToLower(output), completionMarker) {
+	if !hasCompletionMarker(output) {
 		return Report{}, fmt.Errorf("the TCK run did not complete: %q not found in the output", completionMarker)
 	}
 

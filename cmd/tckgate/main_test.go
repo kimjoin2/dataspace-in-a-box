@@ -56,3 +56,33 @@ func TestTruncatedOutputIsAnError(t *testing.T) {
 		t.Error("expected an error when the run did not complete")
 	}
 }
+
+func TestCompletionMarkerMentionedInProseIsNotCompletion(t *testing.T) {
+	output := "[2026-07-28T17:44:57.951351385] the run stopped short of test run complete\n"
+	_, err := evaluate(output, []string{"MET"})
+	if err == nil {
+		t.Error("expected an error: the marker only appears mid-line, in prose, not as a line of its own")
+	}
+}
+
+func TestUnderscoreSuiteIsNotSwallowedByItsPrefix(t *testing.T) {
+	// Regression test for the CN / CN_C disambiguation in matchesAny: without
+	// the trailing colon, whitelisting "CN" would also match every "CN_C:"
+	// result, silently gating a suite nobody declared done. Counts verified
+	// against testdata/passing.txt.
+	report, err := evaluate(read(t, "testdata/passing.txt"), []string{"CN"})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if report.Required != 15 {
+		t.Errorf("Required = %d, want 15 (CN must not also match CN_C results)", report.Required)
+	}
+
+	report, err = evaluate(read(t, "testdata/passing.txt"), []string{"CN_C"})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if report.Required != 16 {
+		t.Errorf("Required = %d, want 16", report.Required)
+	}
+}
