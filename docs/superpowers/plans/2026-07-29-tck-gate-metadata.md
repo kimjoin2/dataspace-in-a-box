@@ -581,6 +581,8 @@ Expected: PASS
 
 - [ ] **Step 5: Write the entry point**
 
+> **Amended during execution.** The snippet below discards the error returned by `Shutdown`, shuts the two servers down sequentially against one 5-second budget, and places `defer`s that `os.Exit` skips. Review caught all three and the shipped code corrects them: `main` maps an error to an exit code and nothing else, `run() error` owns the work so deferred cleanup runs, both servers shut down concurrently, and a forced shutdown is logged. See commit `a57b879`; the shipped `cmd/dsbox/main.go` is authoritative over the snippet below.
+
 Create `cmd/dsbox/main.go`:
 
 ```go
