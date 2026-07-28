@@ -45,13 +45,13 @@ func TestVersionEndpointRejectsPost(t *testing.T) {
 	}
 }
 
-// TestVersionDocumentPinsTCKRequiredValues pins the values against which the
+// TestVersionDocumentPinsTCKAcceptedValues pins the values against which the
 // official TCK's MET:01-01 ("Verify metadata request") succeeded, captured in
 // tck-output.txt (2026-07-28 run). A passing TCK run does not reveal which
 // fields it inspected, so this only records what the TCK accepted, not what
 // it affirmatively requires byte-for-byte. If this test fails, do not edit
 // the literal to match the code — change the code and re-run `make tck`.
-func TestVersionDocumentPinsTCKRequiredValues(t *testing.T) {
+func TestVersionDocumentPinsTCKAcceptedValues(t *testing.T) {
 	doc := versionDocument()
 
 	if got, want := doc.Context[0], "https://w3id.org/dspace/2025/1/context.jsonld"; got != want {
@@ -76,5 +76,18 @@ func TestUnknownPathIsNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 while the catalog protocol is unimplemented", rec.Code)
+	}
+}
+
+// TestManagementRouteIsNotServedByDSP makes the listener split (DECISIONS.md
+// §12) a permanent test rather than a manually verified claim: the DSP
+// listener must not also answer management API routes.
+func TestManagementRouteIsNotServedByDSP(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	NewRouter().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404: the DSP listener must not serve the management API", rec.Code)
 	}
 }
