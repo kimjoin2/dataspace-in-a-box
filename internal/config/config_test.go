@@ -89,3 +89,28 @@ func TestMalformedYAMLIsAnError(t *testing.T) {
 		t.Fatal("Load: expected an error for malformed YAML")
 	}
 }
+
+func TestUnknownKeyIsAnError(t *testing.T) {
+	_, err := Load(
+		[]byte("public_url: https://connector.example.org\ndsp_add: 0.0.0.0:9999\n"),
+		env(nil),
+	)
+	if err == nil {
+		t.Fatal("Load: expected an error for an unknown key (e.g. a typo of dsp_addr)")
+	}
+}
+
+func TestEmptyDocumentWithEnvironmentStillLoads(t *testing.T) {
+	cfg, err := Load([]byte(""), env(map[string]string{
+		"DSBOX_PUBLIC_URL": "https://from-env.example.org",
+	}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PublicURL != "https://from-env.example.org" {
+		t.Errorf("PublicURL = %q, want the environment value", cfg.PublicURL)
+	}
+	if cfg.DSPAddr != "0.0.0.0:8080" {
+		t.Errorf("DSPAddr = %q, want the default", cfg.DSPAddr)
+	}
+}

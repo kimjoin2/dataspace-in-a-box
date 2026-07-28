@@ -8,7 +8,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strconv"
 	"strings"
@@ -44,7 +47,16 @@ const (
 // the result. Environment values take precedence over the file.
 func Load(data []byte, getenv func(string) string) (Config, error) {
 	cfg := Config{DSPAddr: defaultDSPAddr, MgmtAddr: defaultMgmtAddr}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+
+	// KnownFields rejects a document with an unrecognized key instead of
+	// silently dropping it — a typo like "dsp_add" would otherwise load with
+	// no error and the connector would listen on the default address instead
+	// of the one requested. An empty document is legitimate (every value can
+	// come from the environment), and Decode reports that as io.EOF rather
+	// than leaving cfg untouched, so it must be excluded from the error path.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
 

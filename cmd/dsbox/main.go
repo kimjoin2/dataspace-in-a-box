@@ -43,8 +43,27 @@ func run() error {
 		return fmt.Errorf("load configuration %q: %w", *configPath, err)
 	}
 
-	dspSrv := &http.Server{Addr: cfg.DSPAddr, Handler: dsp.NewRouter()}
-	mgmtSrv := &http.Server{Addr: cfg.MgmtAddr, Handler: mgmt.NewRouter()}
+	// These timeouts bound how long a connection can sit idle at each phase,
+	// so a client that dribbles headers (or never sends any) cannot hold a
+	// slot open indefinitely. WriteTimeout will need revisiting once transfer
+	// streaming lands: a streaming response can legitimately run longer than
+	// 30 seconds and would be cut off mid-stream.
+	dspSrv := &http.Server{
+		Addr:              cfg.DSPAddr,
+		Handler:           dsp.NewRouter(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	mgmtSrv := &http.Server{
+		Addr:              cfg.MgmtAddr,
+		Handler:           mgmt.NewRouter(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
