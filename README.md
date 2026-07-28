@@ -1,7 +1,7 @@
 # dataspace-in-a-box
 
-A minimum operational dataspace. One binary, one config file, one SQLite file —
-clone, run, and have something working in about ten minutes.
+A minimum operational dataspace. The goal: one binary, one config file, one
+SQLite file — clone, run, and have something working in about ten minutes.
 
 This is an independent implementation of the
 [Dataspace Protocol 2025-1](https://eclipse-dataspace-protocol-base.github.io/DataspaceProtocol/2025-1/),
@@ -23,6 +23,10 @@ it before it does anything. Here is the honest state.
 
 `MET` is the only suite in the gate's whitelist; the other three protocols are
 unimplemented.
+
+Current TCK pass rate: **1 of 59 tests total** (`MET` 1, `CAT` 3, `CN`+`CN_C`
+31, `TP`+`TP_C` 24). Only the `MET` test is required by the CI gate; the other
+58 currently fail, because their protocols are unimplemented.
 
 The current milestone stands up the TCK as a CI gate and makes the version
 metadata protocol pass it. A protocol counts as done only when its TCK suite is
