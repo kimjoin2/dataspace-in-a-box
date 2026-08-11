@@ -1598,9 +1598,12 @@ cover, and a missed field is a silent gap rather than a schema failure.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add test/tck/dsbox.yaml test/tck/config.properties cmd/tckgate/main.go README.md DECISIONS.md tck-output.txt
+git add test/tck/dsbox.yaml test/tck/config.properties cmd/tckgate/main.go README.md DECISIONS.md
 git commit -m "feat: gate the CAT suite"
 ```
+
+The captured TCK output stays untracked: `.gitignore` excludes it, and CI
+already uploads it as a build artifact on every run.
 
 - [ ] **Step 9: Verify the same run is green in CI**
 
