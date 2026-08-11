@@ -50,7 +50,7 @@ func run() error {
 	// 30 seconds and would be cut off mid-stream.
 	dspSrv := &http.Server{
 		Addr:              cfg.DSPAddr,
-		Handler:           dsp.NewRouter(),
+		Handler:           dsp.NewRouter(cfg),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
