@@ -115,6 +115,9 @@ func TestDatasetDerivedIdentifiers(t *testing.T) {
 	}
 
 	dist := m["distribution"].([]any)[0].(map[string]any)
+	if got, want := dist["format"], unspecifiedFormat; got != want {
+		t.Errorf("format = %v, want %q", got, want)
+	}
 	svc := dist["accessService"].(map[string]any)
 	const endpoint = "https://connector.example.org/2025-1"
 	if svc["@id"] != endpoint || svc["endpointURL"] != endpoint {
