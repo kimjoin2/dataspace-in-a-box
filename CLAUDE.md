@@ -40,7 +40,9 @@ ask first — do not work around it.
   only. Any other constraint parses, then the negotiation is rejected. Never
   accept a constraint that is not enforced.
 - **Config**: one YAML file plus environment overrides. No other formats.
-- **JSON-LD**: fixed compact form validated by JSON Schema. No RDF processing.
+- **JSON-LD**: fixed compact form, processed as ordinary structured JSON. v1
+  validates incoming messages by direct field checks rather than a schema
+  library — see DECISIONS.md §22.5. No RDF processing.
 - **Language**: English for docs, UI, and comments. This includes working
   documents under `docs/` — everything committed here is public.
 

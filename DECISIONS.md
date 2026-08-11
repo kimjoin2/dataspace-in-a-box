@@ -446,9 +446,10 @@ interoperate until filtering is implemented.
 **22.5 Incoming messages are validated by direct field checks, not by a JSON
 Schema library.** §20 specifies JSON Schema validation; the standard library has
 none, and the default answer to a dependency question is the standard library.
-Three messages with two or three required fields each do not justify a
-validation engine. §20 stands as written and is revisited when negotiation and
-transfer push the message count past a dozen.
+This milestone validates one incoming message, `CatalogRequestMessage`, with
+two required fields — that does not justify a validation engine. §20 stands as
+written and is revisited when negotiation and transfer push the message count
+past a dozen.
 
 *Trade-off accepted.* Validation coverage is whatever the handwritten checks
 cover, and a missed field is a silent gap rather than a schema failure.

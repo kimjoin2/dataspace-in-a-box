@@ -1,8 +1,10 @@
 // Command tckgate decides whether a TCK run passes the compliance gate.
 //
-// Only suites whose protocol is implemented are required to pass. Adding a
-// prefix to the whitelist is how a protocol is declared done, which keeps the
-// README's claims and the build in agreement.
+// Only suites whose protocol is implemented are gated. Adding a suite to the
+// expected map, with its exact test count, is how a protocol is declared
+// done, which keeps the README's claims and the build in agreement. Requiring
+// an exact count means a run that stops partway through a suite fails rather
+// than reporting green.
 package main
 
 import (
@@ -92,8 +94,13 @@ func (r Report) total() int {
 }
 
 // OK reports whether the run satisfies the gate: every gated suite produced
-// exactly the expected number of results, and none of them failed.
-func (r Report) OK() bool { return len(r.shortfalls()) == 0 && len(r.Failed) == 0 }
+// exactly the expected number of results, and none of them failed. An empty
+// Expected map means nothing was gated, so it must not report a pass — a
+// shortfall count and a failure count that are both zero because there was
+// nothing to check must never be mistaken for a run that proved something.
+func (r Report) OK() bool {
+	return len(r.Expected) > 0 && len(r.shortfalls()) == 0 && len(r.Failed) == 0
+}
 
 func (r Report) String() string {
 	if r.OK() {

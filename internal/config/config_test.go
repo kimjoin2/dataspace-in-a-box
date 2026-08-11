@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func env(pairs map[string]string) func(string) string {
 	return func(k string) string { return pairs[k] }
@@ -197,5 +200,30 @@ func TestEmptyDatasetIDIsAnError(t *testing.T) {
 	_, err := Load(minimal("datasets:\n  - id: \"\"\n"), env(nil))
 	if err == nil {
 		t.Fatal("Load: expected an error for an empty dataset id")
+	}
+}
+
+// TestExampleConfigLoads guards against config.example.yaml rotting: nothing
+// else in the repository loads it, so a future required key could go
+// unreflected in the example and only surface at a fresh clone's startup.
+// Load itself performs no I/O by design, so the file is read here, not by
+// Load.
+func TestExampleConfigLoads(t *testing.T) {
+	data, err := os.ReadFile("../../config.example.yaml")
+	if err != nil {
+		t.Fatalf("read config.example.yaml: %v", err)
+	}
+	cfg, err := Load(data, env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	found := false
+	for _, d := range cfg.Datasets {
+		if d.ID == "urn:dataset:sample" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Datasets = %v, want urn:dataset:sample present", cfg.Datasets)
 	}
 }

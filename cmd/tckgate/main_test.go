@@ -127,6 +127,14 @@ func TestSuiteOverItsExpectedCountFailsTheGate(t *testing.T) {
 	}
 }
 
+func TestZeroValueReportIsNotOK(t *testing.T) {
+	// An empty Expected map means nothing was gated. Without this, Report{}.OK()
+	// would be vacuously true, which is indistinguishable from a real pass.
+	if (Report{}).OK() {
+		t.Error("a zero-value Report must not report OK: nothing was gated")
+	}
+}
+
 func TestExpectedCountsMetPasses(t *testing.T) {
 	report, err := evaluate(
 		synthetic("SUCCESSFUL: MET:01-01", "SUCCESSFUL: CAT:01-01", "SUCCESSFUL: CAT:01-02", "SUCCESSFUL: CAT:01-03"),

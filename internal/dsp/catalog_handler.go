@@ -11,14 +11,22 @@ import (
 // CatalogRequestMessageType is the @type a catalog request must carry.
 const CatalogRequestMessageType = "CatalogRequestMessage"
 
+// maxCatalogRequestBodyBytes bounds the body read for a catalog request. This
+// is the first unauthenticated POST this connector exposes on the public DSP
+// listener, and the server's WriteTimeout bounds request time but not request
+// size, so an unbounded read could exhaust memory before any validation runs.
+// 1 MiB is generous: a well-formed catalog request is a handful of short
+// JSON-LD fields.
+const maxCatalogRequestBodyBytes = 1 << 20 // 1 MiB
+
 // CatalogRequestMessage is the body of a catalog request. Only the fields this
 // connector inspects are declared; unknown fields are ignored, which is what a
 // JSON-LD consumer does anyway.
 //
 // Validation is a set of direct field checks rather than JSON Schema
-// validation: the standard library has no schema validator, and three messages
-// with two or three required fields each do not justify adding an engine. This
-// is revisited when negotiation and transfer push the message count past a
+// validation: the standard library has no schema validator, and one incoming
+// message with two required fields does not justify adding an engine. This is
+// revisited when negotiation and transfer push the message count past a
 // dozen.
 type CatalogRequestMessage struct {
 	Context []string        `json:"@context"`
@@ -44,7 +52,8 @@ type catalogHandler struct {
 // rather than from a status code alone.
 func (h catalogHandler) handleCatalogRequest(w http.ResponseWriter, r *http.Request) {
 	var msg CatalogRequestMessage
-	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+	body := http.MaxBytesReader(w, r.Body, maxCatalogRequestBodyBytes)
+	if err := json.NewDecoder(body).Decode(&msg); err != nil {
 		writeError(w, CatalogErrorType, http.StatusBadRequest,
 			"the request body is not a JSON object in the DSP compact form")
 		return

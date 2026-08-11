@@ -72,6 +72,21 @@ func TestCatalogRequestRejectsAMalformedBody(t *testing.T) {
 	assertCatalogError(t, rec)
 }
 
+func TestCatalogRequestRejectsAnOversizedBody(t *testing.T) {
+	// Pad @type with a run of a repeated character rather than embedding a
+	// megabyte-long literal in the source; the total body exceeds the limit
+	// either way.
+	padding := strings.Repeat("a", maxCatalogRequestBodyBytes)
+	body := `{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],` +
+		`"@type":"CatalogRequestMessage` + padding + `"}`
+	rec := post(t, testConfig(), body)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	assertCatalogError(t, rec)
+}
+
 func TestCatalogRequestRejectsTheWrongMessageType(t *testing.T) {
 	body := `{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],"@type":"SomethingElse"}`
 	rec := post(t, testConfig(), body)
