@@ -78,6 +78,7 @@ func TestCatalogRequestRejectsTheWrongMessageType(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
+	assertCatalogError(t, rec)
 }
 
 func TestCatalogRequestRejectsAMissingContext(t *testing.T) {
@@ -85,6 +86,7 @@ func TestCatalogRequestRejectsAMissingContext(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
+	assertCatalogError(t, rec)
 }
 
 func TestDatasetRequestReturnsTheDataset(t *testing.T) {
@@ -122,11 +124,10 @@ func TestUnknownDatasetIsACatalogError(t *testing.T) {
 // plain-text message. This is the assertion CAT:01-03 turns on.
 func assertCatalogError(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
-	var doc ErrorResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+	var m map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
 		t.Fatalf("body is not JSON (%v): %s", err, rec.Body)
 	}
-	m := decode(t, doc)
 	if m["@type"] != CatalogErrorType {
 		t.Errorf("@type = %v, want %q", m["@type"], CatalogErrorType)
 	}
