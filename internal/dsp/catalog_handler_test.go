@@ -73,12 +73,16 @@ func TestCatalogRequestRejectsAMalformedBody(t *testing.T) {
 }
 
 func TestCatalogRequestRejectsAnOversizedBody(t *testing.T) {
-	// Pad @type with a run of a repeated character rather than embedding a
-	// megabyte-long literal in the source; the total body exceeds the limit
-	// either way.
+	// @context and @type are exactly the values a well-formed request carries;
+	// only an extra, unrecognized member (ignored by the decoder like any
+	// unknown field) pushes the body past the limit. That isolates the size
+	// limit as the only possible reason for the rejection — padding a field
+	// the handler actually checks would let the wrong-message-type or
+	// missing-context branch reject the request regardless of size, proving
+	// nothing about MaxBytesReader.
 	padding := strings.Repeat("a", maxCatalogRequestBodyBytes)
 	body := `{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],` +
-		`"@type":"CatalogRequestMessage` + padding + `"}`
+		`"@type":"CatalogRequestMessage","padding":"` + padding + `"}`
 	rec := post(t, testConfig(), body)
 
 	if rec.Code != http.StatusBadRequest {
