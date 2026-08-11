@@ -13,9 +13,11 @@ import (
 	"strings"
 )
 
-// whitelist holds the test identifier prefixes that must pass. Add a prefix
-// only when its protocol is implemented.
-var whitelist = []string{"MET"}
+// expected holds the number of results each gated suite must produce. A suite
+// enters this map only when its protocol is implemented, and the count is how
+// many tests that suite contains upstream. Requiring an exact count means a run
+// that stops halfway through a suite fails instead of reporting green.
+var expected = map[string]int{"MET": 1}
 
 // resultLine matches one per-test result in the TCK's stdout. Group 1 is the
 // outcome, group 2 the test identifier. Verified against real output:
@@ -52,49 +54,87 @@ func hasCompletionMarker(output string) bool {
 
 // Report is the gate's verdict over one TCK run.
 type Report struct {
-	Required int      // whitelisted tests seen
-	Failed   []string // full result lines (timestamp included) for whitelisted tests that did not pass
-	Skipped  int      // results outside the whitelist, reported but not gating
+	// Expected is the count each gated suite had to produce, carried along so
+	// that OK and String can explain a mismatch without the caller supplying it
+	// a second time.
+	Expected map[string]int
+	// Seen counts the results observed for each gated suite.
+	Seen map[string]int
+	// Failed holds full result lines (timestamp included) for gated tests that
+	// did not pass.
+	Failed []string
+	// Skipped counts results outside the gate: reported, but not gating.
+	Skipped int
 }
 
-// OK reports whether the run satisfies the gate.
-func (r Report) OK() bool { return r.Required > 0 && len(r.Failed) == 0 }
+// shortfalls returns one message per suite whose result count differs from its
+// expectation, sorted so the output is stable. A count mismatch is a different
+// failure from a test failing, and the fix differs too, so it is reported
+// separately rather than folded into the failure list.
+func (r Report) shortfalls() []string {
+	var out []string
+	for suite, want := range r.Expected {
+		if got := r.Seen[suite]; got != want {
+			out = append(out, fmt.Sprintf("%s produced %d of %d expected results", suite, got, want))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// total counts every gated result seen, across all suites.
+func (r Report) total() int {
+	n := 0
+	for _, c := range r.Seen {
+		n += c
+	}
+	return n
+}
+
+// OK reports whether the run satisfies the gate: every gated suite produced
+// exactly the expected number of results, and none of them failed.
+func (r Report) OK() bool { return len(r.shortfalls()) == 0 && len(r.Failed) == 0 }
 
 func (r Report) String() string {
 	if r.OK() {
-		return fmt.Sprintf("%d required tests passed, %d results outside the gate", r.Required, r.Skipped)
+		return fmt.Sprintf("%d required tests passed, %d results outside the gate", r.total(), r.Skipped)
 	}
-	if r.Required == 0 {
-		return "no required tests were recognized in the output"
+	var parts []string
+	if s := r.shortfalls(); len(s) > 0 {
+		parts = append(parts, strings.Join(s, "; "))
 	}
-	// Each entry starts with its timestamp, so this sorts by run order rather
-	// than by test identifier. That is fine here: the timestamps are useful
-	// in the printed output, and this report exists to be read, not diffed.
-	sort.Strings(r.Failed)
-	return fmt.Sprintf("%d of %d required tests failed: %s",
-		len(r.Failed), r.Required, strings.Join(r.Failed, ", "))
+	if len(r.Failed) > 0 {
+		// Each entry starts with its timestamp, so this sorts by run order
+		// rather than by test identifier. That is fine here: this report exists
+		// to be read, not diffed.
+		sort.Strings(r.Failed)
+		parts = append(parts, fmt.Sprintf("%d of %d required tests failed: %s",
+			len(r.Failed), r.total(), strings.Join(r.Failed, ", ")))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // evaluate reads a complete TCK run and reports the gate's verdict. It errors
 // when the run did not finish, because an incomplete run proves nothing and
 // must never be mistaken for a pass.
-func evaluate(output string, prefixes []string) (Report, error) {
+func evaluate(output string, expected map[string]int) (Report, error) {
 	if !hasCompletionMarker(output) {
 		return Report{}, fmt.Errorf("the TCK run did not complete: %q not found in the output", completionMarker)
 	}
 
-	var report Report
+	report := Report{Expected: expected, Seen: make(map[string]int, len(expected))}
 	for _, line := range strings.Split(output, "\n") {
 		m := resultLine.FindStringSubmatch(line)
 		if m == nil {
 			continue
 		}
 		outcome, id := m[1], m[2]
-		if !matchesAny(id, prefixes) {
+		suite, gated := gatedSuite(id, expected)
+		if !gated {
 			report.Skipped++
 			continue
 		}
-		report.Required++
+		report.Seen[suite]++
 		if outcome == "FAILED" {
 			report.Failed = append(report.Failed, strings.TrimSpace(line))
 		}
@@ -102,16 +142,16 @@ func evaluate(output string, prefixes []string) (Report, error) {
 	return report, nil
 }
 
-// matchesAny reports whether id belongs to one of the given suites. The colon
-// matters: without it the prefix "CN" would also swallow every "CN_C:" test,
+// gatedSuite returns the gated suite a test identifier belongs to. The colon
+// matters: without it the suite "CN" would also match every "CN_C:" test,
 // silently gating a suite nobody declared done.
-func matchesAny(id string, prefixes []string) bool {
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(id, prefix+":") {
-			return true
+func gatedSuite(id string, expected map[string]int) (string, bool) {
+	for suite := range expected {
+		if strings.HasPrefix(id, suite+":") {
+			return suite, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func main() {
@@ -124,7 +164,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "read %s: %v\n", os.Args[1], err)
 		os.Exit(2)
 	}
-	report, err := evaluate(string(data), whitelist)
+	report, err := evaluate(string(data), expected)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
