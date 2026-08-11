@@ -26,6 +26,19 @@ type Config struct {
 	// it from the Host header is never acceptable.
 	PublicURL string `yaml:"public_url"`
 
+	// ParticipantID identifies this participant in every catalog it serves. It
+	// is required and never inferred. Section 9 will eventually make this a
+	// did:web identifier; only the value changes when that day comes, because
+	// deriving one now would mint DIDs nothing can resolve.
+	ParticipantID string `yaml:"participant_id"`
+
+	// Datasets are the identifiers this connector advertises. Advertised
+	// datasets are an operator declaration rather than connector runtime state,
+	// so they belong in configuration rather than in storage — see
+	// DECISIONS.md section 8. Changing them means editing this file and
+	// restarting.
+	Datasets []Dataset `yaml:"datasets"`
+
 	// DevMode permits a plain http PublicURL. The local demo and the TCK
 	// harness run without a proxy; nothing else should set this.
 	DevMode bool `yaml:"dev_mode"`
@@ -36,6 +49,15 @@ type Config struct {
 	// MgmtAddr is the listen address for the management API. It binds to
 	// localhost by default so a firewall mistake cannot expose it.
 	MgmtAddr string `yaml:"mgmt_addr"`
+}
+
+// Dataset is one advertised dataset. Only the identifier is configurable: the
+// connector synthesizes the offer, the distribution, and the data service.
+// Advertising a policy the negotiation code cannot yet enforce would claim
+// something untrue, so the configuration grows a policy key when evaluation is
+// written, and not before.
+type Dataset struct {
+	ID string `yaml:"id"`
 }
 
 const (
@@ -63,6 +85,11 @@ func Load(data []byte, getenv func(string) string) (Config, error) {
 	if v := getenv("DSBOX_PUBLIC_URL"); v != "" {
 		cfg.PublicURL = v
 	}
+	if v := getenv("DSBOX_PARTICIPANT_ID"); v != "" {
+		cfg.ParticipantID = v
+	}
+	// datasets has no environment override: a list has no sensible environment
+	// representation, and inventing one would be a second configuration syntax.
 	if v := getenv("DSBOX_DSP_ADDR"); v != "" {
 		cfg.DSPAddr = v
 	}
@@ -105,6 +132,43 @@ func (c Config) validate() error {
 	}
 	if strings.HasSuffix(c.PublicURL, "/") {
 		return fmt.Errorf("public_url must not end with a slash, got %q", c.PublicURL)
+	}
+	if c.ParticipantID == "" {
+		return fmt.Errorf("participant_id is required: it identifies this participant in every catalog served")
+	}
+	seen := make(map[string]bool, len(c.Datasets))
+	for i, d := range c.Datasets {
+		if err := validateDatasetID(d.ID); err != nil {
+			return fmt.Errorf("datasets[%d]: %w", i, err)
+		}
+		if seen[d.ID] {
+			return fmt.Errorf("datasets[%d]: duplicate id %q", i, d.ID)
+		}
+		seen[d.ID] = true
+	}
+	return nil
+}
+
+// validateDatasetID enforces the two properties a dataset identifier must have.
+//
+// It is an @id, so it must be an absolute IRI: a relative identifier's fate
+// under JSON-LD expansion depends on a document base the TCK never sets. It is
+// also routed on directly as a single path segment, so any character that would
+// split or truncate a path is rejected. A urn: name satisfies both; an http URL
+// identifier does not, and is rejected deliberately.
+func validateDatasetID(id string) error {
+	if id == "" {
+		return errors.New("id is required")
+	}
+	u, err := url.Parse(id)
+	if err != nil {
+		return fmt.Errorf("id %q: %w", id, err)
+	}
+	if !u.IsAbs() {
+		return fmt.Errorf("id must be an absolute IRI, got %q", id)
+	}
+	if strings.ContainsAny(id, "/?# \t\n") {
+		return fmt.Errorf("id must be a single URL path segment with no /, ?, # or whitespace, got %q", id)
 	}
 	return nil
 }

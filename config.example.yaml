@@ -13,3 +13,20 @@ dsp_addr: 0.0.0.0:8080
 # Listen address for the management API. Localhost by default: exposing it is
 # a deliberate act, not an accident.
 mgmt_addr: 127.0.0.1:8081
+
+# This participant's identifier, as it appears in every catalog this connector
+# serves. Required and never inferred. DSBOX_PARTICIPANT_ID overrides it.
+participant_id: urn:participant:example
+
+# The datasets this connector advertises. Optional: with none configured, the
+# catalog is served without a dataset key at all.
+#
+# Each id must be an absolute IRI and must survive as a single URL path segment,
+# because the dataset endpoint routes on it directly — no /, ?, # or whitespace.
+# A urn: name satisfies both. The connector synthesizes the offer, the
+# distribution, and the data service around each id; there is no policy syntax
+# here yet, because nothing evaluates one until the negotiation milestone.
+#
+# There is no environment override for this list.
+datasets:
+  - id: urn:dataset:sample
