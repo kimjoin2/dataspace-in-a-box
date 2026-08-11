@@ -164,7 +164,8 @@ In-memory SQLite is used in tests only.
 **Rationale.** Connector runtime state — negotiation and transfer state
 machines, agreements — needs durability and transactions, and nothing more. An
 external database would add an operational dependency larger than the connector
-itself.
+itself. Advertised datasets are not runtime state: they are an operator
+declaration and live in the configuration file (see §22.1).
 
 **Trade-off accepted.** One writer per data directory; no horizontal scaling of
 a single participant. Out of scope for v1.
@@ -397,3 +398,57 @@ tracking the latest stable Go costs nothing.
 
 **Trade-off accepted.** Users on older Go toolchains must upgrade to build from
 source. Prebuilt binaries (§16) make this a contributor concern only.
+
+---
+
+## 22. Catalog: advertised from configuration
+
+**Decision.** Five decisions taken while implementing the catalog protocol.
+
+**22.1 Advertised datasets come from the configuration file, not from storage.**
+§8 justifies SQLite with connector runtime state — negotiation and transfer
+state machines, agreements. A dataset list is none of those; it is something the
+operator declares. Introducing storage here would drag the still-open migration
+question in with it and double the milestone. SQLite arrives when a state
+machine needs it.
+
+*Trade-off accepted.* Changing what is advertised means editing the
+configuration and restarting — the same cost §11 already accepted for token
+rotation.
+
+**22.2 The configuration carries dataset identifiers and nothing else.** The
+connector synthesizes the offer, the distribution, and the data service.
+Advertising a policy and enforcing one are different acts, and the code that
+enforces belongs to the negotiation milestone. Exposing a policy syntax now
+would ship a vocabulary nothing checks. When evaluation is written, the
+configuration grows a `policy:` key alongside it.
+
+*Trade-off accepted.* Every advertised dataset carries the same unrestricted-use
+offer until negotiation lands.
+
+**22.3 `participant_id` is a required configuration value.** No inference. §9
+will eventually make this a `did:web` identifier; deriving one now would mint
+DIDs that nothing can resolve, because the roster does not exist yet. The key
+stays the same when that day comes — only its value changes.
+
+*Trade-off accepted.* One more required value in the smallest possible
+configuration file.
+
+**22.4 A catalog request carrying `filter` is rejected with `CatalogError`.**
+DSP leaves the filter expression implementation-defined, which means a provider
+cannot know what an arbitrary filter means. Returning the full catalog to a
+consumer that asked for a subset lets it believe it received a filtered view.
+Explicit rejection is the stance §14 already takes on policy constraints.
+
+*Trade-off accepted.* Consumers that attach a filter unconditionally will not
+interoperate until filtering is implemented.
+
+**22.5 Incoming messages are validated by direct field checks, not by a JSON
+Schema library.** §20 specifies JSON Schema validation; the standard library has
+none, and the default answer to a dependency question is the standard library.
+Three messages with two or three required fields each do not justify a
+validation engine. §20 stands as written and is revisited when negotiation and
+transfer push the message count past a dozen.
+
+*Trade-off accepted.* Validation coverage is whatever the handwritten checks
+cover, and a missed field is a silent gap rather than a schema failure.

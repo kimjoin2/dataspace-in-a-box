@@ -17,7 +17,7 @@ import (
 // enters this map only when its protocol is implemented, and the count is how
 // many tests that suite contains upstream. Requiring an exact count means a run
 // that stops halfway through a suite fails instead of reporting green.
-var expected = map[string]int{"MET": 1}
+var expected = map[string]int{"MET": 1, "CAT": 3}
 
 // resultLine matches one per-test result in the TCK's stdout. Group 1 is the
 // outcome, group 2 the test identifier. Verified against real output:

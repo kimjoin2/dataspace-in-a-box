@@ -11,3 +11,11 @@ dsp_addr: 0.0.0.0:8080
 # Bound to all interfaces so the harness can poll readiness from the host.
 # This is a test-only relaxation of the localhost default.
 mgmt_addr: 0.0.0.0:8081
+
+# The participant and the datasets the CAT suite asks for. Two identifiers
+# rather than one shared identifier, so that CAT:01-01 proves the catalog lists
+# datasets and CAT:01-02 proves lookup selects among them.
+participant_id: urn:participant:dsbox-test
+datasets:
+  - id: urn:dataset:tck-catalog
+  - id: urn:dataset:tck-request

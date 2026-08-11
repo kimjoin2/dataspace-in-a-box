@@ -17,20 +17,20 @@ it before it does anything. Here is the honest state.
 | DSP protocol | TCK suite | Status |
 |---|---|---|
 | Version metadata | `MET` | gated in CI |
-| Catalog | `CAT` | not started |
+| Catalog | `CAT` | gated in CI |
 | Contract negotiation | `CN`, `CN_C` | not started |
 | Transfer process | `TP`, `TP_C` | not started |
 
-`MET` is the only suite in the gate's whitelist; the other three protocols are
-unimplemented.
+`MET` and `CAT` are in the gate's whitelist; contract negotiation and transfer
+process are unimplemented.
 
-Current TCK pass rate: **1 of 59 tests total** (`MET` 1, `CAT` 3, `CN`+`CN_C`
-31, `TP`+`TP_C` 24). Only the `MET` test is required by the CI gate; the other
-58 currently fail, because their protocols are unimplemented.
+Current TCK pass rate: **4 of 59 tests total** (`MET` 1, `CAT` 3, `CN`+`CN_C`
+31, `TP`+`TP_C` 24). Only those 4 are required by the CI gate; the other 55
+currently fail, because their protocols are unimplemented.
 
-The current milestone stands up the TCK as a CI gate and makes the version
-metadata protocol pass it. A protocol counts as done only when its TCK suite is
-added to the gate's whitelist, so this table cannot drift ahead of reality.
+The current milestone serves the catalog protocol from configuration. A protocol
+counts as done only when its TCK suite is added to the gate's whitelist, so this
+table cannot drift ahead of reality.
 
 There is no release yet, and nothing here is ready to run.
 
