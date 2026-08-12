@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func env(pairs map[string]string) func(string) string {
@@ -14,7 +15,8 @@ func env(pairs map[string]string) func(string) string {
 // this, so that adding the next required key does not mean editing every test.
 func minimal(extra string) []byte {
 	return []byte("public_url: https://connector.example.org\n" +
-		"participant_id: urn:participant:example\n" + extra)
+		"participant_id: urn:participant:example\n" +
+		"data_dir: ./data\n" + extra)
 }
 
 func TestLoadAppliesDefaults(t *testing.T) {
@@ -45,7 +47,7 @@ func TestLoadRejectsPlainHTTPOutsideDevMode(t *testing.T) {
 }
 
 func TestLoadAllowsPlainHTTPInDevMode(t *testing.T) {
-	_, err := Load([]byte("public_url: http://dsbox:8080\ndev_mode: true\nparticipant_id: urn:participant:example\n"), env(nil))
+	_, err := Load([]byte("public_url: http://dsbox:8080\ndev_mode: true\nparticipant_id: urn:participant:example\ndata_dir: ./data\n"), env(nil))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -67,7 +69,7 @@ func TestLoadRejectsTrailingSlash(t *testing.T) {
 
 func TestEnvironmentOverridesFile(t *testing.T) {
 	cfg, err := Load(
-		[]byte("public_url: https://from-file.example.org\ndsp_addr: 0.0.0.0:9999\nparticipant_id: urn:participant:example\n"),
+		[]byte("public_url: https://from-file.example.org\ndsp_addr: 0.0.0.0:9999\nparticipant_id: urn:participant:example\ndata_dir: ./data\n"),
 		env(map[string]string{
 			"DSBOX_PUBLIC_URL": "https://from-env.example.org",
 			"DSBOX_DSP_ADDR":   "0.0.0.0:7777",
@@ -115,6 +117,7 @@ func TestEmptyDocumentWithEnvironmentStillLoads(t *testing.T) {
 	cfg, err := Load([]byte(""), env(map[string]string{
 		"DSBOX_PUBLIC_URL":     "https://from-env.example.org",
 		"DSBOX_PARTICIPANT_ID": "urn:participant:from-env",
+		"DSBOX_DATA_DIR":       "./data",
 	}))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -225,5 +228,56 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Datasets = %v, want urn:dataset:sample present", cfg.Datasets)
+	}
+}
+
+func TestLoadRequiresDataDir(t *testing.T) {
+	_, err := Load([]byte("public_url: https://connector.example.org\nparticipant_id: urn:participant:example\n"), env(nil))
+	if err == nil {
+		t.Fatal("Load: expected an error when data_dir is absent")
+	}
+}
+
+func TestDataDirFromEnvironmentOverridesFile(t *testing.T) {
+	cfg, err := Load(
+		[]byte("public_url: https://connector.example.org\nparticipant_id: urn:participant:example\ndata_dir: ./from-file\n"),
+		env(map[string]string{"DSBOX_DATA_DIR": "./from-env"}),
+	)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DataDir != "./from-env" {
+		t.Errorf("DataDir = %q, want the environment value", cfg.DataDir)
+	}
+}
+
+func TestValidityUntilIsOptional(t *testing.T) {
+	cfg, err := Load(minimal("datasets:\n  - id: urn:dataset:a\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Datasets[0].ValidityUntil != nil {
+		t.Errorf("ValidityUntil = %v, want nil when absent", cfg.Datasets[0].ValidityUntil)
+	}
+}
+
+func TestValidityUntilParses(t *testing.T) {
+	cfg, err := Load(minimal("datasets:\n  - id: urn:dataset:a\n    validity_until: 2027-01-01T00:00:00Z\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Datasets[0].ValidityUntil == nil {
+		t.Fatal("ValidityUntil = nil, want the parsed timestamp")
+	}
+	want := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	if !cfg.Datasets[0].ValidityUntil.Equal(want) {
+		t.Errorf("ValidityUntil = %v, want %v", cfg.Datasets[0].ValidityUntil, want)
+	}
+}
+
+func TestMalformedValidityUntilIsAnError(t *testing.T) {
+	_, err := Load(minimal("datasets:\n  - id: urn:dataset:a\n    validity_until: not-a-time\n"), env(nil))
+	if err == nil {
+		t.Fatal("Load: expected an error for a malformed validity_until")
 	}
 }

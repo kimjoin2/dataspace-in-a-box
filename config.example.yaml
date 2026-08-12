@@ -14,6 +14,10 @@ dsp_addr: 0.0.0.0:8080
 # a deliberate act, not an accident.
 mgmt_addr: 127.0.0.1:8081
 
+# Where the connector's SQLite database file lives, at {data_dir}/dsbox.db.
+# Required. Created on first start if it does not exist.
+data_dir: ./data
+
 # This participant's identifier, as it appears in every catalog this connector
 # serves. Required and never inferred. DSBOX_PARTICIPANT_ID overrides it.
 participant_id: urn:participant:example
@@ -30,3 +34,6 @@ participant_id: urn:participant:example
 # There is no environment override for this list.
 datasets:
   - id: urn:dataset:sample
+    # Optional. RFC 3339. Absent means the offer never expires. Uncomment to
+    # try the validity-period policy:
+    # validity_until: 2027-01-01T00:00:00Z

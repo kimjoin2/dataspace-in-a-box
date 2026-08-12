@@ -12,6 +12,10 @@ dsp_addr: 0.0.0.0:8080
 # This is a test-only relaxation of the localhost default.
 mgmt_addr: 0.0.0.0:8081
 
+# Negotiation state lives here. The harness container gets a fresh one on
+# every run (see the compose volume).
+data_dir: /data
+
 # The participant and the datasets the CAT suite asks for. Two identifiers
 # rather than one shared identifier, so that CAT:01-01 proves the catalog lists
 # datasets and CAT:01-02 proves lookup selects among them.

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -49,6 +50,12 @@ type Config struct {
 	// MgmtAddr is the listen address for the management API. It binds to
 	// localhost by default so a firewall mistake cannot expose it.
 	MgmtAddr string `yaml:"mgmt_addr"`
+
+	// DataDir is where the connector's SQLite database file lives, at
+	// {DataDir}/dsbox.db. Required: the catalog milestone did not need
+	// storage, but negotiation state is the connector's first runtime state
+	// that must survive a restart (DECISIONS.md section 8).
+	DataDir string `yaml:"data_dir"`
 }
 
 // Dataset is one advertised dataset. Only the identifier is configurable: the
@@ -58,6 +65,12 @@ type Config struct {
 // written, and not before.
 type Dataset struct {
 	ID string `yaml:"id"`
+
+	// ValidityUntil is the point after which this dataset's offer is no
+	// longer valid. Optional: absent means the offer never expires, which is
+	// every dataset's behavior before this milestone. This is the second of
+	// the two policy shapes DECISIONS.md section 14 permits in v1.
+	ValidityUntil *time.Time `yaml:"validity_until"`
 }
 
 const (
@@ -87,6 +100,9 @@ func Load(data []byte, getenv func(string) string) (Config, error) {
 	}
 	if v := getenv("DSBOX_PARTICIPANT_ID"); v != "" {
 		cfg.ParticipantID = v
+	}
+	if v := getenv("DSBOX_DATA_DIR"); v != "" {
+		cfg.DataDir = v
 	}
 	// datasets has no environment override: a list has no sensible environment
 	// representation, and inventing one would be a second configuration syntax.
@@ -145,6 +161,9 @@ func (c Config) validate() error {
 			return fmt.Errorf("datasets[%d]: duplicate id %q", i, d.ID)
 		}
 		seen[d.ID] = true
+	}
+	if c.DataDir == "" {
+		return fmt.Errorf("data_dir is required: it is where the negotiation state database lives")
 	}
 	return nil
 }
