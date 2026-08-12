@@ -27,6 +27,15 @@ const maxNegotiationRequestBodyBytes = 1 << 20 // 1 MiB
 // assumption, not a guarantee.
 var terminateAfterOfferDelay = 200 * time.Millisecond
 
+// validateOutgoingCallback is validateCallbackURL, held as a var (same
+// swappable-for-tests pattern as terminateAfterOfferDelay above). Tests in
+// this file exercise negotiation dispatch/state-machine behavior by pointing
+// callback addresses at an httptest.Server, which is always bound to
+// loopback — exactly what validateCallbackURL exists to reject in
+// production. Those tests replace this var with a permissive stub; the
+// filter itself gets its own direct table test in callback_test.go.
+var validateOutgoingCallback = validateCallbackURL
+
 // Callback path suffixes, appended (with the provider pid) to a
 // negotiation's stored callback address.
 const (
@@ -316,8 +325,20 @@ func (h negotiationHandler) delayedTerminate(n store.Negotiation) {
 // (formatted with the provider pid) and updates the stored state. The push
 // happens first, but its failure does not block the state update: the
 // provider is authoritative, and a consumer can always recover via GET.
+//
+// n.CallbackAddress came from an unauthenticated request body, so the
+// constructed URL is validated before anything is sent — see
+// validateCallbackURL's doc comment for why a request whose callbackAddress
+// resolves to this connector's own loopback or private network cannot be
+// allowed through. A rejection is logged and the push is skipped, matching
+// pushCallback's own best-effort, no-error-returned contract.
 func (h negotiationHandler) pushAndStore(n store.Negotiation, state, path string, msg any) {
-	pushCallback(n.CallbackAddress+fmt.Sprintf(path, n.ProviderPID), msg)
+	callbackURL := n.CallbackAddress + fmt.Sprintf(path, n.ProviderPID)
+	if err := validateOutgoingCallback(callbackURL); err != nil {
+		slog.Error("reject callback push", "url", callbackURL, "error", err)
+	} else {
+		pushCallback(callbackURL, msg)
+	}
 	if err := h.store.SetState(n.ProviderPID, state, time.Now()); err != nil {
 		slog.Error("update negotiation state", "provider_pid", n.ProviderPID, "error", err)
 	}

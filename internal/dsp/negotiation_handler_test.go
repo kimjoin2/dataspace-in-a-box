@@ -84,6 +84,16 @@ func newTestHandler(t *testing.T, cfg config.Config) (negotiationHandler, *store
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+
+	// fakeCallback below is an httptest.Server, always bound to loopback —
+	// exactly what validateCallbackURL exists to reject in production. These
+	// tests are about dispatch/state-machine behavior, not the SSRF filter
+	// (which has its own direct table test in callback_test.go), so it is
+	// disabled for the duration of this test.
+	origValidate := validateOutgoingCallback
+	validateOutgoingCallback = func(string) error { return nil }
+	t.Cleanup(func() { validateOutgoingCallback = origValidate })
+
 	return negotiationHandler{cfg: cfg, store: st}, st
 }
 

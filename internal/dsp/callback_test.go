@@ -34,3 +34,41 @@ func TestPushCallbackSendsJSON(t *testing.T) {
 func TestPushCallbackToUnreachableURLDoesNotPanic(t *testing.T) {
 	pushCallback("http://127.0.0.1:1/unreachable", map[string]string{"hello": "world"})
 }
+
+// TestValidateCallbackURL is a direct, unfiltered-network table test of the
+// SSRF guard: an unauthenticated POST /negotiations/request fully controls
+// callbackAddress, and this function is what stops it naming this
+// connector's own loopback or private network. IP literals are used
+// (instead of a real public hostname) so the test needs no DNS resolution
+// and cannot flake on network access.
+func TestValidateCallbackURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"public IP literal", "http://8.8.8.8/callback", false},
+		{"public IP literal, https", "https://93.184.215.14/callback", false},
+		{"loopback IPv4", "http://127.0.0.1/callback", true},
+		{"loopback IPv4 with port", "http://127.0.0.1:8081/health", true},
+		{"loopback IPv6", "http://[::1]/callback", true},
+		{"RFC1918 10/8", "http://10.0.0.1/callback", true},
+		{"RFC1918 172.16/12", "http://172.16.0.1/callback", true},
+		{"RFC1918 192.168/16", "http://192.168.1.1/callback", true},
+		{"link-local", "http://169.254.169.254/callback", true},
+		{"unspecified", "http://0.0.0.0/callback", true},
+		{"non-http scheme", "ftp://8.8.8.8/callback", true},
+		{"malformed url", "http://%zz/callback", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCallbackURL(tt.url)
+			if tt.wantErr && err == nil {
+				t.Errorf("validateCallbackURL(%q) = nil, want an error", tt.url)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("validateCallbackURL(%q) = %v, want nil", tt.url, err)
+			}
+		})
+	}
+}
