@@ -13,8 +13,12 @@ import (
 )
 
 // Store opens the connector's SQLite database and exposes negotiation
-// persistence. database/sql pools and serializes access itself, so a single
-// Store is safe for concurrent use.
+// persistence. Open pins the underlying *sql.DB to a single connection
+// (SetMaxOpenConns(1)), so database/sql itself serializes every query
+// through it and a single Store is safe for concurrent use. Without that,
+// database/sql's connection pool opens multiple physical connections, and
+// since SQLite's WAL mode allows only one writer at a time, a second writer
+// gets an immediate SQLITE_BUSY instead of queuing behind the first.
 type Store struct {
 	db *sql.DB
 }
@@ -53,6 +57,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("enable WAL on %s: %w", path, err)

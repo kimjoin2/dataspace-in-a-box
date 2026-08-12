@@ -1,6 +1,8 @@
 package store
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -159,5 +161,45 @@ func TestNewUUIDIsUnique(t *testing.T) {
 	}
 	if a == b {
 		t.Errorf("two calls to NewUUID both returned %q", a)
+	}
+}
+
+func TestConcurrentCreateOnFileBackedStore(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/dsbox.db"
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	const n = 30
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			neg := testNegotiation()
+			neg.ProviderPID = fmt.Sprintf("urn:uuid:provider-%d", i)
+			errs[i] = s.Create(neg)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("Create goroutine %d: %v", i, err)
+		}
+	}
+
+	for i := 0; i < n; i++ {
+		pid := fmt.Sprintf("urn:uuid:provider-%d", i)
+		if _, ok, err := s.Get(pid); err != nil {
+			t.Errorf("Get %s: %v", pid, err)
+		} else if !ok {
+			t.Errorf("Get %s: not found after concurrent Create", pid)
+		}
 	}
 }
