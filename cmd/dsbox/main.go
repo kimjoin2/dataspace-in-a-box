@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/dsp"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/mgmt"
+	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
 
 func main() {
@@ -43,6 +45,15 @@ func run() error {
 		return fmt.Errorf("load configuration %q: %w", *configPath, err)
 	}
 
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		return fmt.Errorf("create data_dir %q: %w", cfg.DataDir, err)
+	}
+	st, err := store.Open(filepath.Join(cfg.DataDir, "dsbox.db"))
+	if err != nil {
+		return fmt.Errorf("open database in %q: %w", cfg.DataDir, err)
+	}
+	defer st.Close()
+
 	// These timeouts bound how long a connection can sit idle at each phase,
 	// so a client that dribbles headers (or never sends any) cannot hold a
 	// slot open indefinitely. WriteTimeout will need revisiting once transfer
@@ -50,7 +61,7 @@ func run() error {
 	// 30 seconds and would be cut off mid-stream.
 	dspSrv := &http.Server{
 		Addr:              cfg.DSPAddr,
-		Handler:           dsp.NewRouter(cfg),
+		Handler:           dsp.NewRouter(cfg, st),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

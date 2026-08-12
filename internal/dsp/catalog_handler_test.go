@@ -8,17 +8,33 @@ import (
 	"testing"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
+	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
 
 // catalogRequest is the well-formed request body the TCK sends. Tests that are
 // about something other than the body use it unchanged.
 const catalogRequest = `{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],"@type":"CatalogRequestMessage"}`
 
+// newRouterForTest builds a router backed by a fresh in-memory store, for
+// tests in this package that only exercise catalog and version routes and
+// have no interest in negotiation state. Task 5 added the *store.Store
+// parameter to NewRouter; this keeps every such call site compiling without
+// duplicating store setup at each one.
+func newRouterForTest(t *testing.T, cfg config.Config) http.Handler {
+	t.Helper()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return NewRouter(cfg, st)
+}
+
 func post(t *testing.T, cfg config.Config, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/2025-1/catalog/request", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	NewRouter(cfg).ServeHTTP(rec, req)
+	newRouterForTest(t, cfg).ServeHTTP(rec, req)
 	return rec
 }
 
@@ -111,7 +127,7 @@ func TestCatalogRequestRejectsAMissingContext(t *testing.T) {
 func TestDatasetRequestReturnsTheDataset(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/2025-1/catalog/datasets/urn:dataset:a", nil)
 	rec := httptest.NewRecorder()
-	NewRouter(testConfig("urn:dataset:a")).ServeHTTP(rec, req)
+	newRouterForTest(t, testConfig("urn:dataset:a")).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
@@ -131,7 +147,7 @@ func TestDatasetRequestReturnsTheDataset(t *testing.T) {
 func TestUnknownDatasetIsACatalogError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/2025-1/catalog/datasets/urn:dataset:missing", nil)
 	rec := httptest.NewRecorder()
-	NewRouter(testConfig("urn:dataset:a")).ServeHTTP(rec, req)
+	newRouterForTest(t, testConfig("urn:dataset:a")).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)

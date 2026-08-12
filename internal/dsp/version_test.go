@@ -10,7 +10,7 @@ import (
 func TestVersionEndpointReturnsProtocolVersions(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/dspace-version", nil)
 	rec := httptest.NewRecorder()
-	NewRouter(testConfig()).ServeHTTP(rec, req)
+	newRouterForTest(t, testConfig()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -38,7 +38,7 @@ func TestVersionEndpointReturnsProtocolVersions(t *testing.T) {
 func TestVersionEndpointRejectsPost(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/.well-known/dspace-version", nil)
 	rec := httptest.NewRecorder()
-	NewRouter(testConfig()).ServeHTTP(rec, req)
+	newRouterForTest(t, testConfig()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
@@ -70,14 +70,15 @@ func TestVersionDocumentPinsTCKAcceptedValues(t *testing.T) {
 }
 
 func TestUnknownPathIsNotFound(t *testing.T) {
-	// Contract negotiation is the next protocol in TCK order and is not
-	// implemented, so its path is still the honest example of an unrouted one.
-	req := httptest.NewRequest(http.MethodPost, "/2025-1/negotiations/request", nil)
+	// Transfer process is the next protocol in TCK order and is not
+	// implemented (contract negotiation, mounted in Task 5, no longer
+	// qualifies), so its path is still the honest example of an unrouted one.
+	req := httptest.NewRequest(http.MethodPost, "/2025-1/transfers/request", nil)
 	rec := httptest.NewRecorder()
-	NewRouter(testConfig()).ServeHTTP(rec, req)
+	newRouterForTest(t, testConfig()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404 while contract negotiation is unimplemented", rec.Code)
+		t.Errorf("status = %d, want 404 while transfer process is unimplemented", rec.Code)
 	}
 }
 
@@ -87,7 +88,7 @@ func TestUnknownPathIsNotFound(t *testing.T) {
 func TestManagementRouteIsNotServedByDSP(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
-	NewRouter(testConfig()).ServeHTTP(rec, req)
+	newRouterForTest(t, testConfig()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404: the DSP listener must not serve the management API", rec.Code)

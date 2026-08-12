@@ -4,12 +4,13 @@ import (
 	"net/http"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
+	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
 
 // NewRouter returns the handler for the public DSP listener. It takes the
-// configuration because the catalog is served from it: what this participant
-// advertises is a declaration, not runtime state.
-func NewRouter(cfg config.Config) http.Handler {
+// configuration because the catalog is served from it, and the store because
+// negotiation state is persisted there.
+func NewRouter(cfg config.Config, st *store.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/dspace-version", handleVersion)
 
@@ -19,8 +20,16 @@ func NewRouter(cfg config.Config) http.Handler {
 	// configuration rejects one containing a slash.
 	mux.HandleFunc("GET "+VersionPath+"/catalog/datasets/{id}", cat.handleDatasetRequest)
 
-	// Contract negotiation and transfer process mount here next, in TCK order.
-	// Until then, requests below those paths are correctly 404.
+	neg := negotiationHandler{cfg: cfg, store: st}
+	mux.HandleFunc("POST "+VersionPath+"/negotiations/request", neg.handleContractRequest)
+	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/request", neg.handleReRequest)
+	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/events", neg.handleEvent)
+	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/agreement/verification", neg.handleVerification)
+	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/termination", neg.handleTermination)
+	mux.HandleFunc("GET "+VersionPath+"/negotiations/{id}", neg.handleGetNegotiation)
+
+	// Transfer process mounts here next, in TCK order. Until then, requests
+	// below that path are correctly 404.
 
 	return mux
 }
