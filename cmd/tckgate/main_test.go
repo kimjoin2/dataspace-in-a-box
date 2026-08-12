@@ -16,7 +16,7 @@ func read(t *testing.T, path string) string {
 }
 
 func TestPassingOutputSatisfiesTheGate(t *testing.T) {
-	report, err := evaluate(read(t, "testdata/passing.txt"), map[string]int{"MET": 1})
+	report, err := evaluate(read(t, "testdata/passing.txt"), map[string]int{"MET": 1}, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestPassingOutputSatisfiesTheGate(t *testing.T) {
 }
 
 func TestFailingMETTestFailsTheGate(t *testing.T) {
-	report, err := evaluate(read(t, "testdata/failing.txt"), map[string]int{"MET": 1})
+	report, err := evaluate(read(t, "testdata/failing.txt"), map[string]int{"MET": 1}, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestFailingMETTestFailsTheGate(t *testing.T) {
 }
 
 func TestFailureOutsideTheWhitelistIsIgnored(t *testing.T) {
-	report, err := evaluate(read(t, "testdata/passing.txt"), map[string]int{"MET": 1})
+	report, err := evaluate(read(t, "testdata/passing.txt"), map[string]int{"MET": 1}, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestFailureOutsideTheWhitelistIsIgnored(t *testing.T) {
 }
 
 func TestTruncatedOutputIsAnError(t *testing.T) {
-	_, err := evaluate("starting tests\n", map[string]int{"MET": 1})
+	_, err := evaluate("starting tests\n", map[string]int{"MET": 1}, nil)
 	if err == nil {
 		t.Error("expected an error when the run did not complete")
 	}
@@ -60,7 +60,7 @@ func TestTruncatedOutputIsAnError(t *testing.T) {
 
 func TestCompletionMarkerMentionedInProseIsNotCompletion(t *testing.T) {
 	output := "[2026-07-28T17:44:57.951351385] the run stopped short of test run complete\n"
-	_, err := evaluate(output, map[string]int{"MET": 1})
+	_, err := evaluate(output, map[string]int{"MET": 1}, nil)
 	if err == nil {
 		t.Error("expected an error: the marker only appears mid-line, in prose, not as a line of its own")
 	}
@@ -71,7 +71,7 @@ func TestUnderscoreSuiteIsNotSwallowedByItsPrefix(t *testing.T) {
 	// the trailing colon, gating "CN" would also match every "CN_C:" result,
 	// silently gating a suite nobody declared done. Counts verified against
 	// testdata/passing.txt.
-	report, err := evaluate(read(t, "testdata/passing.txt"), map[string]int{"CN": 15})
+	report, err := evaluate(read(t, "testdata/passing.txt"), map[string]int{"CN": 15}, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestUnderscoreSuiteIsNotSwallowedByItsPrefix(t *testing.T) {
 		t.Errorf("Seen[CN] = %d, want 15 (CN must not also match CN_C results)", report.Seen["CN"])
 	}
 
-	report, err = evaluate(read(t, "testdata/passing.txt"), map[string]int{"CN_C": 16})
+	report, err = evaluate(read(t, "testdata/passing.txt"), map[string]int{"CN_C": 16}, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -100,7 +100,7 @@ func synthetic(lines ...string) string {
 }
 
 func TestSuiteShortOfItsExpectedCountFailsTheGate(t *testing.T) {
-	report, err := evaluate(synthetic("SUCCESSFUL: MET:01-01"), map[string]int{"MET": 1, "CAT": 3})
+	report, err := evaluate(synthetic("SUCCESSFUL: MET:01-01"), map[string]int{"MET": 1, "CAT": 3}, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -118,6 +118,7 @@ func TestSuiteOverItsExpectedCountFailsTheGate(t *testing.T) {
 	report, err := evaluate(
 		synthetic("SUCCESSFUL: MET:01-01", "SUCCESSFUL: MET:01-02"),
 		map[string]int{"MET": 1},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
@@ -139,11 +140,79 @@ func TestExpectedCountsMetPasses(t *testing.T) {
 	report, err := evaluate(
 		synthetic("SUCCESSFUL: MET:01-01", "SUCCESSFUL: CAT:01-01", "SUCCESSFUL: CAT:01-02", "SUCCESSFUL: CAT:01-03"),
 		map[string]int{"MET": 1, "CAT": 3},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
 	if !report.OK() {
 		t.Errorf("gate rejected a run that met every expected count: %s", report)
+	}
+}
+
+func TestExemptedFailureDoesNotFailTheGate(t *testing.T) {
+	report, err := evaluate(
+		synthetic("SUCCESSFUL: MET:01-01", "FAILED: CN:02-07"),
+		map[string]int{"MET": 1, "CN": 1},
+		map[string]bool{"CN:02-07": true},
+	)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if !report.OK() {
+		t.Errorf("gate rejected a run whose only failure was a named exemption: %s", report)
+	}
+	if len(report.Exempted) != 1 || !strings.Contains(report.Exempted[0], "CN:02-07") {
+		t.Errorf("Exempted = %v, want one entry naming CN:02-07", report.Exempted)
+	}
+	if len(report.Failed) != 0 {
+		t.Errorf("Failed = %v, want the exempted result kept out of it", report.Failed)
+	}
+}
+
+func TestExemptedTestUnexpectedlyPassingFailsTheGate(t *testing.T) {
+	report, err := evaluate(
+		synthetic("SUCCESSFUL: MET:01-01", "SUCCESSFUL: CN:02-07"),
+		map[string]int{"MET": 1, "CN": 1},
+		map[string]bool{"CN:02-07": true},
+	)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if report.OK() {
+		t.Error("gate accepted a run where an exempted test unexpectedly passed")
+	}
+	if len(report.UnexpectedPasses) != 1 || !strings.Contains(report.UnexpectedPasses[0], "CN:02-07") {
+		t.Errorf("UnexpectedPasses = %v, want one entry naming CN:02-07", report.UnexpectedPasses)
+	}
+	if !strings.Contains(report.String(), "CN:02-07") {
+		t.Errorf("report does not name the stale exemption: %s", report)
+	}
+}
+
+func TestNonExemptedFailureStillFailsTheGate(t *testing.T) {
+	report, err := evaluate(
+		synthetic("SUCCESSFUL: MET:01-01", "FAILED: CN:02-01"),
+		map[string]int{"MET": 1, "CN": 1},
+		map[string]bool{"CN:02-07": true},
+	)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if report.OK() {
+		t.Error("gate accepted a run with a non-exempted failure")
+	}
+	if len(report.Failed) != 1 {
+		t.Errorf("Failed = %v, want CN:02-01 in it (it is not the exempted test)", report.Failed)
+	}
+}
+
+func TestNilExemptMapBehavesAsNoExemptions(t *testing.T) {
+	report, err := evaluate(synthetic("SUCCESSFUL: MET:01-01"), map[string]int{"MET": 1}, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if !report.OK() {
+		t.Errorf("gate rejected a clean run with a nil exempt map: %s", report)
 	}
 }

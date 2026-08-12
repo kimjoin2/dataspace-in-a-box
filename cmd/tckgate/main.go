@@ -21,6 +21,12 @@ import (
 // that stops halfway through a suite fails instead of reporting green.
 var expected = map[string]int{"MET": 1, "CAT": 3}
 
+// exempt names individual gated test IDs that are known to fail and are
+// tracked rather than required — see docs/follow-ups.md for each entry's
+// story. A suite's count in expected still includes these tests: the gate
+// proves the suite ran to completion regardless of exemptions.
+var exempt = map[string]bool{}
+
 // resultLine matches one per-test result in the TCK's stdout. Group 1 is the
 // outcome, group 2 the test identifier. Verified against real output:
 //
@@ -63,8 +69,17 @@ type Report struct {
 	// Seen counts the results observed for each gated suite.
 	Seen map[string]int
 	// Failed holds full result lines (timestamp included) for gated tests that
-	// did not pass.
+	// did not pass and are not named exemptions.
 	Failed []string
+	// Exempted holds full result lines for gated tests that failed but are
+	// named in the exemption list passed to evaluate — expected failures,
+	// tracked rather than hidden.
+	Exempted []string
+	// UnexpectedPasses holds full result lines for exempted tests that
+	// SUCCEEDED. An exemption is a claim that this specific test cannot pass
+	// yet; a pass means that claim is stale and the exemption must be removed,
+	// not silently kept.
+	UnexpectedPasses []string
 	// Skipped counts results outside the gate: reported, but not gating.
 	Skipped int
 }
@@ -94,17 +109,21 @@ func (r Report) total() int {
 }
 
 // OK reports whether the run satisfies the gate: every gated suite produced
-// exactly the expected number of results, and none of them failed. An empty
-// Expected map means nothing was gated, so it must not report a pass — a
-// shortfall count and a failure count that are both zero because there was
-// nothing to check must never be mistaken for a run that proved something.
+// exactly the expected number of results, every non-exempted result passed,
+// and no exempted result unexpectedly passed. An empty Expected map means
+// nothing was gated, so it must not report a pass.
 func (r Report) OK() bool {
-	return len(r.Expected) > 0 && len(r.shortfalls()) == 0 && len(r.Failed) == 0
+	return len(r.Expected) > 0 && len(r.shortfalls()) == 0 &&
+		len(r.Failed) == 0 && len(r.UnexpectedPasses) == 0
 }
 
 func (r Report) String() string {
 	if r.OK() {
-		return fmt.Sprintf("%d required tests passed, %d results outside the gate", r.total(), r.Skipped)
+		s := fmt.Sprintf("%d required tests passed, %d results outside the gate", r.total(), r.Skipped)
+		if len(r.Exempted) > 0 {
+			s += fmt.Sprintf(", %d known exemption(s)", len(r.Exempted))
+		}
+		return s
 	}
 	var parts []string
 	if s := r.shortfalls(); len(s) > 0 {
@@ -118,13 +137,21 @@ func (r Report) String() string {
 		parts = append(parts, fmt.Sprintf("%d of %d required tests failed: %s",
 			len(r.Failed), r.total(), strings.Join(r.Failed, ", ")))
 	}
+	if len(r.UnexpectedPasses) > 0 {
+		sort.Strings(r.UnexpectedPasses)
+		parts = append(parts, fmt.Sprintf("%d exempted test(s) unexpectedly passed, remove the exemption: %s",
+			len(r.UnexpectedPasses), strings.Join(r.UnexpectedPasses, ", ")))
+	}
 	return strings.Join(parts, "; ")
 }
 
 // evaluate reads a complete TCK run and reports the gate's verdict. It errors
 // when the run did not finish, because an incomplete run proves nothing and
-// must never be mistaken for a pass.
-func evaluate(output string, expected map[string]int) (Report, error) {
+// must never be mistaken for a pass. exempt names individual test IDs that
+// are known to fail and must not fail the gate — but an exempted ID that
+// unexpectedly passes fails the gate instead, so a stale exemption cannot
+// hide a real pass. exempt may be nil, meaning no exemptions.
+func evaluate(output string, expected map[string]int, exempt map[string]bool) (Report, error) {
 	if !hasCompletionMarker(output) {
 		return Report{}, fmt.Errorf("the TCK run did not complete: %q not found in the output", completionMarker)
 	}
@@ -142,8 +169,13 @@ func evaluate(output string, expected map[string]int) (Report, error) {
 			continue
 		}
 		report.Seen[suite]++
-		if outcome == "FAILED" {
+		switch {
+		case outcome == "FAILED" && exempt[id]:
+			report.Exempted = append(report.Exempted, strings.TrimSpace(line))
+		case outcome == "FAILED":
 			report.Failed = append(report.Failed, strings.TrimSpace(line))
+		case outcome == "SUCCESSFUL" && exempt[id]:
+			report.UnexpectedPasses = append(report.UnexpectedPasses, strings.TrimSpace(line))
 		}
 	}
 	return report, nil
@@ -171,7 +203,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "read %s: %v\n", os.Args[1], err)
 		os.Exit(2)
 	}
-	report, err := evaluate(string(data), expected)
+	report, err := evaluate(string(data), expected, exempt)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
