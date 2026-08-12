@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestPushCallbackSendsJSON(t *testing.T) {
@@ -70,5 +71,32 @@ func TestValidateCallbackURL(t *testing.T) {
 				t.Errorf("validateCallbackURL(%q) = %v, want nil", tt.url, err)
 			}
 		})
+	}
+}
+
+// TestValidateCallbackURLRespectsLookupTimeout proves callbackHostnameLookupTimeout
+// actually bounds the DNS resolution step, without depending on a real slow
+// or unresponsive nameserver: forcing the timeout to an already-elapsed
+// duration makes net.Resolver.LookupIPAddr's context deadline exceeded
+// before (or immediately as) the lookup starts, so a hostname (not an IP
+// literal, which skips resolution entirely) must return promptly regardless
+// of what a real query for it would have done. If this test ever needs
+// longer than a couple of seconds to reach that failure, the timeout is not
+// actually wired into the lookup call.
+func TestValidateCallbackURLRespectsLookupTimeout(t *testing.T) {
+	orig := callbackHostnameLookupTimeout
+	callbackHostnameLookupTimeout = time.Nanosecond
+	defer func() { callbackHostnameLookupTimeout = orig }()
+
+	start := time.Now()
+	err := validateCallbackURL("http://callback-timeout-test.invalid/callback")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("validateCallbackURL with an already-expired lookup timeout = nil error, want an error")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("validateCallbackURL took %s to return with a %s lookup timeout, want it bounded by the timeout",
+			elapsed, callbackHostnameLookupTimeout)
 	}
 }

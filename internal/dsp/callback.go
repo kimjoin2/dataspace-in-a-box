@@ -2,6 +2,7 @@ package dsp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -25,6 +26,16 @@ var callbackHTTPClient = &http.Client{
 		return http.ErrUseLastResponse
 	},
 }
+
+// callbackHostnameLookupTimeout bounds validateCallbackURL's DNS resolution
+// step. callbackHTTPClient's Timeout above does not cover this earlier
+// step at all — it only starts once the POST itself begins — so without a
+// separate bound, a callbackAddress hostname whose authoritative nameserver
+// is slow or unresponsive could stall pushAndStore (called inline, not from
+// a goroutine, by four of the unauthenticated dispatch paths) for as long
+// as the resolver is willing to wait. A var, not a const, so a test can
+// force an immediate deadline without depending on a real slow resolver.
+var callbackHostnameLookupTimeout = 5 * time.Second
 
 // pushCallback sends v as a JSON POST to url, best-effort: a failure is
 // logged and never returned to the caller. The provider is authoritative
@@ -88,9 +99,15 @@ func validateCallbackURL(raw string) error {
 	if ip := net.ParseIP(host); ip != nil {
 		ips = []net.IP{ip}
 	} else {
-		ips, err = net.LookupIP(host)
+		ctx, cancel := context.WithTimeout(context.Background(), callbackHostnameLookupTimeout)
+		defer cancel()
+		addrs, err := (&net.Resolver{}).LookupIPAddr(ctx, host)
 		if err != nil {
 			return fmt.Errorf("resolve callback host %q: %w", host, err)
+		}
+		ips = make([]net.IP, len(addrs))
+		for i, a := range addrs {
+			ips[i] = a.IP
 		}
 	}
 	for _, ip := range ips {
