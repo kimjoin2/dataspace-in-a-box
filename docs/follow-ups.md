@@ -59,3 +59,14 @@ silently dropped. Full reasoning:
 actual intended trigger for an unprompted post-verification termination —
 not yet determined from the public TCK sources this project is permitted to
 use.
+
+**A callback push retries on any non-2xx, including the ones that will never
+succeed.** `attemptPush` treats every status at or above 300 the same, so a
+`400` or a `403` — a permanent answer from a consumer that will say it again —
+costs the full 5.5-second backoff schedule and a goroutine for its duration,
+before being dropped anyway. Short-circuiting those is a small win with a
+sharp edge: `404` must keep retrying, because it is exactly what the TCK's
+async-listener registration race produces (`DECISIONS.md` §23.7), and no
+other status code's behavior during that window has been observed. Worth
+doing when there is a real TCK run to verify it against, not on reasoning
+alone.

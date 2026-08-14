@@ -1,7 +1,7 @@
-// Package dsp implements the DSP protocol handlers. This file holds the
-// contract negotiation state machine's decision logic and the shapes of the
-// messages it exchanges — no HTTP. negotiation_handler.go wires HTTP onto
-// this.
+// This file holds the contract negotiation state machine's decision logic
+// and the shapes of the messages it exchanges — no HTTP.
+// negotiation_handler.go wires HTTP onto this. The package doc comment is in
+// version.go.
 package dsp
 
 import (
@@ -72,13 +72,13 @@ type OfferRef struct {
 }
 
 // negotiationOutcome is what the provider decides to do in response to a
-// contract request or an accept event: the negotiation's next state, and
-// what to push to the consumer's callback address. pushOffer and
-// pushTermination can both be set — an expired, mismatched dataset gets an
-// informational counter-offer followed immediately by an unprompted
-// termination, since there is nothing left to agree to.
+// contract request or an accept event: what to push to the consumer's
+// callback address. pushOffer and pushTermination can both be set — an
+// expired, mismatched dataset gets an informational counter-offer followed
+// immediately by an unprompted termination, since there is nothing left to
+// agree to. The state each push moves the negotiation into is dispatch's,
+// written next to the message it pairs with rather than carried here.
 type negotiationOutcome struct {
-	state           string
 	pushOffer       bool
 	pushAgreement   bool
 	pushTermination bool
@@ -88,21 +88,21 @@ var (
 	// outcomeNone: the dataset is not advertised at all. The provider has
 	// nothing coherent to say about it, so the negotiation stays REQUESTED
 	// with no autonomous action.
-	outcomeNone = negotiationOutcome{state: StateRequested}
+	outcomeNone = negotiationOutcome{}
 	// outcomeOffer: the requested offer does not match what this connector
 	// advertises, but the dataset's policy is currently valid.
-	outcomeOffer = negotiationOutcome{state: StateOffered, pushOffer: true}
+	outcomeOffer = negotiationOutcome{pushOffer: true}
 	// outcomeAgree: the requested offer matches and is currently valid.
-	outcomeAgree = negotiationOutcome{state: StateAgreed, pushAgreement: true}
+	outcomeAgree = negotiationOutcome{pushAgreement: true}
 	// outcomeTerminate: either the offer matches but has expired, or an
 	// ACCEPTED event arrived for a dataset that is no longer valid or no
 	// longer advertised.
-	outcomeTerminate = negotiationOutcome{state: StateTerminated, pushTermination: true}
+	outcomeTerminate = negotiationOutcome{pushTermination: true}
 	// outcomeOfferThenTerminate: the offer does not match AND the dataset has
 	// expired. The true terms are still worth telling the consumer, so the
 	// offer is pushed; then, since there is nothing left to agree to, an
 	// unprompted termination follows.
-	outcomeOfferThenTerminate = negotiationOutcome{state: StateOffered, pushOffer: true, pushTermination: true}
+	outcomeOfferThenTerminate = negotiationOutcome{pushOffer: true, pushTermination: true}
 )
 
 // findConfiguredDataset returns the advertised dataset configuration with

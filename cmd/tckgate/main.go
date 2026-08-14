@@ -126,7 +126,13 @@ func (r Report) OK() bool {
 
 func (r Report) String() string {
 	if r.OK() {
-		s := fmt.Sprintf("%d required tests passed, %d results outside the gate", r.total(), r.Skipped)
+		// total() counts every gated result, exempted failures included —
+		// they are gated tests that ran, which is what the count exists to
+		// prove. They did not pass, though, so subtracting them is what makes
+		// this line agree with README.md's stated pass rate instead of
+		// claiming one more test than actually passed.
+		s := fmt.Sprintf("%d required tests passed, %d results outside the gate",
+			r.total()-len(r.Exempted), r.Skipped)
 		if len(r.Exempted) > 0 {
 			s += fmt.Sprintf(", %d known exemption(s)", len(r.Exempted))
 		}

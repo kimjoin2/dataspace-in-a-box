@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -82,7 +84,7 @@ func TestSetStateUpdatesRow(t *testing.T) {
 	}
 
 	updatedAt := n.UpdatedAt.Add(time.Hour)
-	if err := s.SetState(n.ProviderPID, "AGREED", updatedAt); err != nil {
+	if err := s.SetState(n.ProviderPID, n.State, "AGREED", updatedAt); err != nil {
 		t.Fatalf("SetState: %v", err)
 	}
 
@@ -108,8 +110,155 @@ func TestSetStateMissingIsError(t *testing.T) {
 	}
 	defer s.Close()
 
-	if err := s.SetState("does-not-exist", "AGREED", time.Now()); err == nil {
-		t.Error("SetState: expected an error updating a negotiation that does not exist")
+	err = s.SetState("does-not-exist", "REQUESTED", "AGREED", time.Now())
+	if err == nil {
+		t.Fatal("SetState: expected an error updating a negotiation that does not exist")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetState on a missing negotiation = %v, want ErrNotFound", err)
+	}
+}
+
+// TestSetStateFromTheWrongStateIsRejected is the compare-and-swap: a caller
+// that decided what to write from a read taken before someone else moved the
+// negotiation must not win. The stale write has to fail, and fail
+// distinguishably from a missing row, because the two need different
+// handling — one is a lost race to drop, the other is a bug.
+func TestSetStateFromTheWrongStateIsRejected(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	n := testNegotiation()
+	if err := s.Create(n); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.SetState(n.ProviderPID, "REQUESTED", "TERMINATED", time.Now()); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+
+	// The stale writer still believes the negotiation is REQUESTED.
+	err = s.SetState(n.ProviderPID, "REQUESTED", "FINALIZED", time.Now())
+	if err == nil {
+		t.Fatal("SetState from a state the negotiation left = nil, want an error")
+	}
+	if !errors.Is(err, ErrStateChanged) {
+		t.Errorf("SetState from a stale state = %v, want ErrStateChanged", err)
+	}
+	got, _, _ := s.Get(n.ProviderPID)
+	if got.State != "TERMINATED" {
+		t.Errorf("State = %q, want TERMINATED — the stale write overwrote it", got.State)
+	}
+}
+
+// TestSetRerequestedIsOnlyAcceptedOnce covers the same rule for the
+// re-request flag: DECISIONS.md section 23.9 allows exactly one, and two
+// concurrent re-requests would both read the flag clear, so only the update
+// itself can decide which one got it.
+func TestSetRerequestedIsOnlyAcceptedOnce(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	n := testNegotiation()
+	if err := s.Create(n); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.SetRerequested(n.ProviderPID); err != nil {
+		t.Fatalf("first SetRerequested: %v", err)
+	}
+	err = s.SetRerequested(n.ProviderPID)
+	if err == nil {
+		t.Fatal("second SetRerequested = nil, want an error")
+	}
+	if !errors.Is(err, ErrStateChanged) {
+		t.Errorf("second SetRerequested = %v, want ErrStateChanged", err)
+	}
+}
+
+// TestOpenMigratesADatabaseMissingRerequested is the migration this project
+// has exactly one of. A database file written by a build from before the
+// rerequested column existed must keep working: `CREATE TABLE IF NOT EXISTS`
+// is a no-op against the table it already has, so without a real migration
+// step Open would succeed and every query naming the column would then fail
+// with "no such column: rerequested".
+func TestOpenMigratesADatabaseMissingRerequested(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/dsbox.db"
+
+	// The negotiations table exactly as a build before this column created it.
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open the old database: %v", err)
+	}
+	if _, err := old.Exec(`
+CREATE TABLE negotiations (
+    provider_pid     TEXT PRIMARY KEY,
+    consumer_pid     TEXT NOT NULL,
+    state            TEXT NOT NULL,
+    dataset_id       TEXT NOT NULL,
+    offer_id         TEXT NOT NULL,
+    callback_address TEXT NOT NULL,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);`); err != nil {
+		t.Fatalf("create the old schema: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close the old database: %v", err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on a database missing the column: %v", err)
+	}
+	defer s.Close()
+
+	n := testNegotiation()
+	if err := s.Create(n); err != nil {
+		t.Fatalf("Create after migrating: %v", err)
+	}
+	if err := s.SetRerequested(n.ProviderPID); err != nil {
+		t.Fatalf("SetRerequested after migrating: %v", err)
+	}
+	got, ok, err := s.Get(n.ProviderPID)
+	if err != nil {
+		t.Fatalf("Get after migrating: %v", err)
+	}
+	if !ok {
+		t.Fatal("Get after migrating: not found")
+	}
+	if !got.Rerequested {
+		t.Error("Rerequested = false, want true — the migrated column is not being written")
+	}
+}
+
+// TestOpenTwiceDoesNotRepeatTheMigration proves the migration is idempotent
+// the way startup needs it to be: every run of every build calls it.
+func TestOpenTwiceDoesNotRepeatTheMigration(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/dsbox.db"
+
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer s2.Close()
+
+	n := testNegotiation()
+	if err := s2.Create(n); err != nil {
+		t.Fatalf("Create: %v", err)
 	}
 }
 

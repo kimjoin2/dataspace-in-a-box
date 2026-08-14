@@ -57,8 +57,21 @@ CREATE TABLE IF NOT EXISTS negotiations (
 
 const timeFormat = time.RFC3339Nano
 
+// Errors a conditional update can report. Both mean the UPDATE matched no
+// row; they differ in why, which is the difference between a bug and a lost
+// race, so callers can tell them apart with errors.Is.
+var (
+	// ErrNotFound means there is no negotiation with that provider pid.
+	ErrNotFound = errors.New("negotiation not found")
+	// ErrStateChanged means the negotiation exists but no longer holds the
+	// value the caller expected to update from — something else changed it
+	// first, and the caller's decision was made against a stale read.
+	ErrStateChanged = errors.New("negotiation changed concurrently")
+)
+
 // Open opens (creating if necessary) the SQLite file at path, enables WAL
-// mode, and ensures the schema exists. path may be ":memory:" for tests —
+// mode, ensures the schema exists, and applies the one schema migration this
+// project has (see migrate). path may be ":memory:" for tests —
 // DECISIONS.md section 8 reserves that for tests only, never a runtime path.
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
@@ -74,7 +87,41 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("create schema in %s: %w", path, err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate %s: %w", path, err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrate brings an older database file up to the schema above. There is no
+// migration framework and no version table (DECISIONS.md section 23.1): each
+// column added after the first release is one hand-written, self-checking
+// step here.
+//
+// The check is what makes this a migration at all. `CREATE TABLE IF NOT
+// EXISTS` is a no-op against a table that already exists, so editing the
+// schema literal changes nothing for a database file an earlier build
+// created — it opens without complaint and then fails on the first query
+// naming the new column. `pragma_table_info` is SQLite's table-valued form of
+// `PRAGMA table_info(negotiations)`, one row per column with the column's
+// name in `name`. On a fresh database the CREATE above already made the
+// column, so the check finds it and nothing runs; on an older one the column
+// is added. Idempotent either way.
+func migrate(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('negotiations') WHERE name = 'rerequested'`,
+	).Scan(&n); err != nil {
+		return fmt.Errorf("inspect negotiations columns: %w", err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE negotiations ADD COLUMN rerequested INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add rerequested column: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying database.
@@ -136,10 +183,22 @@ func (s *Store) Get(providerPID string) (Negotiation, bool, error) {
 	return n, true, nil
 }
 
-// SetState updates a negotiation's state and updated_at.
-func (s *Store) SetState(providerPID, state string, updatedAt time.Time) error {
-	res, err := s.db.Exec(`UPDATE negotiations SET state = ?, updated_at = ? WHERE provider_pid = ?`,
-		state, updatedAt.UTC().Format(timeFormat), providerPID)
+// SetState moves a negotiation from state `from` to state `to`, recording
+// updatedAt. It is a compare-and-swap, not an overwrite: the UPDATE matches
+// only while the stored state is still `from`, so a caller that decided what
+// to write from an earlier read cannot silently clobber a decision another
+// request made in between. If the state moved on, the update does nothing
+// and the error wraps ErrStateChanged — the caller lost the race and should
+// drop what it was about to do, not retry it.
+//
+// This matters because pushes run in their own goroutines (DECISIONS.md
+// section 23.8) and can live for the length of a whole retry schedule. Without
+// the condition, a goroutine started before a termination arrived would
+// finish afterwards and write the state the terminated negotiation was never
+// in.
+func (s *Store) SetState(providerPID, from, to string, updatedAt time.Time) error {
+	res, err := s.db.Exec(`UPDATE negotiations SET state = ?, updated_at = ? WHERE provider_pid = ? AND state = ?`,
+		to, updatedAt.UTC().Format(timeFormat), providerPID, from)
 	if err != nil {
 		return fmt.Errorf("update negotiation %s: %w", providerPID, err)
 	}
@@ -148,15 +207,20 @@ func (s *Store) SetState(providerPID, state string, updatedAt time.Time) error {
 		return fmt.Errorf("update negotiation %s: %w", providerPID, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("update negotiation %s: not found", providerPID)
+		return s.explainNoUpdate(providerPID, "state "+from)
 	}
 	return nil
 }
 
 // SetRerequested marks a negotiation as having accepted its one allowed
-// re-request while OFFERED. See Negotiation.Rerequested.
+// re-request while OFFERED. See Negotiation.Rerequested. Like SetState it is
+// conditional — the UPDATE matches only while the flag is still unset — so
+// the "exactly one re-request" rule holds even if two re-requests read the
+// negotiation at the same time and both see the flag clear. The second one's
+// error wraps ErrStateChanged, which is the same rejection the read told the
+// first one to make.
 func (s *Store) SetRerequested(providerPID string) error {
-	res, err := s.db.Exec(`UPDATE negotiations SET rerequested = 1 WHERE provider_pid = ?`, providerPID)
+	res, err := s.db.Exec(`UPDATE negotiations SET rerequested = 1 WHERE provider_pid = ? AND rerequested = 0`, providerPID)
 	if err != nil {
 		return fmt.Errorf("update negotiation %s: %w", providerPID, err)
 	}
@@ -165,7 +229,25 @@ func (s *Store) SetRerequested(providerPID string) error {
 		return fmt.Errorf("update negotiation %s: %w", providerPID, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("update negotiation %s: not found", providerPID)
+		return s.explainNoUpdate(providerPID, "rerequested = 0")
 	}
 	return nil
+}
+
+// explainNoUpdate says why a conditional UPDATE matched no row: the
+// negotiation is gone (ErrNotFound), or it is there but no longer holds the
+// value the caller expected (ErrStateChanged). The two need different
+// handling — one is a bug or a deleted row, the other is a lost race — and
+// RowsAffected alone cannot tell them apart. want describes what the caller
+// required, for the log line.
+func (s *Store) explainNoUpdate(providerPID, want string) error {
+	n, ok, err := s.Get(providerPID)
+	if err != nil {
+		return fmt.Errorf("update negotiation %s: %w", providerPID, err)
+	}
+	if !ok {
+		return fmt.Errorf("update negotiation %s: %w", providerPID, ErrNotFound)
+	}
+	return fmt.Errorf("update negotiation %s: %w: wanted %s, found state %s, rerequested %t",
+		providerPID, ErrStateChanged, want, n.State, n.Rerequested)
 }

@@ -2,6 +2,7 @@ package dsp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -64,12 +65,7 @@ func (h negotiationHandler) handleContractRequest(w http.ResponseWriter, r *http
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !slices.Contains(msg.Context, ContextURL) {
-		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "@context must contain "+ContextURL)
-		return
-	}
-	if msg.Type != ContractRequestMessageType {
-		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "@type must be "+ContractRequestMessageType)
+	if !checkEnvelope(w, msg.Context, msg.Type, ContractRequestMessageType) {
 		return
 	}
 	if msg.ConsumerPID == "" {
@@ -137,12 +133,7 @@ func (h negotiationHandler) handleReRequest(w http.ResponseWriter, r *http.Reque
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !slices.Contains(msg.Context, ContextURL) {
-		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "@context must contain "+ContextURL)
-		return
-	}
-	if msg.Type != ContractRequestMessageType {
-		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "@type must be "+ContractRequestMessageType)
+	if !checkEnvelope(w, msg.Context, msg.Type, ContractRequestMessageType) {
 		return
 	}
 	if n.State != StateOffered {
@@ -150,18 +141,26 @@ func (h negotiationHandler) handleReRequest(w http.ResponseWriter, r *http.Reque
 			"a counter-offer is only valid from OFFERED, negotiation is "+n.State)
 		return
 	}
-	if n.Rerequested {
-		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
-			"this negotiation already received its one re-request while OFFERED")
-		return
-	}
+	// The "one re-request" rule is enforced by the conditional update rather
+	// than by reading n.Rerequested first: two re-requests arriving together
+	// would both read the flag clear, and only the update can decide which
+	// one actually got it. A lost race is the rejection, not an error.
 	if err := h.store.SetRerequested(n.ProviderPID); err != nil {
+		if errors.Is(err, store.ErrStateChanged) {
+			writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+				"this negotiation already received its one re-request while OFFERED")
+			return
+		}
 		slog.Error("update negotiation state", "provider_pid", n.ProviderPID, "error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
+	// An absent offer.@id is not rejected: it cannot match the offer on the
+	// table, so it takes the mismatch path below and the negotiation is
+	// terminated — the same answer a wrong identifier gets, which is the
+	// right one for a counter-offer this connector cannot satisfy.
 	if !decideReRequestMatches(n.OfferID, msg.Offer.ID) {
 		go h.pushAndStore(n, StateTerminated, terminationCallbackPath, buildTerminationMessage(n))
 	}
@@ -177,12 +176,17 @@ func (h negotiationHandler) handleEvent(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var msg struct {
-		EventType string `json:"eventType"`
+		Context   []string `json:"@context"`
+		Type      string   `json:"@type"`
+		EventType string   `json:"eventType"`
 	}
 	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
 	if err := json.NewDecoder(body).Decode(&msg); err != nil {
 		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
 			"the request body is not a JSON object in the DSP compact form")
+		return
+	}
+	if !checkEnvelope(w, msg.Context, msg.Type, ContractNegotiationEventMessageType) {
 		return
 	}
 	if msg.EventType != eventTypeAccepted {
@@ -196,9 +200,8 @@ func (h negotiationHandler) handleEvent(w http.ResponseWriter, r *http.Request) 
 	}
 
 	now := time.Now()
-	if err := h.store.SetState(n.ProviderPID, StateAccepted, now); err != nil {
-		slog.Error("update negotiation state", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
+	if err := h.store.SetState(n.ProviderPID, n.State, StateAccepted, now); err != nil {
+		writeStateUpdateError(w, n.ProviderPID, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -220,10 +223,13 @@ func (h negotiationHandler) handleVerification(w http.ResponseWriter, r *http.Re
 	}
 
 	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
-	var msg json.RawMessage
+	var msg envelope
 	if err := json.NewDecoder(body).Decode(&msg); err != nil {
 		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
 			"the request body is not a JSON object in the DSP compact form")
+		return
+	}
+	if !checkEnvelope(w, msg.Context, msg.Type, ContractAgreementVerificationMessageType) {
 		return
 	}
 	if n.State != StateAgreed {
@@ -232,9 +238,8 @@ func (h negotiationHandler) handleVerification(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if err := h.store.SetState(n.ProviderPID, StateVerified, time.Now()); err != nil {
-		slog.Error("update negotiation state", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
+	if err := h.store.SetState(n.ProviderPID, n.State, StateVerified, time.Now()); err != nil {
+		writeStateUpdateError(w, n.ProviderPID, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -254,10 +259,13 @@ func (h negotiationHandler) handleTermination(w http.ResponseWriter, r *http.Req
 	}
 
 	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
-	var msg json.RawMessage
+	var msg envelope
 	if err := json.NewDecoder(body).Decode(&msg); err != nil {
 		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
 			"the request body is not a JSON object in the DSP compact form")
+		return
+	}
+	if !checkEnvelope(w, msg.Context, msg.Type, ContractNegotiationTerminationMessageType) {
 		return
 	}
 	if n.State == StateFinalized || n.State == StateTerminated {
@@ -266,9 +274,8 @@ func (h negotiationHandler) handleTermination(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := h.store.SetState(n.ProviderPID, StateTerminated, time.Now()); err != nil {
-		slog.Error("update negotiation state", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
+	if err := h.store.SetState(n.ProviderPID, n.State, StateTerminated, time.Now()); err != nil {
+		writeStateUpdateError(w, n.ProviderPID, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -299,6 +306,48 @@ func (h negotiationHandler) lookup(w http.ResponseWriter, r *http.Request) (stor
 		return store.Negotiation{}, false, nil
 	}
 	return n, true, nil
+}
+
+// envelope is the JSON-LD envelope shared by every negotiation message, for
+// the two handlers that read nothing else from the body. Only the fields
+// this connector inspects are declared, the same reason RequestMessage
+// declares so few — DECISIONS.md section 22.5.
+type envelope struct {
+	Context []string `json:"@context"`
+	Type    string   `json:"@type"`
+}
+
+// checkEnvelope validates that envelope, writing the error response and
+// returning false if it does not hold. Every negotiation handler runs this
+// on the body it decoded: a direct field check, not a schema library, per
+// CLAUDE.md's JSON-LD convention and DECISIONS.md section 22.5.
+func checkEnvelope(w http.ResponseWriter, context []string, gotType, wantType string) bool {
+	if !slices.Contains(context, ContextURL) {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "@context must contain "+ContextURL)
+		return false
+	}
+	if gotType != wantType {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "@type must be "+wantType)
+		return false
+	}
+	return true
+}
+
+// writeStateUpdateError responds to a failed conditional state update. A
+// lost race (store.ErrStateChanged) is not a server fault: it means another
+// request moved the negotiation on between the handler's read and its write,
+// so the state precondition that handler checked no longer holds — the same
+// 400 that check would have produced had it run a moment later. Anything
+// else is a real storage failure.
+func writeStateUpdateError(w http.ResponseWriter, providerPID string, err error) {
+	if errors.Is(err, store.ErrStateChanged) {
+		slog.Warn("negotiation changed concurrently", "provider_pid", providerPID, "error", err)
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"negotiation "+providerPID+" changed while this request was being handled")
+		return
+	}
+	slog.Error("update negotiation state", "provider_pid", providerPID, "error", err)
+	w.WriteHeader(http.StatusInternalServerError)
 }
 
 // dispatch carries out a routing decision: it pushes whatever outcome
@@ -349,9 +398,30 @@ func (h negotiationHandler) delayedTerminate(n store.Negotiation) {
 }
 
 // pushAndStore pushes msg to n's callback address at the given path
-// (formatted with the consumer pid) and updates the stored state. The push
-// happens first, but its failure does not block the state update: the
-// provider is authoritative, and a consumer can always recover via GET.
+// (formatted with the consumer pid) and then updates the stored state. Push
+// failure does not block the state update: the provider is authoritative,
+// and a consumer can always recover via GET.
+//
+// The order is push-then-store, and it is load-bearing — storing first was
+// tried and the real TCK rejected it. In DSP the provider does not *become*
+// AGREED and then tell the consumer; it becomes AGREED *by* delivering the
+// agreement. CN:03-03 asserts exactly that: the consumer accepts, then
+// verifies about 100ms later without having received the agreement, and the
+// provider must reject it. Storing first makes the negotiation AGREED within
+// a millisecond of the accept, so that verification becomes legal and the
+// test fails. Pushing first keeps the negotiation in its old state for as
+// long as the delivery is still being attempted, which is the same window in
+// which the consumer has not been told — so "not AGREED yet" and "the
+// consumer does not have the agreement yet" stay the same fact, and the
+// state check in handleVerification is a real guard rather than a formality.
+// The cost is the converse: GET /negotiations/{id} can report a state one
+// transition behind a push that has already landed. §23.12.
+//
+// The state write is conditional on n.State, the state this call's decision
+// was made against (see store.SetState). If it no longer holds, another
+// request moved the negotiation on — most likely a termination that arrived
+// while this push was retrying — and this goroutine's write is stale, so it
+// is dropped rather than allowed to overwrite the newer state.
 //
 // The path uses n.ConsumerPID, not n.ProviderPID: the design spec confirms
 // {id} is the provider's own generated pid only for the synchronous calls a
@@ -374,7 +444,12 @@ func (h negotiationHandler) pushAndStore(n store.Negotiation, state, path string
 	} else {
 		pushCallback(callbackURL, msg)
 	}
-	if err := h.store.SetState(n.ProviderPID, state, time.Now()); err != nil {
+	if err := h.store.SetState(n.ProviderPID, n.State, state, time.Now()); err != nil {
+		if errors.Is(err, store.ErrStateChanged) {
+			slog.Warn("drop stale negotiation state update",
+				"provider_pid", n.ProviderPID, "want_state", state, "error", err)
+			return
+		}
 		slog.Error("update negotiation state", "provider_pid", n.ProviderPID, "error", err)
 	}
 }

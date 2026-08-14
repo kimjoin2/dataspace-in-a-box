@@ -168,6 +168,14 @@ func TestExemptedFailureDoesNotFailTheGate(t *testing.T) {
 	if len(report.Failed) != 0 {
 		t.Errorf("Failed = %v, want the exempted result kept out of it", report.Failed)
 	}
+	// An exempted test ran, so it counts toward the suite's expected total —
+	// but it did not pass, and the success message must not say it did.
+	if !strings.Contains(report.String(), "1 required tests passed") {
+		t.Errorf("report = %q, want it to count only the 1 test that actually passed", report.String())
+	}
+	if !strings.Contains(report.String(), "1 known exemption(s)") {
+		t.Errorf("report = %q, want it to name the exemption", report.String())
+	}
 }
 
 func TestExemptedTestUnexpectedlyPassingFailsTheGate(t *testing.T) {

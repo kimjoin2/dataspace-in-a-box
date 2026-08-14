@@ -462,18 +462,30 @@ cover, and a missed field is a silent gap rather than a schema failure.
 
 ## 23. Contract negotiation (provider role)
 
-**Decision.** Ten decisions taken while implementing the contract
+**Decision.** Twelve decisions taken while implementing the contract
 negotiation protocol's provider role.
 
-**23.1 No migration framework — a single idempotent `CREATE TABLE IF NOT
-EXISTS`, run once at startup.** §8 named "migration approach for the SQLite
-schema" as deferred until first needed; the `negotiations` table is that
-moment. A second schema change is what decides whether a real migration tool
-earns its place — one table does not.
+**23.1 No migration framework — an idempotent `CREATE TABLE IF NOT EXISTS`
+plus one hand-written, self-checking `ALTER TABLE` per added column, both run
+at startup.** §8 named "migration approach for the SQLite schema" as deferred
+until first needed; the `negotiations` table is that moment. A second schema
+change is what decides whether a real migration tool earns its place — one
+table does not. The check is not optional decoration: `CREATE TABLE IF NOT
+EXISTS` is a *no-op* against a table that already exists, so editing the
+schema literal changes nothing for a database file an earlier build created —
+it opens without complaint and then fails on the first query naming the new
+column. `store.migrate` therefore asks `pragma_table_info('negotiations')`
+whether `rerequested` (§23.9) is there and runs
+`ALTER TABLE negotiations ADD COLUMN rerequested INTEGER NOT NULL DEFAULT 0`
+when it is not. On a fresh database the `CREATE` already made the column, the
+check finds it, and nothing runs.
 
-*Trade-off accepted.* No down-migrations, no versioned schema history. Adding
-a column later means writing an `ALTER TABLE ... ADD COLUMN` by hand, once —
-already done once, for `rerequested` (§23.9).
+*Trade-off accepted.* No down-migrations, no versioned schema history, and
+nothing enforces the pairing: a future column added to the schema literal
+without its own check-and-add step here is a bug that a fresh database — every
+test, every new install — cannot reproduce. Only an upgrade of an existing
+file surfaces it, which is exactly why `store_test.go` builds a
+pre-`rerequested` database by hand and opens it.
 
 **23.2 `modernc.org/sqlite` is the SQLite driver.** Pure Go, no CGO. §7
 commits to a single static binary and §16 to `goreleaser` cross-compiling
@@ -633,3 +645,67 @@ to isolate. Corrected to `20`.
 choice with a cost on the other side. Recorded here because reintroducing a
 large value by copying an upstream sample number without checking its unit
 is an easy mistake to make twice.
+
+**23.11 Negotiation endpoints stay unauthenticated in v1, and the provider
+pid is accepted as the only thing protecting a negotiation.** §10's
+connector-to-connector JWT is specified but not yet enforced on the DSP
+listener, so every endpoint this milestone adds is open, exactly as the
+catalog endpoints are. That posture was settled for a *read-only* protocol.
+Negotiation is not read-only: it writes persistent state and makes outbound
+requests, so carrying the posture over is an escalation, and it is recorded
+here rather than left implied. Two specific consequences follow. First, the
+provider pid is a de-facto capability token — no handler checks a message's
+`consumerPid`/`providerPid` against the stored negotiation, so anyone who
+learns a pid can terminate or finalize that negotiation. It is a 128-bit
+`crypto/rand` value (§23.3) that only ever travels between the two parties,
+which is what makes this defensible, but it is a bearer secret and should be
+named as one. Second, `POST /negotiations/request` is an unauthenticated
+amplifier: one anonymous request creates a row, a goroutine, and up to ten
+outbound POSTs to an address the caller chose — two pushes for a mismatched,
+expired dataset, five §23.7 attempts each. §23.6 covers where those POSTs may
+point; it does not cover how many of them one request buys.
+
+*Trade-off accepted.* Adding a pid cross-check was considered and deliberately
+not done in this milestone: this branch has a hard-won TCK-confirmed pass, and
+which pid the TCK puts in which field on each message has not been verified
+against such a check — spending that verified state on a defense nobody asked
+for is the wrong trade at this milestone. Both consequences are future work,
+and both are properly closed by enforcing §10's connector-to-connector JWT on
+this listener, not by patching the handlers one field at a time.
+
+**23.12 State transitions are compare-and-swap, but the push still happens
+*before* the state is written, not after.** Two halves, and the second one is
+the surprising one.
+
+The compare-and-swap: `store.SetState` takes the state the caller believed
+the negotiation was in and updates only while that still holds, and
+`store.SetRerequested` is conditional on the flag still being clear. Without
+it, §23.8's fire-and-forget goroutines can write a state decided against a
+read taken seconds earlier — a verification's `FINALIZED` write, spawned
+before a termination arrived and still working through the §23.7 retry
+backoff, lands after it and overwrites `TERMINATED`, on `CN:03-01`'s exact
+boundary. With it, the stale write matches no row and is dropped.
+
+The ordering: writing the state first and pushing second looks strictly
+better — it would stop `GET /negotiations/{id}` from reporting a state older
+than one already announced — and it fails the TCK. `CN:03-03` regressed the
+moment it was tried. Its consumer accepts, then verifies about 100ms later
+*without having received the agreement*, and the provider must reject that.
+Storing first makes the negotiation `AGREED` a millisecond after the accept,
+so the illegal verification becomes legal. Pushing first holds the old state
+for exactly as long as delivery is still being attempted, which keeps "not
+`AGREED` yet" and "the consumer does not have the agreement yet" the same
+fact — and that identity is what makes `handleVerification`'s state check a
+real guard. In DSP the provider does not become `AGREED` and then announce
+it; it becomes `AGREED` by delivering the agreement.
+
+*Trade-off accepted.* `GET /negotiations/{id}` can report a state one
+transition behind a push that has already landed, for the length of the push.
+That is the staleness the reordering would have removed, and it is the price
+of the guard above. A lost compare-and-swap is also silent to the
+counterparty: the push already went out, and only the write is dropped, so a
+negotiation can be told `FINALIZED` and then correctly recorded `TERMINATED`
+by the request that overtook it — unavoidable in an asynchronous protocol,
+and the provider's record ends up right. On the synchronous handlers a lost
+race becomes a `400`, the same rejection the state precondition would have
+produced had it been checked a moment later.

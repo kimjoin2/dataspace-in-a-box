@@ -14,12 +14,15 @@ import (
 
 // callbackHTTPClient is used for every callback push. A finite timeout keeps
 // a consumer that accepts the TCP connection and never responds from
-// blocking the caller indefinitely — three of the four dispatch paths in
-// negotiation_handler.go call pushCallback inline, not from a goroutine, so
-// an unbounded call would stall the HTTP handler goroutine that made it.
-// Redirects are disabled: a DSP callback endpoint has no legitimate reason
-// to redirect, and following one would let a URL that passed
-// validateCallbackURL hop to an address that check never saw.
+// blocking the caller indefinitely. Pushes run in their own goroutines
+// (DECISIONS.md section 23.8), so nothing waits on this — but a goroutine
+// that never returns is never collected either, and one per push against an
+// unauthenticated endpoint is a leak with a public trigger. The timeout is
+// what bounds that lifetime; multiplied by the retry schedule below, it is
+// also what bounds the whole push. Redirects are disabled: a DSP callback
+// endpoint has no legitimate reason to redirect, and following one would let
+// a URL that passed validateCallbackURL hop to an address that check never
+// saw.
 var callbackHTTPClient = &http.Client{
 	Timeout: 10 * time.Second,
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -28,13 +31,13 @@ var callbackHTTPClient = &http.Client{
 }
 
 // callbackHostnameLookupTimeout bounds validateCallbackURL's DNS resolution
-// step. callbackHTTPClient's Timeout above does not cover this earlier
-// step at all — it only starts once the POST itself begins — so without a
+// step. callbackHTTPClient's Timeout above does not cover this earlier step
+// at all — it only starts once the POST itself begins — so without a
 // separate bound, a callbackAddress hostname whose authoritative nameserver
-// is slow or unresponsive could stall pushAndStore (called inline, not from
-// a goroutine, by four of the unauthenticated dispatch paths) for as long
-// as the resolver is willing to wait. A var, not a const, so a test can
-// force an immediate deadline without depending on a real slow resolver.
+// is slow or unresponsive would hold a push goroutine open for as long as
+// the resolver is willing to wait, on a hostname an unauthenticated caller
+// chose. A var, not a const, so a test can force an immediate deadline
+// without depending on a real slow resolver.
 var callbackHostnameLookupTimeout = 5 * time.Second
 
 // callbackRetryBackoffs is how long pushCallback waits between attempts
@@ -47,14 +50,20 @@ var callbackHostnameLookupTimeout = 5 * time.Second
 // registration as a stage that runs only once the *previous* stage's
 // synchronous call returns — sequential, on one thread, not parallel with
 // this connector's near-instant push — confirmed from the TCK's own source
-// (fetched per CLAUDE.md's "official TCK" allowed-input rule). What is NOT
-// yet confirmed is that retrying for any bounded window actually closes
-// that race: a real run extending this schedule to 10 attempts spanning
-// ~54s still saw every async push (offer, agreement, termination) rejected
-// 404 on every single attempt, for every CN test that needs one — see
-// DECISIONS.md §23.7 for the open question this leaves and why the
-// schedule was left here rather than removed outright. A var, not a
-// const, so tests can shorten it.
+// (fetched per CLAUDE.md's "official TCK" allowed-input rule). A real
+// CN:02-06 run needed 2 of these 5 attempts for a push that raced that
+// window, which is the evidence the schedule is sized against.
+//
+// An intermediate run once widened this to 10 attempts over ~54s and still
+// saw every async push rejected 404 every time, which looked like proof the
+// retry idea was useless. It was not: that failure had a different,
+// structural cause — pushes were running inline in the handler goroutine, so
+// the synchronous response the TCK needed before it could register a
+// listener was itself stuck behind the push (DECISIONS.md §23.8). With that
+// fixed, the race shrank back to the occasional single retry this schedule
+// was originally sized for. What remains genuinely unproven is only the
+// margin: whether 5 attempts is enough for network conditions other than
+// this project's own (§23.7). A var, not a const, so tests can shorten it.
 var callbackRetryBackoffs = []time.Duration{300 * time.Millisecond, 700 * time.Millisecond, 1500 * time.Millisecond, 3 * time.Second}
 
 // pushCallback sends v as a JSON POST to url, retrying on failure per

@@ -3,6 +3,7 @@ package dsp
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -344,7 +345,7 @@ func TestHandleEvent_Accept_FromOffered_PushesAgreement(t *testing.T) {
 	}
 
 	rr := postJSONWithID(t, h.handleEvent, n.ProviderPID, map[string]any{
-		"@context": ContextURL, "@type": ContractNegotiationEventMessageType,
+		"@context": []string{ContextURL}, "@type": ContractNegotiationEventMessageType,
 		"providerPid": n.ProviderPID, "consumerPid": n.ConsumerPID, "eventType": "ACCEPTED",
 	})
 	if rr.Code != http.StatusOK {
@@ -367,7 +368,7 @@ func TestHandleVerification_FromOffered_Returns400(t *testing.T) {
 	}
 
 	rr := postJSONWithID(t, h.handleVerification, n.ProviderPID, map[string]any{
-		"@context": ContextURL, "@type": ContractAgreementVerificationMessageType,
+		"@context": []string{ContextURL}, "@type": ContractAgreementVerificationMessageType,
 		"providerPid": n.ProviderPID, "consumerPid": n.ConsumerPID,
 	})
 	if rr.Code != http.StatusBadRequest {
@@ -389,7 +390,7 @@ func TestHandleVerification_FromAccepted_Returns400(t *testing.T) {
 	}
 
 	rr := postJSONWithID(t, h.handleVerification, n.ProviderPID, map[string]any{
-		"@context": ContextURL, "@type": ContractAgreementVerificationMessageType,
+		"@context": []string{ContextURL}, "@type": ContractAgreementVerificationMessageType,
 		"providerPid": n.ProviderPID, "consumerPid": n.ConsumerPID,
 	})
 	if rr.Code != http.StatusBadRequest {
@@ -412,7 +413,7 @@ func TestHandleVerification_FromAgreed_FinalizesAndPushesEvent(t *testing.T) {
 	}
 
 	rr := postJSONWithID(t, h.handleVerification, n.ProviderPID, map[string]any{
-		"@context": ContextURL, "@type": ContractAgreementVerificationMessageType,
+		"@context": []string{ContextURL}, "@type": ContractAgreementVerificationMessageType,
 		"providerPid": n.ProviderPID, "consumerPid": n.ConsumerPID,
 	})
 	if rr.Code != http.StatusOK {
@@ -440,7 +441,7 @@ func TestHandleTermination_FromFinalized_Returns400(t *testing.T) {
 	}
 
 	rr := postJSONWithID(t, h.handleTermination, n.ProviderPID, map[string]any{
-		"@context": ContextURL, "@type": ContractNegotiationTerminationMessageType,
+		"@context": []string{ContextURL}, "@type": ContractNegotiationTerminationMessageType,
 		"providerPid": n.ProviderPID, "consumerPid": n.ConsumerPID, "code": "1",
 	})
 	if rr.Code != http.StatusBadRequest {
@@ -461,7 +462,7 @@ func TestHandleTermination_FromOffered_Terminates(t *testing.T) {
 	}
 
 	rr := postJSONWithID(t, h.handleTermination, n.ProviderPID, map[string]any{
-		"@context": ContextURL, "@type": ContractNegotiationTerminationMessageType,
+		"@context": []string{ContextURL}, "@type": ContractNegotiationTerminationMessageType,
 		"providerPid": n.ProviderPID, "consumerPid": n.ConsumerPID, "code": "1",
 	})
 	if rr.Code != http.StatusOK {
@@ -509,6 +510,253 @@ func TestHandleGetNegotiation_Missing_Returns404(t *testing.T) {
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rr.Code)
 	}
+}
+
+// TestNegotiationHandlersValidateTheEnvelope covers the @context/@type check
+// on every handler that takes a message body. Each case is posted from a
+// state the message is legal in, and with every field but the envelope
+// correct, so the only thing a 400 can be about is the envelope itself.
+// Structural validation is by direct field check, not a schema library —
+// CLAUDE.md's JSON-LD convention and DECISIONS.md section 22.5.
+func TestNegotiationHandlersValidateTheEnvelope(t *testing.T) {
+	handlers := []struct {
+		name string
+		// state the negotiation must be in for this message to be legal.
+		state string
+		// msgType is the @type a valid message of this kind carries.
+		msgType string
+		pick    func(negotiationHandler) http.HandlerFunc
+		// extra holds the non-envelope fields the handler also requires.
+		extra map[string]any
+		// wantState, when set, is the state a valid message leaves the
+		// negotiation in once its dispatch goroutine has run. The test waits
+		// for it, so the goroutine is finished before the store closes
+		// underneath it.
+		wantState string
+	}{
+		{
+			name: "event", state: StateOffered, msgType: ContractNegotiationEventMessageType,
+			pick:  func(h negotiationHandler) http.HandlerFunc { return h.handleEvent },
+			extra: map[string]any{"eventType": "ACCEPTED"}, wantState: StateAgreed,
+		},
+		{
+			name: "verification", state: StateAgreed, msgType: ContractAgreementVerificationMessageType,
+			pick:      func(h negotiationHandler) http.HandlerFunc { return h.handleVerification },
+			wantState: StateFinalized,
+		},
+		{
+			name: "termination", state: StateOffered, msgType: ContractNegotiationTerminationMessageType,
+			pick:  func(h negotiationHandler) http.HandlerFunc { return h.handleTermination },
+			extra: map[string]any{"code": "1"},
+		},
+		{
+			name: "re-request", state: StateOffered, msgType: ContractRequestMessageType,
+			pick:  func(h negotiationHandler) http.HandlerFunc { return h.handleReRequest },
+			extra: map[string]any{"offer": map[string]any{"@id": "urn:dataset:a#offer", "target": "urn:dataset:a"}},
+		},
+	}
+
+	cases := []struct {
+		name string
+		// body builds the request body from a valid one.
+		body func(valid map[string]any) any
+		want int
+	}{
+		{"valid envelope", func(valid map[string]any) any { return valid }, http.StatusOK},
+		{"wrong @type", func(valid map[string]any) any {
+			valid["@type"] = "SomeOtherMessage"
+			return valid
+		}, http.StatusBadRequest},
+		{"missing @type", func(valid map[string]any) any {
+			delete(valid, "@type")
+			return valid
+		}, http.StatusBadRequest},
+		{"missing @context", func(valid map[string]any) any {
+			delete(valid, "@context")
+			return valid
+		}, http.StatusBadRequest},
+		{"@context without the DSP context", func(valid map[string]any) any {
+			valid["@context"] = []string{"https://example.org/some-other-context.jsonld"}
+			return valid
+		}, http.StatusBadRequest},
+		{"body is not an object", func(map[string]any) any { return 5 }, http.StatusBadRequest},
+	}
+
+	for _, hc := range handlers {
+		for _, tc := range cases {
+			t.Run(hc.name+"/"+tc.name, func(t *testing.T) {
+				fc := newFakeCallback()
+				defer fc.srv.Close()
+				h, st := newTestHandler(t, negotiationTestConfig("https://provider.example.org",
+					config.Dataset{ID: "urn:dataset:a"}))
+				n := store.Negotiation{
+					ProviderPID: "urn:uuid:provider-1", ConsumerPID: "urn:uuid:consumer-1",
+					State: hc.state, DatasetID: "urn:dataset:a", OfferID: "urn:dataset:a" + offerIDSuffix,
+					CallbackAddress: fc.srv.URL,
+					CreatedAt:       time.Now(), UpdatedAt: time.Now(),
+				}
+				if err := st.Create(n); err != nil {
+					t.Fatalf("store.Create: %v", err)
+				}
+
+				valid := map[string]any{"@context": []string{ContextURL}, "@type": hc.msgType}
+				for k, v := range hc.extra {
+					valid[k] = v
+				}
+				rr := postJSONWithID(t, hc.pick(h), n.ProviderPID, tc.body(valid))
+				if rr.Code != tc.want {
+					t.Errorf("status = %d, want %d; body: %s", rr.Code, tc.want, rr.Body)
+				}
+				if tc.want == http.StatusOK && hc.wantState != "" {
+					waitForState(t, st, n.ProviderPID, hc.wantState)
+				}
+			})
+		}
+	}
+}
+
+// TestSynchronousResponseDoesNotWaitForTheCallbackPush is the regression test
+// for DECISIONS.md section 23.8, the bug that made the real TCK time out:
+// net/http holds a small response body in its buffer and puts nothing on the
+// wire until the handler function returns, so a handler that writes its
+// response and then pushes inline does not actually finish responding until
+// the push does. Re-inlining dispatch — dropping the `go` — brings that back.
+//
+// Nothing built on httptest.NewRecorder can catch it: a recorder is a
+// struct, and writing to one says nothing about when bytes reach a client.
+// This test therefore runs the real router behind a real server and times a
+// real client, against a callback endpoint slow enough that a handler
+// waiting for it could not possibly look fast.
+func TestSynchronousResponseDoesNotWaitForTheCallbackPush(t *testing.T) {
+	const callbackDelay = 500 * time.Millisecond
+	const responseBudget = 100 * time.Millisecond
+
+	pushed := make(chan struct{}, 1)
+	slowCallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(callbackDelay)
+		w.WriteHeader(http.StatusOK)
+		select {
+		case pushed <- struct{}{}:
+		default:
+		}
+	}))
+	defer slowCallback.Close()
+
+	// newTestHandler also opens the store and disables the SSRF filter (the
+	// callback server is on loopback), both of which this test needs. Its
+	// handler value is unused: this test goes in through the real router.
+	cfg := negotiationTestConfig("https://provider.example.org", config.Dataset{ID: "urn:dataset:a"})
+	_, st := newTestHandler(t, cfg)
+	srv := httptest.NewServer(NewRouter(cfg, st))
+	defer srv.Close()
+
+	// A mismatched offer for a valid dataset: one offer push, no follow-up
+	// termination, so the only thing between the request and its response is
+	// the slow callback.
+	b, err := json.Marshal(requestMessageBody("urn:uuid:consumer-1", "urn:dataset:a#some-other-offer",
+		"urn:dataset:a", slowCallback.URL))
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+
+	start := time.Now()
+	resp, err := http.Post(srv.URL+VersionPath+"/negotiations/request", "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("POST /negotiations/request: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body: %s", resp.StatusCode, body)
+	}
+	if elapsed > responseBudget {
+		t.Errorf("the synchronous response took %s, want under %s: it is waiting for the %s callback push, "+
+			"which means dispatch is running inline instead of in a goroutine", elapsed, responseBudget, callbackDelay)
+	}
+
+	// And the push does still happen — otherwise a connector that never
+	// pushed at all would pass the assertion above.
+	select {
+	case <-pushed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback push never arrived")
+	}
+}
+
+// TestVerificationIsRejectedWhileTheAgreementIsStillInFlight is CN:03-03 in
+// miniature, and it exists to stop pushAndStore's push-then-store order from
+// being "cleaned up" into store-then-push. That reordering looks like an
+// improvement — GET would stop trailing a push that already landed — and it
+// fails the real TCK, because it makes the negotiation AGREED a millisecond
+// after the accept, while the consumer still has no agreement. The state
+// check in handleVerification is only a real guard as long as "not AGREED
+// yet" means "the consumer has not been told yet". See DECISIONS.md
+// section 23.12.
+func TestVerificationIsRejectedWhileTheAgreementIsStillInFlight(t *testing.T) {
+	// The callback signals that the push has started and only then blocks, so
+	// the verification below happens at a known point — after the push began,
+	// long before it finished — rather than at whatever point a sleep happens
+	// to land on.
+	const callbackDelay = 500 * time.Millisecond
+	pushStarted := make(chan struct{}, 1)
+
+	slowCallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case pushStarted <- struct{}{}:
+		default:
+		}
+		time.Sleep(callbackDelay)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slowCallback.Close()
+
+	h, st := newTestHandler(t, negotiationTestConfig("https://provider.example.org",
+		config.Dataset{ID: "urn:dataset:a"}))
+	n := store.Negotiation{
+		ProviderPID: "urn:uuid:provider-1", ConsumerPID: "urn:uuid:consumer-1",
+		State: StateOffered, DatasetID: "urn:dataset:a", OfferID: "urn:dataset:a" + offerIDSuffix,
+		CallbackAddress: slowCallback.URL,
+		CreatedAt:       time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := st.Create(n); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	accept := postJSONWithID(t, h.handleEvent, n.ProviderPID, map[string]any{
+		"@context": []string{ContextURL}, "@type": ContractNegotiationEventMessageType,
+		"providerPid": n.ProviderPID, "consumerPid": n.ConsumerPID, "eventType": "ACCEPTED",
+	})
+	if accept.Code != http.StatusOK {
+		t.Fatalf("accept status = %d, want 200; body: %s", accept.Code, accept.Body)
+	}
+
+	select {
+	case <-pushStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the agreement push never started")
+	}
+
+	// The agreement push is in flight and will not be delivered for
+	// callbackDelay yet. A consumer that verifies during that window is
+	// verifying an agreement it cannot have. Store-then-push would already
+	// have recorded AGREED here and accepted this.
+	verify := postJSONWithID(t, h.handleVerification, n.ProviderPID, map[string]any{
+		"@context": []string{ContextURL}, "@type": ContractAgreementVerificationMessageType,
+		"providerPid": n.ProviderPID, "consumerPid": n.ConsumerPID,
+	})
+	if verify.Code != http.StatusBadRequest {
+		t.Errorf("verification during agreement delivery: status = %d, want 400; body: %s",
+			verify.Code, verify.Body)
+	}
+
+	// Once delivery finishes the negotiation does reach AGREED, so the
+	// rejection above is about timing, not a stuck state machine.
+	waitForState(t, st, n.ProviderPID, StateAgreed)
 }
 
 // postJSONWithID posts body to a handler that reads r.PathValue("id"), with

@@ -32,7 +32,16 @@ func TestPushCallbackSendsJSON(t *testing.T) {
 	}
 }
 
+// TestPushCallbackToUnreachableURLDoesNotPanic exercises the path where every
+// attempt fails. It shortens callbackRetryBackoffs — what that var's own doc
+// comment says tests may do — because the real schedule would spend 5.5s
+// sleeping here, and what is under test is that exhausting the retries
+// returns quietly, not how long the waits are.
 func TestPushCallbackToUnreachableURLDoesNotPanic(t *testing.T) {
+	orig := callbackRetryBackoffs
+	callbackRetryBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { callbackRetryBackoffs = orig }()
+
 	pushCallback("http://127.0.0.1:1/unreachable", map[string]string{"hello": "world"})
 }
 
