@@ -13,13 +13,26 @@ dsp_addr: 0.0.0.0:8080
 mgmt_addr: 0.0.0.0:8081
 
 # Negotiation state lives here. The harness container gets a fresh one on
-# every run (see the compose volume).
-data_dir: /data
+# every run: no compose volume is mounted for it, so it dies with the
+# container. /home/nonroot is the one path in the distroless nonroot base
+# image (see Dockerfile) that its uid 65532 process can create a subdirectory
+# under; os.MkdirAll against /data itself fails with permission denied,
+# since "/" is owned by root.
+data_dir: /home/nonroot/data
 
-# The participant and the datasets the CAT suite asks for. Two identifiers
-# rather than one shared identifier, so that CAT:01-01 proves the catalog lists
-# datasets and CAT:01-02 proves lookup selects among them.
+# The participant and the datasets the CAT and CN suites ask for.
 participant_id: urn:participant:dsbox-test
 datasets:
   - id: urn:dataset:tck-catalog
   - id: urn:dataset:tck-request
+  # CN: a plain, unrestricted dataset. Used wherever a test needs a
+  # *recognized* dataset with a mismatched offer id (CN_01_01/02/03,
+  # CN_02_02/04).
+  - id: urn:dataset:cn-mismatch
+  # CN: the dataset CN_01_04 requests, with its offer id matching exactly —
+  # the immediate-AGREED path (CN_01_04, CN_02_03).
+  - id: urn:dataset:cn-match
+  # CN: otherwise identical to the two above, but already past its
+  # validity_until — the expired-offer paths (CN_02_01, CN_02_05, CN_02_06).
+  - id: urn:dataset:cn-expired
+    validity_until: 2020-01-01T00:00:00Z

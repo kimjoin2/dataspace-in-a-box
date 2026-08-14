@@ -37,11 +37,32 @@ var callbackHTTPClient = &http.Client{
 // force an immediate deadline without depending on a real slow resolver.
 var callbackHostnameLookupTimeout = 5 * time.Second
 
-// pushCallback sends v as a JSON POST to url, best-effort: a failure is
-// logged and never returned to the caller. The provider is authoritative
-// over negotiation state in this protocol, so a dropped push does not
-// corrupt anything a consumer cannot recover from GET /negotiations/{id};
-// no retry queue is built for v1.
+// callbackRetryBackoffs is how long pushCallback waits between attempts
+// after a failed push, up to len(callbackRetryBackoffs)+1 attempts total.
+// This is not a retry queue — nothing persists across a restart, and a
+// still-failing push after the last backoff is dropped exactly as it always
+// was.
+//
+// It exists because the real TCK's pipeline queues async-listener
+// registration as a stage that runs only once the *previous* stage's
+// synchronous call returns — sequential, on one thread, not parallel with
+// this connector's near-instant push — confirmed from the TCK's own source
+// (fetched per CLAUDE.md's "official TCK" allowed-input rule). What is NOT
+// yet confirmed is that retrying for any bounded window actually closes
+// that race: a real run extending this schedule to 10 attempts spanning
+// ~54s still saw every async push (offer, agreement, termination) rejected
+// 404 on every single attempt, for every CN test that needs one — see
+// DECISIONS.md §23.7 for the open question this leaves and why the
+// schedule was left here rather than removed outright. A var, not a
+// const, so tests can shorten it.
+var callbackRetryBackoffs = []time.Duration{300 * time.Millisecond, 700 * time.Millisecond, 1500 * time.Millisecond, 3 * time.Second}
+
+// pushCallback sends v as a JSON POST to url, retrying on failure per
+// callbackRetryBackoffs. Still best-effort overall: if every attempt fails,
+// it is logged and never returned to the caller. The provider is
+// authoritative over negotiation state in this protocol, so a dropped push
+// does not corrupt anything a consumer cannot recover from
+// GET /negotiations/{id}.
 //
 // pushCallback itself does not filter url — callers must run it through
 // validateCallbackURL first (negotiation_handler.go's pushAndStore does).
@@ -54,27 +75,47 @@ func pushCallback(url string, v any) {
 		slog.Error("marshal callback push", "url", url, "error", err)
 		return
 	}
-	resp, err := callbackHTTPClient.Post(url, "application/json", bytes.NewReader(body))
-	if err != nil {
-		slog.Error("push callback", "url", url, "error", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		slog.Error("callback endpoint rejected push", "url", url, "status", resp.StatusCode)
+	for attempt := 0; ; attempt++ {
+		if attemptPush(url, body, attempt) {
+			return
+		}
+		if attempt >= len(callbackRetryBackoffs) {
+			return
+		}
+		time.Sleep(callbackRetryBackoffs[attempt])
 	}
 }
 
+// attemptPush makes one POST attempt and reports whether it succeeded.
+func attemptPush(url string, body []byte, attempt int) bool {
+	resp, err := callbackHTTPClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		slog.Error("push callback", "url", url, "attempt", attempt, "error", err)
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		slog.Error("callback endpoint rejected push", "url", url, "attempt", attempt, "status", resp.StatusCode)
+		return false
+	}
+	return true
+}
+
 // validateCallbackURL rejects a callback address that could turn this
-// connector's own process into a request proxy against itself or its
-// private network. POST /negotiations/request has no authentication in v1
-// (matching the catalog protocol's posture), so an unauthenticated caller
-// fully controls the callbackAddress this function's result is used to
-// gate — without it, "callbackAddress": "http://127.0.0.1:8081/health"
-// would let anyone reach the management API, which binds to localhost
-// specifically so a firewall mistake can't expose it (DECISIONS.md §12).
-// pushCallback runs inside this same process, so that boundary means
-// nothing to it unless this check stops it first.
+// connector's own process into a request proxy against itself. POST
+// /negotiations/request has no authentication in v1 (matching the catalog
+// protocol's posture), so an unauthenticated caller fully controls the
+// callbackAddress this function's result is used to gate — without it,
+// "callbackAddress": "http://127.0.0.1:8081/health" would let anyone reach
+// the management API, which binds to localhost specifically so a firewall
+// mistake can't expose it (DECISIONS.md §12). pushCallback runs inside this
+// same process, so that boundary means nothing to it unless this check
+// stops it first.
+//
+// It does not reject RFC1918/ULA private-range addresses: DECISIONS.md
+// §23.6 records why that check was tried and then deliberately narrowed —
+// the deployment network a private address might reach is the operator's
+// own, not this process's.
 //
 // This resolves the host once, at validation time, and does not re-check
 // the address actually dialed — it does not defend against DNS rebinding
@@ -118,10 +159,12 @@ func validateCallbackURL(raw string) error {
 	return nil
 }
 
-// isDisallowedCallbackIP reports whether ip is loopback, an RFC1918/ULA
-// private range, link-local, or unspecified — none of which a DSP
-// consumer's public callback endpoint should ever resolve to.
+// isDisallowedCallbackIP reports whether ip is loopback, link-local, or
+// unspecified — addresses that only ever reach this connector's own host,
+// regardless of what network it is deployed on. RFC1918/ULA private-range
+// addresses are deliberately not included — see validateCallbackURL's doc
+// comment and DECISIONS.md §23.6.
 func isDisallowedCallbackIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }

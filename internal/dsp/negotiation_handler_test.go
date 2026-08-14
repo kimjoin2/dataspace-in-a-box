@@ -57,6 +57,27 @@ func (fc *fakeCallback) wait(t *testing.T, pathSuffix string) map[string]any {
 	return nil
 }
 
+// waitForState polls until providerPID's stored state equals want, or fails
+// the test after one second. dispatch and pushAndStore run in a goroutine
+// (`go h.dispatch(...)`, `go h.pushAndStore(...)`) so that the HTTP handler
+// can return and its own synchronous response go out on the wire before the
+// push is attempted — see dispatch's doc comment. That means observing the
+// push via fc.wait does not guarantee the state write pushAndStore makes
+// afterward has happened yet; callers that need both must wait for both.
+func waitForState(t *testing.T, st *store.Store, providerPID, want string) store.Negotiation {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		n, ok, err := st.Get(providerPID)
+		if err == nil && ok && n.State == want {
+			return n
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("stored state for %q did not reach %q within the deadline", providerPID, want)
+	return store.Negotiation{}
+}
+
 func (fc *fakeCallback) neverReceives(t *testing.T, pathSuffix string, within time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -166,10 +187,7 @@ func TestHandleContractRequest_MatchedValid_PushesAgreement(t *testing.T) {
 		t.Errorf("pushed providerPid = %v, want %v", push["providerPid"], doc.ProviderPID)
 	}
 
-	n, _, _ := st.Get(doc.ProviderPID)
-	if n.State != StateAgreed {
-		t.Errorf("stored state = %q, want %q", n.State, StateAgreed)
-	}
+	waitForState(t, st, doc.ProviderPID, StateAgreed)
 }
 
 func TestHandleContractRequest_MatchedExpired_PushesTermination(t *testing.T) {
@@ -187,10 +205,7 @@ func TestHandleContractRequest_MatchedExpired_PushesTermination(t *testing.T) {
 	fc.neverReceives(t, "/offers", 50*time.Millisecond)
 	fc.neverReceives(t, "/agreement", 50*time.Millisecond)
 
-	n, _, _ := st.Get(doc.ProviderPID)
-	if n.State != StateTerminated {
-		t.Errorf("stored state = %q, want %q", n.State, StateTerminated)
-	}
+	waitForState(t, st, doc.ProviderPID, StateTerminated)
 }
 
 func TestHandleContractRequest_MismatchedValid_PushesOffer(t *testing.T) {
@@ -209,10 +224,7 @@ func TestHandleContractRequest_MismatchedValid_PushesOffer(t *testing.T) {
 		t.Errorf("pushed offer @id = %v, want the connector's canonical offer", offer["@id"])
 	}
 
-	n, _, _ := st.Get(doc.ProviderPID)
-	if n.State != StateOffered {
-		t.Errorf("stored state = %q, want %q", n.State, StateOffered)
-	}
+	waitForState(t, st, doc.ProviderPID, StateOffered)
 }
 
 func TestHandleContractRequest_MismatchedExpired_OffersThenTerminates(t *testing.T) {
@@ -233,18 +245,47 @@ func TestHandleContractRequest_MismatchedExpired_OffersThenTerminates(t *testing
 	fc.wait(t, "/offers")
 	fc.wait(t, "/termination")
 
-	n, _, _ := st.Get(doc.ProviderPID)
-	if n.State != StateTerminated {
-		t.Errorf("stored state = %q, want %q", n.State, StateTerminated)
-	}
+	waitForState(t, st, doc.ProviderPID, StateTerminated)
 }
 
-func TestHandleReRequest_SameOffer_Returns400(t *testing.T) {
+func TestHandleReRequest_SameOffer_FirstTime_Returns200AndStaysOffered(t *testing.T) {
 	h, st := newTestHandler(t, negotiationTestConfig("https://provider.example.org", config.Dataset{ID: "urn:dataset:a"}))
 	n := store.Negotiation{
 		ProviderPID: "urn:uuid:provider-1", ConsumerPID: "urn:uuid:consumer-1",
 		State: StateOffered, DatasetID: "urn:dataset:a", OfferID: "urn:dataset:a#requested-offer",
 		CallbackAddress: "https://consumer.example.org/callback",
+		CreatedAt:       time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := st.Create(n); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	rr := postJSONWithID(t, h.handleReRequest, n.ProviderPID,
+		map[string]any{
+			"@context": []string{ContextURL}, "@type": ContractRequestMessageType,
+			"providerPid": n.ProviderPID, "consumerPid": n.ConsumerPID,
+			"offer": map[string]any{"@id": n.OfferID, "target": n.DatasetID},
+		})
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200; body: %s", rr.Code, rr.Body)
+	}
+
+	got, _, _ := st.Get(n.ProviderPID)
+	if got.State != StateOffered {
+		t.Errorf("stored state = %q, want %q (a matching re-request makes no state change)", got.State, StateOffered)
+	}
+	if !got.Rerequested {
+		t.Error("Rerequested = false, want true after the one allowed re-request")
+	}
+}
+
+func TestHandleReRequest_Second_Returns400(t *testing.T) {
+	h, st := newTestHandler(t, negotiationTestConfig("https://provider.example.org", config.Dataset{ID: "urn:dataset:a"}))
+	n := store.Negotiation{
+		ProviderPID: "urn:uuid:provider-1", ConsumerPID: "urn:uuid:consumer-1",
+		State: StateOffered, DatasetID: "urn:dataset:a", OfferID: "urn:dataset:a#requested-offer",
+		CallbackAddress: "https://consumer.example.org/callback",
+		Rerequested:     true,
 		CreatedAt:       time.Now(), UpdatedAt: time.Now(),
 	}
 	if err := st.Create(n); err != nil {
@@ -382,10 +423,7 @@ func TestHandleVerification_FromAgreed_FinalizesAndPushesEvent(t *testing.T) {
 		t.Errorf("pushed eventType = %v, want FINALIZED", push["eventType"])
 	}
 
-	got, _, _ := st.Get(n.ProviderPID)
-	if got.State != StateFinalized {
-		t.Errorf("stored state = %q, want %q", got.State, StateFinalized)
-	}
+	waitForState(t, st, n.ProviderPID, StateFinalized)
 }
 
 func TestHandleTermination_FromFinalized_Returns400(t *testing.T) {

@@ -39,9 +39,10 @@ func TestPushCallbackToUnreachableURLDoesNotPanic(t *testing.T) {
 // TestValidateCallbackURL is a direct, unfiltered-network table test of the
 // SSRF guard: an unauthenticated POST /negotiations/request fully controls
 // callbackAddress, and this function is what stops it naming this
-// connector's own loopback or private network. IP literals are used
-// (instead of a real public hostname) so the test needs no DNS resolution
-// and cannot flake on network access.
+// connector's own loopback network. IP literals are used (instead of a real
+// public hostname) so the test needs no DNS resolution and cannot flake on
+// network access. RFC1918/ULA private ranges are deliberately not
+// rejected — see validateCallbackURL's doc comment and DECISIONS.md §23.6.
 func TestValidateCallbackURL(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -53,9 +54,9 @@ func TestValidateCallbackURL(t *testing.T) {
 		{"loopback IPv4", "http://127.0.0.1/callback", true},
 		{"loopback IPv4 with port", "http://127.0.0.1:8081/health", true},
 		{"loopback IPv6", "http://[::1]/callback", true},
-		{"RFC1918 10/8", "http://10.0.0.1/callback", true},
-		{"RFC1918 172.16/12", "http://172.16.0.1/callback", true},
-		{"RFC1918 192.168/16", "http://192.168.1.1/callback", true},
+		{"RFC1918 10/8", "http://10.0.0.1/callback", false},
+		{"RFC1918 172.16/12", "http://172.16.0.1/callback", false},
+		{"RFC1918 192.168/16", "http://192.168.1.1/callback", false},
 		{"link-local", "http://169.254.169.254/callback", true},
 		{"unspecified", "http://0.0.0.0/callback", true},
 		{"non-http scheme", "ftp://8.8.8.8/callback", true},

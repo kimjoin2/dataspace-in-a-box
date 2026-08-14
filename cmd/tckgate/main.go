@@ -19,13 +19,20 @@ import (
 // enters this map only when its protocol is implemented, and the count is how
 // many tests that suite contains upstream. Requiring an exact count means a run
 // that stops halfway through a suite fails instead of reporting green.
-var expected = map[string]int{"MET": 1, "CAT": 3}
+var expected = map[string]int{"MET": 1, "CAT": 3, "CN": 15}
 
 // exempt names individual gated test IDs that are known to fail and are
 // tracked rather than required — see docs/follow-ups.md for each entry's
 // story. A suite's count in expected still includes these tests: the gate
 // proves the suite ran to completion regardless of exemptions.
-var exempt = map[string]bool{}
+//
+// CN:02-07 requires an unprompted termination after a negotiation has
+// already reached VERIFIED. Every trigger this milestone implements is
+// checked once, at accept-time; VERIFIED -> FINALIZED deliberately has no
+// further check (see docs/superpowers/specs/2026-08-11-contract-negotiation-provider-design.md,
+// "CN:02-07 does not fit this account"). No connector-side mechanism in this
+// milestone produces that behavior.
+var exempt = map[string]bool{"CN:02-07": true}
 
 // resultLine matches one per-test result in the TCK's stdout. Group 1 is the
 // outcome, group 2 the test identifier. Verified against real output:

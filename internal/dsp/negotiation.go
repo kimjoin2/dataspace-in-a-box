@@ -157,13 +157,18 @@ func decideAccept(cfg config.Config, datasetID string, now time.Time) negotiatio
 	return outcomeAgree
 }
 
-// decideReRequest implements the CN:03-04 vs CN:01-02 distinction: another
-// request while OFFERED is a synchronous rejection when it repeats the exact
-// offer already on the table, and an asynchronous termination otherwise. See
-// the design spec's Risks section — this rule is inferred from the TCK
-// source, not confirmed by a targeted assertion, and the first real TCK run
-// against both tests is what confirms it.
-func decideReRequest(currentOfferID, requestedOfferID string) bool {
+// decideReRequestMatches reports whether a re-request repeats the offer
+// already on the table. The design spec's original guess — that a match
+// means synchronous rejection — was backwards: the real TCK (CN:03-04) sends
+// two re-requests carrying the *identical* offer and expects the first to
+// succeed (200, negotiation unchanged, stays OFFERED) and only the second to
+// be rejected. handleReRequest enforces that second part with
+// store.Negotiation.Rerequested, a flag this function's result has no part
+// in; what this result decides is the *other* case (CN:01-02): a mismatched
+// re-request is accepted synchronously too, but is a decision to walk away,
+// so the provider terminates asynchronously since it has nothing on offer
+// that could satisfy it.
+func decideReRequestMatches(currentOfferID, requestedOfferID string) bool {
 	return requestedOfferID == currentOfferID
 }
 
@@ -191,11 +196,26 @@ type OfferMessage struct {
 }
 
 // Agreement is the ODRL agreement node nested inside an AgreementMessage.
+// Unlike a catalog Offer, an Agreement is bilateral — the TCK's schema marks
+// both assigner and assignee required (confirmed the hard way: the real TCK
+// rejected an Agreement missing them with "required property 'assignee' not
+// found, required property 'assigner' not found"). assigner is this
+// connector's own config.Config.ParticipantID — the party granting the
+// rights. assignee is the counterparty being granted them, but v1's
+// negotiation messages carry no participant identifier for the consumer
+// (ContractRequestMessage has only consumerPid, offer, callbackAddress —
+// checked against the TCK's own contract-request-message-schema.json), and
+// negotiation is unauthenticated in v1 same as the catalog protocol, so
+// there is no participant identity to put here even from a trust boundary.
+// n.ConsumerPID is the best available per-negotiation identifier for "this
+// specific consumer" and is used as an honest placeholder.
 type Agreement struct {
 	ID         string       `json:"@id"`
 	Type       string       `json:"@type"`
 	Target     string       `json:"target"`
 	Permission []Permission `json:"permission"`
+	Assigner   string       `json:"assigner"`
+	Assignee   string       `json:"assignee"`
 	Timestamp  string       `json:"timestamp"`
 }
 
@@ -295,8 +315,10 @@ func buildOfferMessage(n store.Negotiation) OfferMessage {
 // PublicURL) — the design spec's Risks section notes that whether the wire
 // actually requires this field is unconfirmed; it is included on the
 // evidence available and the first real TCK run will say if it was
-// unnecessary.
-func buildAgreementMessage(n store.Negotiation, publicURL string) AgreementMessage {
+// unnecessary. participantID is config.Config's ParticipantID — see
+// Agreement's doc comment for why it becomes the nested agreement's
+// assigner.
+func buildAgreementMessage(n store.Negotiation, publicURL, participantID string) AgreementMessage {
 	return AgreementMessage{
 		Context:     []string{ContextURL},
 		ID:          newMessageID(),
@@ -308,6 +330,8 @@ func buildAgreementMessage(n store.Negotiation, publicURL string) AgreementMessa
 			Type:       AgreementType,
 			Target:     n.DatasetID,
 			Permission: []Permission{{Action: useAction}},
+			Assigner:   participantID,
+			Assignee:   n.ConsumerPID,
 			Timestamp:  time.Now().UTC().Format(time.RFC3339),
 		},
 		CallbackAddress: publicURL + VersionPath,

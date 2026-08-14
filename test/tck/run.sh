@@ -31,5 +31,9 @@ until curl -sf http://127.0.0.1:8081/health >/dev/null 2>&1; do
 done
 echo ' ready'
 
-$compose run --rm tck >"$output" 2>&1 || true
+# --use-aliases: `compose run` does not register the service's own name as a
+# network alias by default (only `up` does), so without this flag the
+# connector's callback pushes to http://tck:8083 fail DNS resolution with
+# "no such host" the moment any test (first hit: CN:02-01) needs one.
+$compose run --rm --use-aliases tck >"$output" 2>&1 || true
 echo "TCK output written to $output"

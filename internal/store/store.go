@@ -31,8 +31,15 @@ type Negotiation struct {
 	DatasetID       string
 	OfferID         string
 	CallbackAddress string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// Rerequested is whether POST /negotiations/{id}/request has already
+	// been accepted once while this negotiation was OFFERED. The real TCK
+	// (CN:03-04) confirmed a re-request that repeats the offer already on
+	// the table is accepted the first time and rejected the second — see
+	// negotiation_handler.go's handleReRequest doc comment for the rule
+	// this field enforces.
+	Rerequested bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 const schema = `
@@ -43,6 +50,7 @@ CREATE TABLE IF NOT EXISTS negotiations (
     dataset_id       TEXT NOT NULL,
     offer_id         TEXT NOT NULL,
     callback_address TEXT NOT NULL,
+    rerequested      INTEGER NOT NULL DEFAULT 0,
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL
 );`
@@ -92,9 +100,9 @@ func NewUUID() (string, error) {
 // Create persists a new negotiation.
 func (s *Store) Create(n Negotiation) error {
 	_, err := s.db.Exec(
-		`INSERT INTO negotiations (provider_pid, consumer_pid, state, dataset_id, offer_id, callback_address, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		n.ProviderPID, n.ConsumerPID, n.State, n.DatasetID, n.OfferID, n.CallbackAddress,
+		`INSERT INTO negotiations (provider_pid, consumer_pid, state, dataset_id, offer_id, callback_address, rerequested, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.ProviderPID, n.ConsumerPID, n.State, n.DatasetID, n.OfferID, n.CallbackAddress, n.Rerequested,
 		n.CreatedAt.UTC().Format(timeFormat), n.UpdatedAt.UTC().Format(timeFormat),
 	)
 	if err != nil {
@@ -106,13 +114,13 @@ func (s *Store) Create(n Negotiation) error {
 // Get returns the negotiation with the given provider pid.
 func (s *Store) Get(providerPID string) (Negotiation, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT provider_pid, consumer_pid, state, dataset_id, offer_id, callback_address, created_at, updated_at
+		`SELECT provider_pid, consumer_pid, state, dataset_id, offer_id, callback_address, rerequested, created_at, updated_at
 		 FROM negotiations WHERE provider_pid = ?`, providerPID)
 
 	var n Negotiation
 	var created, updated string
 	err := row.Scan(&n.ProviderPID, &n.ConsumerPID, &n.State, &n.DatasetID, &n.OfferID,
-		&n.CallbackAddress, &created, &updated)
+		&n.CallbackAddress, &n.Rerequested, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Negotiation{}, false, nil
 	}
@@ -132,6 +140,23 @@ func (s *Store) Get(providerPID string) (Negotiation, bool, error) {
 func (s *Store) SetState(providerPID, state string, updatedAt time.Time) error {
 	res, err := s.db.Exec(`UPDATE negotiations SET state = ?, updated_at = ? WHERE provider_pid = ?`,
 		state, updatedAt.UTC().Format(timeFormat), providerPID)
+	if err != nil {
+		return fmt.Errorf("update negotiation %s: %w", providerPID, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update negotiation %s: %w", providerPID, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("update negotiation %s: not found", providerPID)
+	}
+	return nil
+}
+
+// SetRerequested marks a negotiation as having accepted its one allowed
+// re-request while OFFERED. See Negotiation.Rerequested.
+func (s *Store) SetRerequested(providerPID string) error {
+	res, err := s.db.Exec(`UPDATE negotiations SET rerequested = 1 WHERE provider_pid = ?`, providerPID)
 	if err != nil {
 		return fmt.Errorf("update negotiation %s: %w", providerPID, err)
 	}

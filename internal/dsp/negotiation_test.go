@@ -79,15 +79,15 @@ func TestDecideAccept_NoLongerAdvertised_Terminates(t *testing.T) {
 	}
 }
 
-func TestDecideReRequest_SameOffer_IsSynchronousReject(t *testing.T) {
-	if !decideReRequest("urn:dataset:a#offer", "urn:dataset:a#offer") {
-		t.Error("decideReRequest = false, want true for an identical offer")
+func TestDecideReRequestMatches_SameOffer(t *testing.T) {
+	if !decideReRequestMatches("urn:dataset:a#offer", "urn:dataset:a#offer") {
+		t.Error("decideReRequestMatches = false, want true for an identical offer")
 	}
 }
 
-func TestDecideReRequest_DifferentOffer_IsNotSynchronousReject(t *testing.T) {
-	if decideReRequest("urn:dataset:a#offer", "urn:dataset:a#different-offer") {
-		t.Error("decideReRequest = true, want false for a different offer")
+func TestDecideReRequestMatches_DifferentOffer(t *testing.T) {
+	if decideReRequestMatches("urn:dataset:a#offer", "urn:dataset:a#different-offer") {
+		t.Error("decideReRequestMatches = true, want false for a different offer")
 	}
 }
 
@@ -142,7 +142,7 @@ func TestBuildOfferMessage(t *testing.T) {
 
 func TestBuildAgreementMessage(t *testing.T) {
 	n := testStoredNegotiation()
-	msg := buildAgreementMessage(n, "https://provider.example.org")
+	msg := buildAgreementMessage(n, "https://provider.example.org", "urn:participant:provider")
 	if msg.Type != ContractAgreementMessageType {
 		t.Errorf("Type = %q, want %q", msg.Type, ContractAgreementMessageType)
 	}
@@ -151,6 +151,12 @@ func TestBuildAgreementMessage(t *testing.T) {
 	}
 	if msg.Agreement.Type != AgreementType {
 		t.Errorf("Agreement.Type = %q, want %q", msg.Agreement.Type, AgreementType)
+	}
+	if msg.Agreement.Assigner != "urn:participant:provider" {
+		t.Errorf("Agreement.Assigner = %q, want the connector's own participant id", msg.Agreement.Assigner)
+	}
+	if msg.Agreement.Assignee != n.ConsumerPID {
+		t.Errorf("Agreement.Assignee = %q, want %q", msg.Agreement.Assignee, n.ConsumerPID)
 	}
 	if msg.Agreement.Timestamp == "" {
 		t.Error("Agreement.Timestamp is empty")

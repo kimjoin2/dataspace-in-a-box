@@ -42,3 +42,20 @@ the explicit `id == ""` check in `validateDatasetID` leaves the test passing,
 because `url.Parse("")` already fails `IsAbs()`. The behavior is enforced
 either way; the test just does not prove which check enforces it. Asserting on
 the error message would fix that.
+
+## From the contract negotiation (provider) milestone (2026-08)
+
+**`CN:02-07` has no implemented trigger.** Every autonomous termination this
+milestone implements is checked once, at accept-time: either the initial
+request's offer matches an expired dataset, or an `ACCEPTED` event arrives
+for one. `CN:02-07`'s sequence reaches a clean `AGREED` — meaning the offer
+matched and passed the validity check — and only terminates, unprompted,
+after `VERIFIED`. A check performed once at accept-time cannot explain a
+rejection surfacing later on a negotiation that already passed it. Tracked as
+a named gate exemption (`cmd/tckgate/main.go`'s `exempt` map) rather than
+silently dropped. Full reasoning:
+`docs/superpowers/specs/2026-08-11-contract-negotiation-provider-design.md`,
+"`CN:02-07` does not fit this account". Closing this means finding DSP's
+actual intended trigger for an unprompted post-verification termination —
+not yet determined from the public TCK sources this project is permitted to
+use.

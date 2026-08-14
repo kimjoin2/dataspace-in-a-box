@@ -111,13 +111,19 @@ func (h negotiationHandler) handleContractRequest(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusCreated, buildNegotiationStateDocument(n))
 
 	outcome := decideInitialRequest(h.cfg, n.DatasetID, n.OfferID, now)
-	h.dispatch(n, outcome)
+	go h.dispatch(n, outcome)
 }
 
 // handleReRequest serves POST /negotiations/{id}/request: a consumer
-// counter-offer or resend while the negotiation is OFFERED. Resending the
-// identical offer is a synchronous rejection (CN:03-04); anything else is
-// treated as a decision to walk away, terminated asynchronously (CN:01-02).
+// counter-offer or resend while the negotiation is OFFERED. A negotiation
+// gets exactly one re-request while OFFERED — a second one, whatever it
+// contains, is a synchronous rejection (CN:03-04's second call; tracked via
+// store.Negotiation.Rerequested). Within that one allowed re-request:
+// repeating the offer already on the table is accepted with no further
+// action (CN:03-04's first call — the negotiation simply stays OFFERED);
+// anything else is accepted too, but is a decision to walk away, since this
+// connector has nothing else to offer for this negotiation — terminated
+// asynchronously (CN:01-02).
 func (h negotiationHandler) handleReRequest(w http.ResponseWriter, r *http.Request) {
 	n, ok, err := h.lookup(w, r)
 	if err != nil || !ok {
@@ -144,14 +150,21 @@ func (h negotiationHandler) handleReRequest(w http.ResponseWriter, r *http.Reque
 			"a counter-offer is only valid from OFFERED, negotiation is "+n.State)
 		return
 	}
-	if decideReRequest(n.OfferID, msg.Offer.ID) {
+	if n.Rerequested {
 		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
-			"offer.@id matches the offer already on the table")
+			"this negotiation already received its one re-request while OFFERED")
+		return
+	}
+	if err := h.store.SetRerequested(n.ProviderPID); err != nil {
+		slog.Error("update negotiation state", "provider_pid", n.ProviderPID, "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
-	h.pushAndStore(n, StateTerminated, terminationCallbackPath, buildTerminationMessage(n))
+	if !decideReRequestMatches(n.OfferID, msg.Offer.ID) {
+		go h.pushAndStore(n, StateTerminated, terminationCallbackPath, buildTerminationMessage(n))
+	}
 }
 
 // handleEvent serves POST /negotiations/{id}/events, currently only the
@@ -192,7 +205,7 @@ func (h negotiationHandler) handleEvent(w http.ResponseWriter, r *http.Request) 
 
 	n.State = StateAccepted
 	outcome := decideAccept(h.cfg, n.DatasetID, now)
-	h.dispatch(n, outcome)
+	go h.dispatch(n, outcome)
 }
 
 // handleVerification serves POST /negotiations/{id}/agreement/verification.
@@ -227,7 +240,7 @@ func (h negotiationHandler) handleVerification(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusOK)
 
 	n.State = StateVerified
-	h.pushAndStore(n, StateFinalized, eventCallbackPath, buildFinalizedEventMessage(n))
+	go h.pushAndStore(n, StateFinalized, eventCallbackPath, buildFinalizedEventMessage(n))
 }
 
 // handleTermination serves POST /negotiations/{id}/termination, from either
@@ -289,9 +302,23 @@ func (h negotiationHandler) lookup(w http.ResponseWriter, r *http.Request) (stor
 }
 
 // dispatch carries out a routing decision: it pushes whatever outcome
-// requires to n's callback address and persists the resulting state. It runs
-// after the synchronous response has already been written, matching DSP's
-// async model.
+// requires to n's callback address and persists the resulting state.
+//
+// Every caller invokes this with `go`, never inline — dispatch (via
+// pushAndStore/pushCallback) can block for the length of the whole retry
+// schedule, and the handler goroutine calling it has already written the
+// synchronous response by this point. That distinction matters more than it
+// looks: net/http buffers a response under ~2KB (all of this project's
+// responses) and does not put it on the wire until the handler function
+// returns, so a handler that calls dispatch inline never actually finishes
+// sending its own synchronous response until the push either succeeds or
+// exhausts its retries. The real TCK caught this directly — its client
+// timed out waiting for the synchronous response itself, with pushes
+// racing a consumer that could not have been ready yet because the
+// response that would tell it to get ready was the thing stuck behind the
+// push. `go dispatch(...)` breaks that: the handler returns immediately
+// after writing its response, the response goes out, and the push happens
+// genuinely afterward instead of nested inside the same goroutine.
 func (h negotiationHandler) dispatch(n store.Negotiation, outcome negotiationOutcome) {
 	switch {
 	case outcome.pushOffer && outcome.pushTermination:
@@ -300,7 +327,7 @@ func (h negotiationHandler) dispatch(n store.Negotiation, outcome negotiationOut
 	case outcome.pushOffer:
 		h.pushAndStore(n, StateOffered, offerCallbackPath, buildOfferMessage(n))
 	case outcome.pushAgreement:
-		h.pushAndStore(n, StateAgreed, agreementCallbackPath, buildAgreementMessage(n, h.cfg.PublicURL))
+		h.pushAndStore(n, StateAgreed, agreementCallbackPath, buildAgreementMessage(n, h.cfg.PublicURL, h.cfg.ParticipantID))
 	case outcome.pushTermination:
 		h.pushAndStore(n, StateTerminated, terminationCallbackPath, buildTerminationMessage(n))
 	}
@@ -322,18 +349,26 @@ func (h negotiationHandler) delayedTerminate(n store.Negotiation) {
 }
 
 // pushAndStore pushes msg to n's callback address at the given path
-// (formatted with the provider pid) and updates the stored state. The push
+// (formatted with the consumer pid) and updates the stored state. The push
 // happens first, but its failure does not block the state update: the
 // provider is authoritative, and a consumer can always recover via GET.
+//
+// The path uses n.ConsumerPID, not n.ProviderPID: the design spec confirms
+// {id} is the provider's own generated pid only for the synchronous calls a
+// consumer makes *to* the provider (`ProviderNegotiationPipelineImpl`) —
+// for the async pushes going the other way, the consumer's own callback
+// endpoint (`HttpConsumerNegotiationClientImpl`) looks the negotiation up
+// by the pid it assigned itself. Confirmed against the real TCK: the
+// provider pid produced a 404 on every push.
 //
 // n.CallbackAddress came from an unauthenticated request body, so the
 // constructed URL is validated before anything is sent — see
 // validateCallbackURL's doc comment for why a request whose callbackAddress
-// resolves to this connector's own loopback or private network cannot be
-// allowed through. A rejection is logged and the push is skipped, matching
+// resolves to this connector's own loopback network cannot be allowed
+// through. A rejection is logged and the push is skipped, matching
 // pushCallback's own best-effort, no-error-returned contract.
 func (h negotiationHandler) pushAndStore(n store.Negotiation, state, path string, msg any) {
-	callbackURL := n.CallbackAddress + fmt.Sprintf(path, n.ProviderPID)
+	callbackURL := n.CallbackAddress + fmt.Sprintf(path, n.ConsumerPID)
 	if err := validateOutgoingCallback(callbackURL); err != nil {
 		slog.Error("reject callback push", "url", callbackURL, "error", err)
 	} else {
