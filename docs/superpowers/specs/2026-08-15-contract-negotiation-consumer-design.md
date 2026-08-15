@@ -220,7 +220,7 @@ unmatched `dataset_id` gets every field's default: accept, verify, wait.
 | `on_offer` | `accept` (default) | Send `ACCEPTED` immediately on receiving an offer. |
 | `on_offer` | `passive` | Take no action; the negotiation durably holds `OFFERED`. |
 | `on_offer` | `reject` | Send `TERMINATED` immediately on receiving an offer. |
-| `on_offer` | `counter` | Send exactly one re-request repeating the original `dataset_id`/`offer_id` (a real CAS-guarded one-shot, mirroring `DECISIONS.md` §23.9's provider-role rule) — see "The `01-02` counter-request shape" for why this cannot be the bare initial-request body resent. |
+| `on_offer` | `counter` | Send exactly one re-request repeating the original `dataset_id`/`offer_id` — see "The `01-02` counter-request shape" for why this cannot be the bare initial-request body resent. No CAS guard is needed here, unlike `DECISIONS.md` §23.9's provider-role rule: an offer is only ever legal once per negotiation (see "Structural guards" — `OFFERED` is illegal-from for a second offer), so exactly one goroutine ever reacts to exactly one offer. The provider-role rule guards against an external, uncontrolled actor sending a second HTTP request; here this connector is the one deciding to send, once, and the state machine itself already makes a second send unreachable. |
 | `on_agreement` | `verify` (default) | Send `ContractAgreementVerificationMessage` on receiving an agreement; only advance local state to `VERIFIED` once that send is acknowledged — see "The `03-06` verification-ack rule". |
 | `on_agreement` | `reject` | Send `TERMINATED` immediately on receiving an agreement. |
 | `on_idle` | `wait` (default) | Take no action after the initial request; wait indefinitely (bounded only by the TCK's own patience window) for the provider's next move. |
@@ -365,11 +365,18 @@ CREATE TABLE IF NOT EXISTS consumer_negotiations (
     state             TEXT NOT NULL,
     dataset_id        TEXT NOT NULL,
     offer_id          TEXT NOT NULL,
-    rerequested       INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );
 ```
+
+No `rerequested` column: the provider role's column of that name guards
+against an external, uncontrolled actor (the consumer) sending a second
+`.../request` HTTP call — this table has no equivalent risk, since only this
+connector itself decides to send a counter-request, exactly once, and the
+structural guard (`offerLegalFrom`: `OFFERED` is illegal-from for a second
+offer) already makes a second offer for the same negotiation unreachable.
+See "The policy shape"'s `on_offer: counter` row.
 
 A second table, not a `role` column on the existing `negotiations` table.
 The provider table is 14 of 15 TCK tests deep; a shared table would mean
@@ -378,14 +385,13 @@ every provider-role query would need a `WHERE role = 'provider'` this
 milestone did not need to add. A second table costs one more `CREATE TABLE
 IF NOT EXISTS` and a handful of CRUD functions shaped exactly like the ones
 `store.go` already has: `CreateConsumer`, `GetConsumer(consumerPID)`,
-`SetConsumerState(consumerPID, from, to, updatedAt)`,
-`SetConsumerRerequested(consumerPID)` — the same compare-and-swap shape as
-`SetState`/`SetRerequested`, for the same reason: consumer-role reactions
-also run in goroutines and can outlive a termination that arrived in the
-meantime. `explainNoUpdate` is provider-table-specific (it hard-codes a
-`Get` against `negotiations`); the consumer table needs its own equivalent
-rather than reusing that one, or the error message would name the wrong
-table's state.
+`SetConsumerState(consumerPID, from, to, updatedAt)` — the same
+compare-and-swap shape as `SetState`, for the same reason: consumer-role
+reactions also run in goroutines and can outlive a termination that arrived
+in the meantime. `explainNoUpdate` is provider-table-specific (it
+hard-codes a `Get` against `negotiations`); the consumer table needs its
+own equivalent rather than reusing that one, or the error message would
+name the wrong table's state.
 
 `migrate`'s multi-statement handling needs one more check during
 implementation: today's `schema` const is a single `CREATE TABLE`, and
@@ -478,7 +484,7 @@ goroutine for the same §23.8 reason, then:
 
 | Layer | Cases |
 |---|---|
-| Store | `consumer_negotiations` create/read/CAS-update, `rerequested` CAS, its own `explainNoUpdate`, table creation idempotent across two opens (alongside the existing `negotiations` suite, unchanged) |
+| Store | `consumer_negotiations` create/read/CAS-update, its own `explainNoUpdate`, table creation idempotent across two opens (alongside the existing `negotiations` suite, unchanged) |
 | Config | `consumer_policies` parses, an unmatched `dataset_id` gets every field's default, an invalid enum value on `on_offer`/`on_agreement`/`on_idle` is rejected at load |
 | Negotiation documents | request/offer/agreement/event/verification/termination/state-document shapes for the consumer-sent messages |
 | Policy resolution | all four `on_offer` values, both `on_agreement` values, both `on_idle` values, and the unmatched-default case |
