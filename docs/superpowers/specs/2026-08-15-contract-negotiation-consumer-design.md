@@ -54,7 +54,7 @@ independently confirmed accurate and are carried over largely unchanged.
   configuration, not a content rule" — that selects this connector's
   autonomous reaction (on an offer, on an agreement, on an idle request) per
   requested `dataset_id`. Absent an entry, the default is the sane
-  production behavior: accept a matching offer, verify any agreement, never
+  production behavior: accept an offer, verify any agreement, never
   self-abandon.
 
 **Out of scope**
@@ -91,11 +91,15 @@ TCK's `HttpConsumerNegotiationClientImpl.initiateRequest` POSTs
 `{providerId, offerId, datasetId, connectorAddress}` as **plain JSON, not
 JSON-LD** (no `@context`/`@type` — confirmed from the `postJson(url, body,
 false, true)` call site) to that URL and discards the response body — but it
-does assert the HTTP status: `HttpFunctions.postJson` throws on `404` or a
-`5xx`, and retries other `4xx` up to three times before failing. `200`
-immediately is required. The test then proceeds by polling
-`GET /negotiations/{consumerPid}`, never by reading anything this endpoint
-itself returns.
+does assert the HTTP status: `HttpFunctions.postJson` throws immediately on
+`404` (even in contexts that otherwise tolerate an expected error — this
+matters for structural guards below) or a `5xx`, and retries any other `4xx`
+up to two more times (three attempts total) before failing. `200`
+immediately is required. The test then proceeds not by reading this
+endpoint's response, but by waiting for this connector's own outbound
+`ContractRequestMessage` to land on the TCK's callback endpoint — the
+trigger's response body and the protocol exchange it kicks off are entirely
+separate channels.
 
 This project's own `CLAUDE.md` lists "a management API" as in scope
 eventually, and `internal/mgmt/router.go` exists today with exactly one
@@ -120,7 +124,7 @@ naming plainly rather than folding silently into precedent (see
 | `POST /negotiations/initiate` | TCK → CUT | Trigger hook. Not a DSP message. |
 | `POST {provider}/negotiations/request` | CUT → provider | Initial `ContractRequestMessage`, sent by this connector after `initiate` fires. |
 | `POST /negotiations/{consumerPid}/offers` | provider → CUT | `ContractOfferMessage`. |
-| `POST {provider}/negotiations/{providerPid}/request` | CUT → provider | A counter/re-request repeating this connector's original ask. |
+| `POST {provider}/negotiations/{providerPid}/request` | CUT → provider | A counter/re-request repeating this connector's original ask — **must** carry `providerPid` and the original `offer` in the body, not just resend the bare initial-request shape; see "The `01-02` counter-request shape" below. |
 | `POST {provider}/negotiations/{providerPid}/events`, type `ACCEPTED` | CUT → provider | Sent when this connector's policy accepts an offer. |
 | `POST /negotiations/{consumerPid}/agreement` | provider → CUT | `ContractAgreementMessage`. |
 | `POST {provider}/negotiations/{providerPid}/agreement/verification` | CUT → provider | Sent when this connector's policy accepts an agreement. |
@@ -216,11 +220,11 @@ unmatched `dataset_id` gets every field's default: accept, verify, wait.
 | `on_offer` | `accept` (default) | Send `ACCEPTED` immediately on receiving an offer. |
 | `on_offer` | `passive` | Take no action; the negotiation durably holds `OFFERED`. |
 | `on_offer` | `reject` | Send `TERMINATED` immediately on receiving an offer. |
-| `on_offer` | `counter` | Send exactly one re-request repeating the original `dataset_id`/`offer_id` (a real CAS-guarded one-shot, mirroring `DECISIONS.md` §23.9's provider-role rule). |
-| `on_agreement` | `verify` (default) | Send `ContractAgreementVerificationMessage` immediately on receiving an agreement. |
+| `on_offer` | `counter` | Send exactly one re-request repeating the original `dataset_id`/`offer_id` (a real CAS-guarded one-shot, mirroring `DECISIONS.md` §23.9's provider-role rule) — see "The `01-02` counter-request shape" for why this cannot be the bare initial-request body resent. |
+| `on_agreement` | `verify` (default) | Send `ContractAgreementVerificationMessage` on receiving an agreement; only advance local state to `VERIFIED` once that send is acknowledged — see "The `03-06` verification-ack rule". |
 | `on_agreement` | `reject` | Send `TERMINATED` immediately on receiving an agreement. |
 | `on_idle` | `wait` (default) | Take no action after the initial request; wait indefinitely (bounded only by the TCK's own patience window) for the provider's next move. |
-| `on_idle` | `abandon` | Send `TERMINATED` immediately after the initial request's synchronous acknowledgement — no delay, no timer. Confirmed safe: `CN_C:02-02`'s sequence has no offer or agreement message at all before the CUT's termination, so there is nothing to race against. |
+| `on_idle` | `abandon` | Send a termination through `pushCallback`'s retrying path (not a bespoke one-shot call) immediately after the initial request's synchronous acknowledgement. A one-shot, un-retried send would not survive `CN_C:02-02`: the TCK registers its termination-receiving handler only after observing this connector reach `REQUESTED`, the same registration-order gap `DECISIONS.md` §23.7 already documents for the provider role's own async pushes, and the TCK's own reference consumer covers it with a 100ms pause between requesting and abandoning. This design does not add a matching sleep — `pushCallback`'s existing 300/700/1500/3000ms backoff is the same mechanism already trusted to cover this class of race, and reusing it is simpler than adding a second, bespoke delay. |
 
 ### Deriving all 16 tests from this policy plus two universal rules
 
@@ -233,9 +237,12 @@ Two rules apply regardless of policy and need no configuration:
   the default policy, then the provider terminates unprompted; this
   connector's only job is to accept it).
 - **A message that arrives in a state where it is not a legal transition is
-  a synchronous 4xx**, state unchanged — the consumer-role mirror of
-  `DECISIONS.md`'s `CN:03` table for the provider role. See "Structural
-  guards" below.
+  a synchronous `400`**, state unchanged — the consumer-role mirror of
+  `DECISIONS.md`'s `CN:03` table for the provider role. `400` specifically,
+  not any `4xx`: the TCK's own assertion helper, `HttpFunctions.postJson`,
+  throws immediately on a `404` response even where an error is otherwise
+  expected, so a guard that answered `404` would fail every one of the six
+  `03-xx` tests it is meant to satisfy. See "Structural guards" below.
 
 | Test | `dataset_id` policy | Reaction sequence |
 |---|---|---|
@@ -249,16 +256,34 @@ Two rules apply regardless of policy and need no configuration:
 | `CN_C:02-04` | `on_offer: passive` | offer→(no action, durable `OFFERED`); provider terminates → ack |
 | `CN_C:02-05` | default | offer→accept; provider terminates instead of agreeing → ack |
 | `CN_C:02-06` | default | (no offer) agreement→verify; provider terminates instead of finalizing → ack |
-| `CN_C:03-01` | default | finalized while `REQUESTED` → 4xx (structural guard) |
-| `CN_C:03-02` | `on_offer: passive` (same dataset as `02-04`) | offer→(no action); agreement while `OFFERED` → 4xx (structural guard) |
-| `CN_C:03-03` | `on_offer: passive` (same dataset as `02-04`/`03-02`) | offer→(no action); finalized while `OFFERED` → 4xx (structural guard) |
-| `CN_C:03-04` | default | offer→accept; finalized while `ACCEPTED` → 4xx (structural guard) |
-| `CN_C:03-05` | default | offer→accept; a second offer while `ACCEPTED` → 4xx (structural guard) |
-| `CN_C:03-06` | default | offer→accept→agreement→(verifying); finalized arrives before this connector's own verification is acknowledged → 4xx — see "The `03-06` timing question" |
+| `CN_C:03-01` | default | finalized while `REQUESTED` → 400 (structural guard) |
+| `CN_C:03-02` | `on_offer: passive` (same dataset as `02-04`) | offer→(no action); agreement while `OFFERED` → 400 (structural guard) |
+| `CN_C:03-03` | `on_offer: passive` (same dataset as `02-04`/`03-02`) | offer→(no action); finalized while `OFFERED` → 400 (structural guard) |
+| `CN_C:03-04` | default | offer→accept; finalized while `ACCEPTED` → 400 (structural guard) |
+| `CN_C:03-05` | default | offer→accept; a second offer while `ACCEPTED` → 400 (structural guard) |
+| `CN_C:03-06` | default | offer→accept→agreement→(attempts to verify, never acknowledged); finalized while still `AGREED` → 400 — see "The `03-06` verification-ack rule" |
 
 Six distinct `dataset_id` fixtures cover all 16 tests: default (9 tests),
 `on_idle: abandon` (1), `on_agreement: reject` (1), `on_offer: passive` (3),
 `on_offer: reject` (1), `on_offer: counter` (1).
+
+### The `01-02` counter-request shape
+
+The `on_offer: counter` reaction cannot resend the bare initial-request
+body. `ProviderNegotiationManagerImpl.handleContractRequest` branches on
+whether the incoming message carries a `providerPid`: without one, it is
+routed to `handleInitialRequest`, which finds the negotiation already
+exists (by correlation id) and returns it **unchanged** — no transition, no
+new `REQUESTED` event — so `CN_C:01-02`'s
+`.thenWaitForState(REQUESTED)` after the counter would simply time out.
+The counter-request must carry this connector's known `providerPid` (so the
+TCK's mock routes it to its counter-offer handling instead) and the
+original `offer` object, the same two fields a resend of the *provider*
+role's own `handleReRequest` shape would carry. `negotiation_client.go`'s
+counter-request builder is therefore not "send the same message again" —
+it is a distinct message shape, POSTed to
+`{provider}/negotiations/{providerPid}/request` rather than
+`{provider}/negotiations/request`.
 
 ### Structural guards
 
@@ -271,25 +296,40 @@ The consumer-role mirror of the provider milestone's `CN:03` table:
 | Finalized event | `VERIFIED` only | `REQUESTED` (`03-01`), `OFFERED` (`03-03`), `ACCEPTED` (`03-04`), `AGREED` before this connector's own verification lands (`03-06`) |
 | Termination | any non-terminal state | (none — always legal, per the universal rule above) |
 
-### The `03-06` timing question
+### The `03-06` verification-ack rule
 
-`CN_C:03-06` polls until `AGREED` is observed, then immediately sends an
-illegal `FINALIZED` event and asserts the negotiation is still `AGREED`, not
-`VERIFIED`. If this connector set its local state to `VERIFIED` the instant
-it *sent* its verification message, a fast enough round trip could make the
-illegal `FINALIZED` event arrive after that local write — at which point
-`FINALIZED` from `VERIFIED` is legal, and the test would see a `200`
-where it expects a `4xx`. The provider milestone hit the identical shape of
-problem for `CN:03-03` and settled it by pushing before storing
-(`DECISIONS.md` §23.12: the provider does not become `AGREED` and then
-announce it, it becomes `AGREED` *by delivering* the agreement). The
-consumer-role mirror: this connector does not become `VERIFIED` until its
-own verification POST has been synchronously acknowledged by the provider —
-state moves to `VERIFIED` only after that response returns success, not when
-the request is sent. This keeps "not yet `VERIFIED`" and "the provider does
-not yet know this connector verified" the same fact, exactly as §23.12
-reasons for the provider role. Flagged as the design's one remaining timing
-assumption — see Risks.
+`CN_C:03-06` is not a timing race, and the mechanism is narrower than
+`DECISIONS.md` §23.12's provider-role precedent, even though the *symptom*
+looks the same. Unlike `01-01`, `01-04`, and `02-06` — which each call
+`.expectVerifiedMessage(...)` before triggering the agreement, registering a
+handler for this connector's verification POST — `03-06` registers no such
+handler. The TCK's own dispatcher
+(`SystemBootstrapExtension.DispatchingHandler`) answers any POST to a path
+with no registered handler with a plain `404`. So in this specific test,
+this connector's verification attempt is never acknowledged — not narrowly,
+permanently, for the life of the test.
+
+That makes the design choice binary, not a margin to widen: if local state
+moves to `VERIFIED` as soon as the verification message is *sent* (mirroring
+§23.12's provider-role push-then-store, which stores unconditionally, before
+knowing whether the push will ever succeed), this connector reaches
+`VERIFIED` almost immediately after the agreement in every run of `03-06`,
+and the test fails deterministically, not occasionally. The only design that
+satisfies this test is: **state moves to `VERIFIED` only once the
+verification POST receives a successful synchronous response.** In `03-06`,
+that response never comes, so this connector simply never reaches
+`VERIFIED` — the illegal `FINALIZED` event is rejected for the entire test,
+not during a narrow window.
+
+This is why `pushCallback` — currently `func pushCallback(url string, v
+any)`, fire-and-forget with no return value — cannot be "reused as-is" for
+this one send. It needs to report whether it ultimately succeeded (after
+exhausting its retry schedule), so the verification reaction can gate the
+state write on that result: `func pushCallback(url string, v any) bool`, its
+existing retry loop unchanged, callers that don't need the result (every
+other push this milestone and the provider role's own pushes) simply
+discard it. This is a small signature addition to `callback.go`, not a
+behavior change for any existing call site — see Architecture.
 
 ## Architecture
 
@@ -299,11 +339,11 @@ internal/store/store_test.go
 internal/config/config.go              + ConsumerPolicy, + Config.ConsumerPolicies
 internal/dsp/negotiation.go            + consumer-role message builders
 internal/dsp/negotiation_test.go
-internal/dsp/negotiation_handler.go    + initiate/offers/agreement handlers, dispatch added to 3 existing ones
+internal/dsp/negotiation_handler.go    + initiate/offers/agreement handlers, dispatch added to 3 existing ones; validateOutgoingCallback (defined here already) reused as-is
 internal/dsp/negotiation_handler_test.go
 internal/dsp/negotiation_client.go     new: the outbound calls this connector makes as consumer
 internal/dsp/negotiation_client_test.go
-internal/dsp/callback.go               reused as-is: validateOutgoingCallback, pushCallback, callbackHTTPClient
+internal/dsp/callback.go               pushCallback gains a bool return (see "03-06 verification-ack rule"); callbackHTTPClient reused as-is
 internal/dsp/router.go                 + 3 new routes, 3 existing ones rebound to dispatchers
 cmd/dsbox/main.go                      unchanged — already passes the one *store.Store into dsp.NewRouter
 ```
@@ -418,15 +458,21 @@ consumer-branch of `events`/`termination`) is dispatched as its own
 goroutine for the same §23.8 reason, then:
 
 - **Structural guard first.** If the current state does not permit this
-  message (see "Structural guards" above), respond `4xx` synchronously and
-  make no state change. This check runs before any policy lookup.
+  message (see "Structural guards" above), respond `400` synchronously —
+  never `404`, which the TCK's own assertion helper treats as a hard
+  failure even when an error is otherwise expected — and make no state
+  change. This check runs before any policy lookup.
 - **Policy lookup**, keyed by the row's own `dataset_id` against
   `config.Config.ConsumerPolicies` (see "Why a policy configuration, not a
   content rule").
-- **Outbound leg reuses `pushCallback`** (fire-and-forget, retried,
-  status-code-only) for every message this connector sends in reaction —
-  correct here because these are acknowledgment-style sends, matching the
-  provider role's own outbound pushes.
+- **Outbound leg reuses `pushCallback`** (retried, and — after this
+  milestone's small signature addition, see "The `03-06` verification-ack
+  rule" — reporting success) for every message this connector sends in
+  reaction. Only the agreement→verify reaction consumes the returned bool,
+  gating its `AGREED → VERIFIED` state write on it; every other reaction
+  (accept, reject, counter, abandon) writes its state unconditionally once
+  the push is dispatched, the same push-then-store posture `DECISIONS.md`
+  §23.12 already established for the provider role.
 
 ## Testing
 
@@ -438,9 +484,10 @@ goroutine for the same §23.8 reason, then:
 | Policy resolution | all four `on_offer` values, both `on_agreement` values, both `on_idle` values, and the unmatched-default case |
 | Structural guards | all four rows of the guard table, both success and rejection |
 | Handlers (`httptest`) | `/negotiations/initiate` (happy path, missing-field 400, `connectorAddress` rejected by `validateOutgoingCallback`), `/negotiations/{id}/offers`, `/negotiations/{id}/agreement`; the three dispatch handlers, both branches (an existing provider-role negotiation and a new consumer-role one, same `{id}` space, asserting no cross-talk) |
-| Outbound client (`negotiation_client.go`) | initial request against a fake provider server (success, and the provider's synchronous 4xx path), the four reaction sends against a fake provider using `pushCallback`'s existing retry test patterns |
+| Outbound client (`negotiation_client.go`) | initial request against a fake provider server (success, and the provider's synchronous 4xx path), the counter-request's exact body shape (`providerPid` + `offer` present), the four reaction sends against a fake provider using `pushCallback`'s existing retry test patterns |
+| `pushCallback`'s new return value | reports `true` on eventual success (including after a retried failure), `false` after exhausting the backoff schedule — both against a fake server, alongside the existing status-code and retry-count assertions |
 | Goroutine-dispatch regression | the same shape as the provider milestone's `TestSynchronousResponseDoesNotWaitForTheCallbackPush` — `/negotiations/initiate` must return before the outbound request to a slow fake provider completes |
-| Verification-ordering regression | the consumer-role mirror of `TestVerificationIsRejectedWhileTheAgreementIsStillInFlight` — a `FINALIZED` event arriving while this connector's own verification POST is still in flight must be rejected, state stays `AGREED` |
+| Verification-ack regression | a fake provider that never acknowledges the verification POST (404, mirroring `CN_C:03-06`'s unregistered-path behavior) must leave the negotiation at `AGREED`; a `FINALIZED` event arriving in that state must be rejected `400` |
 | TCK | `make tck` green with `CN_C` in the gate, `CN`'s existing 14-of-15 unaffected |
 
 ## Gate
@@ -488,8 +535,14 @@ role never consults.
   `/negotiations/initiate` is this connector's only way to start a
   negotiation as consumer), the no-retry-on-the-initial-request choice, the
   policy-configuration mechanism (named honestly as TCK-driven today, with
-  no real trigger yet to make it a product feature), and the
-  verify-before-store ordering for `CN_C:03-06`.
+  no real trigger yet to make it a product feature), `pushCallback` gaining
+  a success return for the `03-06` verify-only-on-ack rule, and — separate
+  from all of the above — an explicit trade-off note that `on_offer: accept`
+  never inspects an incoming offer's `permission`/`constraint` content
+  (empty in every TCK fixture), which is the consumer-side mirror of
+  `CLAUDE.md`'s "never accept a constraint that is not enforced" rule: a
+  real (non-TCK) provider that returned an actual constraint would be
+  auto-accepted today, a gap this milestone does not close.
 
 ## Done criteria
 
@@ -506,10 +559,12 @@ role never consults.
 
 | Risk | Mitigation |
 |---|---|
-| `CN_C:03-06`'s illegal-`FINALIZED`-while-verifying case depends on this connector not marking itself `VERIFIED` until its own verification POST is acknowledged (see "The `03-06` timing question") — the same class of timing dependency `DECISIONS.md` §23.12 accepted for the provider role, not a new kind of risk this milestone introduces | Implement verify-then-store as designed; the first real TCK run against `CN_C:03-06` confirms or refutes it, the same way §23.12 was settled |
-| The `on_idle: abandon` policy fires immediately with no delay — correct per `CN_C:02-02`'s sequence diagram (no offer/agreement ever sent), but if a future `CN_C` revision or a real deployment scenario ever needs a genuine idle timeout instead of an immediate abandon, this design has no timer mechanism to extend | Not needed for the 16 tests read for this design; if it becomes needed, `on_idle: abandon` is one policy value among several and gains a duration field without disturbing the other three |
+| `pushCallback` gaining a `bool` return is a real, if small, signature change to shared code (see "The `03-06` verification-ack rule") — a mistake here (e.g. a caller mishandling the returned value) affects the provider role's existing call sites too | Every existing call site is a bare statement discarding the result; `go vet`/the compiler cannot silently break this, and the provider role's own test suite (14 of 15 `CN`) re-runs unchanged as part of this milestone's `make tck` |
+| `CN_C:02-02`'s `on_idle: abandon` reaction needs `pushCallback`'s retry schedule to survive the same registration-order race `DECISIONS.md` §23.7 documents for the provider role — read from the TCK's pipeline source, not yet exercised against the real TCK for this specific path | The first real TCK run against `CN_C:02-02` confirms or refutes it, the same way §23.7's own margin was originally settled for the provider role |
+| `CN_C:01-02`'s counter-request must carry `providerPid` and the original `offer` (see "The `01-02` counter-request shape") — read from the TCK's provider-mock source, not yet exercised against the real TCK | The first real TCK run against `CN_C:01-02` confirms the exact field set; a wrong shape fails fast (20s timeout on `thenWaitForState(REQUESTED)`), not silently |
 | No retry on the initial outbound request (unlike every other outbound call in this codebase) could mean a transient failure strands a negotiation with no consumer-side recovery | Acceptable for v1 under the same "no fallback for scenarios that can't happen" principle the provider role's un-retried async pushes already rely on |
 | `modernc.org/sqlite`'s multi-statement `Exec` behavior for the new table is unverified (see Storage) | A five-minute check during implementation, with a two-`Exec`-calls fallback already named |
+| `on_offer: accept` never inspects an incoming offer's constraint content (see Documentation) — no TCK fixture exercises this, so it is untested by construction | Named explicitly in `DECISIONS.md` as a known gap rather than left implicit; closing it is real future scope (ODRL constraint parsing), not something this milestone's tests can catch either way |
 
 ## What this unlocks
 
