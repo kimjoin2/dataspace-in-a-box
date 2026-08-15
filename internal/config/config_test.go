@@ -281,3 +281,66 @@ func TestMalformedValidityUntilIsAnError(t *testing.T) {
 		t.Fatal("Load: expected an error for a malformed validity_until")
 	}
 }
+
+func TestConsumerPoliciesEmptyWhenAbsent(t *testing.T) {
+	cfg, err := Load(minimal(""), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ConsumerPolicies) != 0 {
+		t.Errorf("ConsumerPolicies = %v, want empty when the key is absent", cfg.ConsumerPolicies)
+	}
+}
+
+func TestConsumerPolicyParses(t *testing.T) {
+	cfg, err := Load(minimal("consumer_policies:\n  - dataset_id: urn:dataset:a\n    on_offer: passive\n    on_agreement: reject\n    on_idle: abandon\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ConsumerPolicies) != 1 {
+		t.Fatalf("ConsumerPolicies = %v, want one entry", cfg.ConsumerPolicies)
+	}
+	p := cfg.ConsumerPolicies[0]
+	if p.DatasetID != "urn:dataset:a" || p.OnOffer != "passive" || p.OnAgreement != "reject" || p.OnIdle != "abandon" {
+		t.Errorf("ConsumerPolicies[0] = %+v, want the parsed fixture", p)
+	}
+}
+
+func TestConsumerPolicyOmittedFieldsStayEmpty(t *testing.T) {
+	cfg, err := Load(minimal("consumer_policies:\n  - dataset_id: urn:dataset:a\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.ConsumerPolicies[0]
+	if p.OnOffer != "" || p.OnAgreement != "" || p.OnIdle != "" {
+		t.Errorf("ConsumerPolicies[0] = %+v, want every unset field to stay empty — defaulting happens where the policy is resolved, not at load time", p)
+	}
+}
+
+func TestConsumerPolicyRequiresDatasetID(t *testing.T) {
+	_, err := Load(minimal("consumer_policies:\n  - on_offer: accept\n"), env(nil))
+	if err == nil {
+		t.Fatal("Load: expected an error for a consumer_policies entry with no dataset_id")
+	}
+}
+
+func TestConsumerPolicyRejectsInvalidOnOffer(t *testing.T) {
+	_, err := Load(minimal("consumer_policies:\n  - dataset_id: urn:dataset:a\n    on_offer: bogus\n"), env(nil))
+	if err == nil {
+		t.Fatal("Load: expected an error for an invalid on_offer value")
+	}
+}
+
+func TestConsumerPolicyRejectsInvalidOnAgreement(t *testing.T) {
+	_, err := Load(minimal("consumer_policies:\n  - dataset_id: urn:dataset:a\n    on_agreement: bogus\n"), env(nil))
+	if err == nil {
+		t.Fatal("Load: expected an error for an invalid on_agreement value")
+	}
+}
+
+func TestConsumerPolicyRejectsInvalidOnIdle(t *testing.T) {
+	_, err := Load(minimal("consumer_policies:\n  - dataset_id: urn:dataset:a\n    on_idle: bogus\n"), env(nil))
+	if err == nil {
+		t.Fatal("Load: expected an error for an invalid on_idle value")
+	}
+}

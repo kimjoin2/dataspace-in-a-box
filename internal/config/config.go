@@ -56,6 +56,14 @@ type Config struct {
 	// storage, but negotiation state is the connector's first runtime state
 	// that must survive a restart (DECISIONS.md section 8).
 	DataDir string `yaml:"data_dir"`
+
+	// ConsumerPolicies configures this connector's autonomous behavior when
+	// it is negotiating as consumer, keyed by the dataset_id this connector
+	// itself requests via POST /negotiations/initiate. A dataset_id with no
+	// matching entry gets every field's default (accept, verify, wait) —
+	// see the design spec's "Why a policy configuration, not a content
+	// rule".
+	ConsumerPolicies []ConsumerPolicy `yaml:"consumer_policies"`
 }
 
 // Dataset is one advertised dataset. Only the identifier is configurable: the
@@ -71,6 +79,25 @@ type Dataset struct {
 	// every dataset's behavior before this milestone. This is the second of
 	// the two policy shapes DECISIONS.md section 14 permits in v1.
 	ValidityUntil *time.Time `yaml:"validity_until"`
+}
+
+// ConsumerPolicy selects this connector's autonomous reaction to what a
+// provider sends back for a given requested dataset, when this connector is
+// negotiating as consumer. Every field left empty here is filled in with
+// its default where the policy is looked up (dsp.resolvePolicy), not here —
+// this type only validates that a *present* value is one of the values that
+// field supports.
+type ConsumerPolicy struct {
+	DatasetID string `yaml:"dataset_id"`
+
+	// OnOffer: "accept" (default), "passive", "reject", or "counter".
+	OnOffer string `yaml:"on_offer"`
+
+	// OnAgreement: "verify" (default) or "reject".
+	OnAgreement string `yaml:"on_agreement"`
+
+	// OnIdle: "wait" (default) or "abandon".
+	OnIdle string `yaml:"on_idle"`
 }
 
 const (
@@ -161,6 +188,23 @@ func (c Config) validate() error {
 			return fmt.Errorf("datasets[%d]: duplicate id %q", i, d.ID)
 		}
 		seen[d.ID] = true
+	}
+	validOnOffer := map[string]bool{"accept": true, "passive": true, "reject": true, "counter": true}
+	validOnAgreement := map[string]bool{"verify": true, "reject": true}
+	validOnIdle := map[string]bool{"wait": true, "abandon": true}
+	for i, p := range c.ConsumerPolicies {
+		if p.DatasetID == "" {
+			return fmt.Errorf("consumer_policies[%d]: dataset_id is required", i)
+		}
+		if p.OnOffer != "" && !validOnOffer[p.OnOffer] {
+			return fmt.Errorf("consumer_policies[%d]: on_offer %q is not one of accept, passive, reject, counter", i, p.OnOffer)
+		}
+		if p.OnAgreement != "" && !validOnAgreement[p.OnAgreement] {
+			return fmt.Errorf("consumer_policies[%d]: on_agreement %q is not one of verify, reject", i, p.OnAgreement)
+		}
+		if p.OnIdle != "" && !validOnIdle[p.OnIdle] {
+			return fmt.Errorf("consumer_policies[%d]: on_idle %q is not one of wait, abandon", i, p.OnIdle)
+		}
 	}
 	if c.DataDir == "" {
 		return fmt.Errorf("data_dir is required: it is where the negotiation state database lives")

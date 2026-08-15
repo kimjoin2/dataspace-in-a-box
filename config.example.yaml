@@ -37,3 +37,14 @@ datasets:
     # Optional. RFC 3339. Absent means the offer never expires. Uncomment to
     # try the validity-period policy:
     # validity_until: 2027-01-01T00:00:00Z
+
+# Optional. Configures this connector's autonomous behavior when it is
+# negotiating as consumer (POST /negotiations/initiate), keyed by the
+# dataset_id it itself requests. An unmatched dataset_id gets every field's
+# default: accept an offer, verify an agreement, wait indefinitely if
+# nothing arrives. Uncomment to try a non-default policy:
+# consumer_policies:
+#   - dataset_id: urn:dataset:example
+#     on_offer: accept        # accept (default) | passive | reject | counter
+#     on_agreement: verify    # verify (default) | reject
+#     on_idle: wait           # wait (default) | abandon
