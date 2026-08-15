@@ -773,3 +773,559 @@ func postJSONWithID(t *testing.T, handler http.HandlerFunc, id string, body any)
 	handler(rr, req)
 	return rr
 }
+
+// waitForConsumerState polls st for consumerPID to reach want, the
+// consumer-table counterpart of waitForState — needed for the same reason:
+// every reaction this milestone adds runs in a goroutine.
+func waitForConsumerState(t *testing.T, st *store.Store, consumerPID, want string) store.ConsumerNegotiation {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		n, ok, err := st.GetConsumer(consumerPID)
+		if err != nil {
+			t.Fatalf("GetConsumer: %v", err)
+		}
+		if ok && n.State == want {
+			return n
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("consumer negotiation %s did not reach state %s in time", consumerPID, want)
+	return store.ConsumerNegotiation{}
+}
+
+func TestHandleInitiate_Success(t *testing.T) {
+	var gotOffer OfferRef
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var msg RequestMessage
+		json.NewDecoder(r.Body).Decode(&msg)
+		gotOffer = msg.Offer
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(NegotiationStateDocument{ProviderPID: "urn:uuid:provider-1"})
+	}))
+	defer provider.Close()
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	restore := validateOutgoingCallback
+	validateOutgoingCallback = func(string) error { return nil }
+	defer func() { validateOutgoingCallback = restore }()
+
+	cfg := config.Config{PublicURL: "https://connector.example.org"}
+	h := negotiationHandler{cfg: cfg, store: st}
+	srv := httptest.NewServer(http.HandlerFunc(h.handleInitiate))
+	defer srv.Close()
+
+	body := `{"providerId":"urn:participant:tck","offerId":"urn:dataset:a#offer","datasetId":"urn:dataset:a","connectorAddress":"` + provider.URL + `"}`
+	resp, err := http.Post(srv.URL, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// The handler generates its own consumer pid; find the one row this test
+	// created by listing what state REQUESTED holds. There is exactly one
+	// negotiation in this store, so this is a targeted poll, not a scan.
+	var found store.ConsumerNegotiation
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		// gotOffer is set only after the provider receives the request, which
+		// only happens after the row exists — safe to read here without a race
+		// once gotOffer.ID is non-empty.
+		if gotOffer.ID != "" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if gotOffer.ID != "urn:dataset:a#offer" || gotOffer.Target != "urn:dataset:a" {
+		t.Fatalf("provider received Offer = %+v, want the exact initiate-call ids", gotOffer)
+	}
+	_ = found
+}
+
+func TestHandleInitiate_MissingFieldIs400(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	h := negotiationHandler{cfg: config.Config{}, store: st}
+	srv := httptest.NewServer(http.HandlerFunc(h.handleInitiate))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL, "application/json", strings.NewReader(`{"providerId":"urn:participant:tck"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandleInitiate_RespondsBeforeTheOutboundRequestCompletes(t *testing.T) {
+	release := make(chan struct{})
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(NegotiationStateDocument{ProviderPID: "urn:uuid:provider-1"})
+	}))
+	defer provider.Close()
+	defer close(release)
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	restore := validateOutgoingCallback
+	validateOutgoingCallback = func(string) error { return nil }
+	defer func() { validateOutgoingCallback = restore }()
+
+	h := negotiationHandler{cfg: config.Config{PublicURL: "https://connector.example.org"}, store: st}
+	srv := httptest.NewServer(http.HandlerFunc(h.handleInitiate))
+	defer srv.Close()
+
+	body := `{"providerId":"urn:participant:tck","offerId":"urn:dataset:a#offer","datasetId":"urn:dataset:a","connectorAddress":"` + provider.URL + `"}`
+	start := time.Now()
+	resp, err := http.Post(srv.URL, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Errorf("handleInitiate took %v to respond, want it to return before the provider (which is still blocked) responds", elapsed)
+	}
+}
+
+func TestHandleInitiate_OnIdleAbandon_TerminatesThroughTheRetryingPath(t *testing.T) {
+	var attempts int
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/negotiations/request" {
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(NegotiationStateDocument{ProviderPID: "urn:uuid:provider-1"})
+			return
+		}
+		// Every other path is the termination attempt. Reject the first —
+		// the registration-order race this policy exists to survive — and
+		// accept the second, proving the send goes through pushCallback's
+		// retrying path rather than a bespoke one-shot send.
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	origBackoffs := callbackRetryBackoffs
+	callbackRetryBackoffs = []time.Duration{time.Millisecond}
+	defer func() { callbackRetryBackoffs = origBackoffs }()
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	restore := validateOutgoingCallback
+	validateOutgoingCallback = func(string) error { return nil }
+	defer func() { validateOutgoingCallback = restore }()
+
+	cfg := config.Config{
+		PublicURL:        "https://connector.example.org",
+		ConsumerPolicies: []config.ConsumerPolicy{{DatasetID: "urn:dataset:a", OnIdle: "abandon"}},
+	}
+	h := negotiationHandler{cfg: cfg, store: st}
+	srv := httptest.NewServer(http.HandlerFunc(h.handleInitiate))
+	defer srv.Close()
+
+	body := `{"providerId":"urn:participant:tck","offerId":"urn:dataset:a#offer","datasetId":"urn:dataset:a","connectorAddress":"` + provider.URL + `"}`
+	resp, err := http.Post(srv.URL, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for attempts < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if attempts < 2 {
+		t.Fatalf("provider received %d termination attempt(s), want at least 2 — the first rejection must not be the end of it", attempts)
+	}
+}
+
+func newConsumerHandlerWithNegotiation(t *testing.T, cfg config.Config, n store.ConsumerNegotiation) (negotiationHandler, *store.Store) {
+	t.Helper()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	if err := st.CreateConsumer(n); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+	return negotiationHandler{cfg: cfg, store: st}, st
+}
+
+func TestHandleOffers_Accept_SendsAcceptedEvent(t *testing.T) {
+	var gotEventType string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var msg EventMessage
+		json.NewDecoder(r.Body).Decode(&msg)
+		gotEventType = msg.EventType
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateRequested
+	h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+	srv := httptest.NewServer(http.HandlerFunc(h.handleOffers))
+	defer srv.Close()
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(offerMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleOffers(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	waitForConsumerState(t, st, n.ConsumerPID, StateAccepted)
+	if gotEventType != eventTypeAccepted {
+		t.Errorf("provider received EventType = %q, want ACCEPTED", gotEventType)
+	}
+}
+
+func TestHandleOffers_Passive_TakesNoAction(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("provider received a request, want none — this negotiation's policy is passive")
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateRequested
+	cfg := config.Config{ConsumerPolicies: []config.ConsumerPolicy{{DatasetID: n.DatasetID, OnOffer: "passive"}}}
+	h, st := newConsumerHandlerWithNegotiation(t, cfg, n)
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(offerMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleOffers(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	got := waitForConsumerState(t, st, n.ConsumerPID, StateOffered)
+	if got.State != StateOffered {
+		t.Errorf("State = %q, want it to durably hold OFFERED", got.State)
+	}
+}
+
+func TestHandleOffers_Reject_SendsTermination(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateRequested
+	cfg := config.Config{ConsumerPolicies: []config.ConsumerPolicy{{DatasetID: n.DatasetID, OnOffer: "reject"}}}
+	h, st := newConsumerHandlerWithNegotiation(t, cfg, n)
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(offerMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleOffers(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	waitForConsumerState(t, st, n.ConsumerPID, StateTerminated)
+}
+
+func TestHandleOffers_Counter_SendsCounterRequest(t *testing.T) {
+	var gotProviderPID string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var msg CounterRequestMessage
+		json.NewDecoder(r.Body).Decode(&msg)
+		gotProviderPID = msg.ProviderPID
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateRequested
+	cfg := config.Config{ConsumerPolicies: []config.ConsumerPolicy{{DatasetID: n.DatasetID, OnOffer: "counter"}}}
+	h, st := newConsumerHandlerWithNegotiation(t, cfg, n)
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(offerMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleOffers(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for gotProviderPID == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if gotProviderPID != n.ProviderPID {
+		t.Errorf("provider received ProviderPID = %q, want %q", gotProviderPID, n.ProviderPID)
+	}
+	got := waitForConsumerState(t, st, n.ConsumerPID, StateOffered)
+	if got.State != StateOffered {
+		t.Error("counter reaction must not change local state — the negotiation stays OFFERED")
+	}
+}
+
+func TestHandleOffers_IllegalFromAcceptedIs400(t *testing.T) {
+	n := testConsumerNegotiation()
+	n.State = StateAccepted
+	h, _ := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(offerMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleOffers(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestHandleAgreement_Verify_SendsVerification(t *testing.T) {
+	var gotVerification bool
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotVerification = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateAccepted
+	h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(agreementMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleAgreement(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	waitForConsumerState(t, st, n.ConsumerPID, StateVerified)
+	if !gotVerification {
+		t.Error("provider never received a verification POST")
+	}
+}
+
+func TestHandleAgreement_Verify_NeverAcknowledged_StaysAgreed(t *testing.T) {
+	orig := callbackRetryBackoffs
+	callbackRetryBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { callbackRetryBackoffs = orig }()
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateAccepted
+	h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(agreementMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleAgreement(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	got := waitForConsumerState(t, st, n.ConsumerPID, StateAgreed)
+	if got.State != StateAgreed {
+		t.Errorf("State = %q, want AGREED — verification was never acknowledged, so this connector must not report VERIFIED", got.State)
+	}
+}
+
+func TestHandleAgreement_Reject_SendsTermination(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateRequested
+	cfg := config.Config{ConsumerPolicies: []config.ConsumerPolicy{{DatasetID: n.DatasetID, OnAgreement: "reject"}}}
+	h, st := newConsumerHandlerWithNegotiation(t, cfg, n)
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(agreementMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleAgreement(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	waitForConsumerState(t, st, n.ConsumerPID, StateTerminated)
+}
+
+func TestHandleAgreement_IllegalFromOfferedIs400(t *testing.T) {
+	n := testConsumerNegotiation()
+	n.State = StateOffered
+	h, _ := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(agreementMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleAgreement(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+// offerMessageJSON and agreementMessageJSON build minimal, valid message
+// bodies for the handler tests above — the fields these handlers actually
+// read, nothing more (matching this project's own direct-field-check
+// convention).
+func offerMessageJSON(n store.ConsumerNegotiation) string {
+	return `{"@context":["` + ContextURL + `"],"@type":"` + ContractOfferMessageType + `",` +
+		`"providerPid":"` + n.ProviderPID + `","consumerPid":"` + n.ConsumerPID + `",` +
+		`"offer":{"@id":"` + n.OfferID + `","target":"` + n.DatasetID + `","permission":[]}}`
+}
+
+func agreementMessageJSON(n store.ConsumerNegotiation) string {
+	return `{"@context":["` + ContextURL + `"],"@type":"` + ContractAgreementMessageType + `",` +
+		`"providerPid":"` + n.ProviderPID + `","consumerPid":"` + n.ConsumerPID + `",` +
+		`"agreement":{"@id":"` + n.ProviderPID + `","target":"` + n.DatasetID + `","permission":[],"assigner":"x","assignee":"y","timestamp":"2026-08-15T00:00:00Z"}}`
+}
+
+func TestHandleEvent_DispatchesToConsumerBranchForAFinalizedEvent(t *testing.T) {
+	n := testConsumerNegotiation()
+	n.State = StateVerified
+	h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + ContractNegotiationEventMessageType + `","eventType":"FINALIZED"}`
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(body))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleEvent(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	waitForConsumerState(t, st, n.ConsumerPID, StateFinalized)
+}
+
+func TestHandleEvent_ConsumerBranch_IllegalFromOfferedIs400(t *testing.T) {
+	n := testConsumerNegotiation()
+	n.State = StateOffered
+	h, _ := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + ContractNegotiationEventMessageType + `","eventType":"FINALIZED"}`
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(body))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleEvent(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestHandleEvent_UnknownIDIs404(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	h := negotiationHandler{cfg: config.Config{}, store: st}
+
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + ContractNegotiationEventMessageType + `","eventType":"FINALIZED"}`
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(body))
+	req.SetPathValue("id", "does-not-exist")
+	w := httptest.NewRecorder()
+	h.handleEvent(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestHandleTermination_DispatchesToConsumerBranch(t *testing.T) {
+	n := testConsumerNegotiation()
+	n.State = StateOffered
+	h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + ContractNegotiationTerminationMessageType + `","code":"1"}`
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(body))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleTermination(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	waitForConsumerState(t, st, n.ConsumerPID, StateTerminated)
+}
+
+func TestHandleGetNegotiation_DispatchesToConsumerBranch(t *testing.T) {
+	n := testConsumerNegotiation()
+	n.State = StateAgreed
+	h, _ := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleGetNegotiation(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var doc NegotiationStateDocument
+	if err := json.NewDecoder(w.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if doc.State != StateAgreed || doc.ConsumerPID != n.ConsumerPID {
+		t.Errorf("doc = %+v, want the consumer negotiation's own state and pid", doc)
+	}
+}
+
+func TestHandleGetNegotiation_ProviderBranchStillWorks(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	now := time.Now()
+	pn := store.Negotiation{
+		ProviderPID: "urn:uuid:provider-only", ConsumerPID: "urn:uuid:consumer-only",
+		State: StateRequested, DatasetID: "urn:dataset:a", OfferID: "urn:dataset:a#offer",
+		CallbackAddress: "https://consumer.example.org", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.Create(pn); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	h := negotiationHandler{cfg: config.Config{}, store: st}
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.SetPathValue("id", pn.ProviderPID)
+	w := httptest.NewRecorder()
+	h.handleGetNegotiation(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a provider-role negotiation must still resolve after this milestone adds a second table", w.Code)
+	}
+}

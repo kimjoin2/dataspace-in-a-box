@@ -46,8 +46,9 @@ const (
 	terminationCallbackPath = "/negotiations/%s/termination"
 )
 
-// negotiationHandler serves the contract negotiation protocol, provider
-// role only.
+// negotiationHandler serves the contract negotiation protocol, both roles.
+// Which role a given {id} belongs to is resolved by which store table it is
+// found in — see handleEvent's doc comment.
 type negotiationHandler struct {
 	cfg   config.Config
 	store *store.Store
@@ -110,6 +111,220 @@ func (h negotiationHandler) handleContractRequest(w http.ResponseWriter, r *http
 	go h.dispatch(n, outcome)
 }
 
+// initiateRequestBody is the plain-JSON (not JSON-LD) body the TCK's own
+// negotiation.initiate.url hook POSTs to trigger this connector to start a
+// negotiation as consumer. Not a DSP protocol message — see the design
+// spec's "The initiate endpoint is not a management feature".
+type initiateRequestBody struct {
+	ProviderID       string `json:"providerId"`
+	OfferID          string `json:"offerId"`
+	DatasetID        string `json:"datasetId"`
+	ConnectorAddress string `json:"connectorAddress"`
+}
+
+// handleInitiate serves POST /negotiations/initiate. It responds 200 as
+// soon as the negotiation is recorded and dispatches the actual outbound
+// ContractRequestMessage in a goroutine — the same requirement as every
+// other handler in this file, even though this endpoint is not itself a
+// DSP message: net/http still will not put the 200 on the wire until this
+// handler returns.
+func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Request) {
+	var body initiateRequestBody
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes))
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "the request body is not a JSON object")
+		return
+	}
+	if body.ProviderID == "" || body.OfferID == "" || body.DatasetID == "" || body.ConnectorAddress == "" {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"providerId, offerId, datasetId, and connectorAddress are all required")
+		return
+	}
+	if err := validateOutgoingCallback(body.ConnectorAddress); err != nil {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "connectorAddress: "+err.Error())
+		return
+	}
+
+	consumerPID, err := store.NewUUID()
+	if err != nil {
+		slog.Error("generate consumer pid", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	now := time.Now()
+	n := store.ConsumerNegotiation{
+		ConsumerPID:     consumerPID,
+		ProviderBaseURL: body.ConnectorAddress,
+		State:           StateRequested,
+		DatasetID:       body.DatasetID,
+		OfferID:         body.OfferID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := h.store.CreateConsumer(n); err != nil {
+		slog.Error("create consumer negotiation", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	go h.startNegotiation(n)
+}
+
+// startNegotiation sends the initial ContractRequestMessage and, once the
+// provider's synchronous response reveals its providerPid, applies this
+// connector's on_idle policy: wait (do nothing further) or abandon (an
+// immediate termination through sendConsumerTermination's retrying path —
+// see the design spec's "on_idle: abandon" policy row for why this must
+// not be a bespoke one-shot send).
+func (h negotiationHandler) startNegotiation(n store.ConsumerNegotiation) {
+	msg := buildConsumerRequestMessage(n.ConsumerPID, n.DatasetID, n.OfferID, h.cfg.PublicURL+VersionPath)
+	providerPID, err := sendInitialRequest(n.ProviderBaseURL, msg)
+	if err != nil {
+		slog.Error("send initial request", "consumer_pid", n.ConsumerPID, "error", err)
+		return
+	}
+	if err := h.store.SetConsumerProviderPID(n.ConsumerPID, providerPID); err != nil {
+		slog.Error("record provider pid", "consumer_pid", n.ConsumerPID, "error", err)
+		return
+	}
+	n.ProviderPID = providerPID
+
+	policy := resolvePolicy(h.cfg, n.DatasetID)
+	if policy.OnIdle == "abandon" {
+		sendConsumerTermination(n)
+		if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateTerminated, time.Now()); err != nil {
+			slog.Warn("drop stale consumer negotiation state update", "consumer_pid", n.ConsumerPID, "error", err)
+		}
+	}
+}
+
+// handleOffers serves POST /negotiations/{id}/offers, a ContractOfferMessage
+// pushed by the provider. {id} is this connector's own consumer pid.
+func (h negotiationHandler) handleOffers(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	n, ok, err := h.store.GetConsumer(id)
+	if err != nil {
+		slog.Error("get consumer negotiation", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		writeError(w, ContractNegotiationErrorType, http.StatusNotFound, "no negotiation with id "+id)
+		return
+	}
+
+	var msg OfferMessage
+	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
+	if err := json.NewDecoder(body).Decode(&msg); err != nil {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"the request body is not a JSON object in the DSP compact form")
+		return
+	}
+	if !checkEnvelope(w, msg.Context, msg.Type, ContractOfferMessageType) {
+		return
+	}
+	if !offerLegalFrom(n.State) {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"an offer is only valid from REQUESTED, negotiation is "+n.State)
+		return
+	}
+
+	if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateOffered, time.Now()); err != nil {
+		writeStateUpdateError(w, n.ConsumerPID, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+
+	n.State = StateOffered
+	go h.reactToOffer(n)
+}
+
+// reactToOffer applies this connector's on_offer policy once an offer has
+// been durably recorded as OFFERED.
+func (h negotiationHandler) reactToOffer(n store.ConsumerNegotiation) {
+	policy := resolvePolicy(h.cfg, n.DatasetID)
+	switch policy.OnOffer {
+	case "accept":
+		sendAcceptedEvent(n)
+		if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateAccepted, time.Now()); err != nil {
+			slog.Warn("drop stale consumer negotiation state update", "consumer_pid", n.ConsumerPID, "error", err)
+		}
+	case "reject":
+		sendConsumerTermination(n)
+		if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateTerminated, time.Now()); err != nil {
+			slog.Warn("drop stale consumer negotiation state update", "consumer_pid", n.ConsumerPID, "error", err)
+		}
+	case "counter":
+		sendCounterRequest(n)
+	case "passive":
+		// Take no action; the negotiation durably holds OFFERED.
+	}
+}
+
+// handleAgreement serves POST /negotiations/{id}/agreement, a
+// ContractAgreementMessage pushed by the provider.
+func (h negotiationHandler) handleAgreement(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	n, ok, err := h.store.GetConsumer(id)
+	if err != nil {
+		slog.Error("get consumer negotiation", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		writeError(w, ContractNegotiationErrorType, http.StatusNotFound, "no negotiation with id "+id)
+		return
+	}
+
+	var msg AgreementMessage
+	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
+	if err := json.NewDecoder(body).Decode(&msg); err != nil {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"the request body is not a JSON object in the DSP compact form")
+		return
+	}
+	if !checkEnvelope(w, msg.Context, msg.Type, ContractAgreementMessageType) {
+		return
+	}
+	if !agreementLegalFrom(n.State) {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"an agreement is only valid from REQUESTED or ACCEPTED, negotiation is "+n.State)
+		return
+	}
+
+	if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateAgreed, time.Now()); err != nil {
+		writeStateUpdateError(w, n.ConsumerPID, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+
+	n.State = StateAgreed
+	go h.reactToAgreement(n)
+}
+
+// reactToAgreement applies this connector's on_agreement policy. The verify
+// branch's state write is gated on sendVerification's return value — see
+// the design spec's "03-06 verification-ack rule": this connector must not
+// report VERIFIED unless the provider actually acknowledged it.
+func (h negotiationHandler) reactToAgreement(n store.ConsumerNegotiation) {
+	policy := resolvePolicy(h.cfg, n.DatasetID)
+	switch policy.OnAgreement {
+	case "verify":
+		if !sendVerification(n) {
+			return
+		}
+		if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateVerified, time.Now()); err != nil {
+			slog.Warn("drop stale consumer negotiation state update", "consumer_pid", n.ConsumerPID, "error", err)
+		}
+	case "reject":
+		sendConsumerTermination(n)
+		if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateTerminated, time.Now()); err != nil {
+			slog.Warn("drop stale consumer negotiation state update", "consumer_pid", n.ConsumerPID, "error", err)
+		}
+	}
+}
+
 // handleReRequest serves POST /negotiations/{id}/request: a consumer
 // counter-offer or resend while the negotiation is OFFERED. A negotiation
 // gets exactly one re-request while OFFERED — a second one, whatever it
@@ -166,15 +381,36 @@ func (h negotiationHandler) handleReRequest(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// handleEvent serves POST /negotiations/{id}/events, currently only the
-// consumer's ACCEPTED event (this connector never receives FINALIZED — it
-// sends that one).
+// handleEvent serves POST /negotiations/{id}/events. {id} names either a
+// provider-role negotiation (the consumer's ACCEPTED event) or a
+// consumer-role one (the provider's FINALIZED event) — the two suites
+// register the identical path shape, which Go's ServeMux would reject as a
+// duplicate pattern if this milestone tried to register a second route for
+// it, so this dispatches on which table {id} is actually found in.
 func (h negotiationHandler) handleEvent(w http.ResponseWriter, r *http.Request) {
-	n, ok, err := h.lookup(w, r)
-	if err != nil || !ok {
+	id := r.PathValue("id")
+	if n, ok, err := h.store.Get(id); err != nil {
+		slog.Error("get negotiation", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	} else if ok {
+		h.handleProviderAcceptedEvent(w, r, n)
 		return
 	}
+	if cn, ok, err := h.store.GetConsumer(id); err != nil {
+		slog.Error("get consumer negotiation", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	} else if ok {
+		h.handleConsumerFinalizedEvent(w, r, cn)
+		return
+	}
+	writeError(w, ContractNegotiationErrorType, http.StatusNotFound, "no negotiation with id "+id)
+}
 
+// handleProviderAcceptedEvent is handleEvent's provider-role branch —
+// unchanged behavior from before this milestone.
+func (h negotiationHandler) handleProviderAcceptedEvent(w http.ResponseWriter, r *http.Request, n store.Negotiation) {
 	var msg struct {
 		Context   []string `json:"@context"`
 		Type      string   `json:"@type"`
@@ -209,6 +445,41 @@ func (h negotiationHandler) handleEvent(w http.ResponseWriter, r *http.Request) 
 	n.State = StateAccepted
 	outcome := decideAccept(h.cfg, n.DatasetID, now)
 	go h.dispatch(n, outcome)
+}
+
+// handleConsumerFinalizedEvent is handleEvent's consumer-role branch: the
+// FINALIZED event a provider sends once this connector's verification is
+// acknowledged. Legal only from VERIFIED — see finalizedEventLegalFrom.
+func (h negotiationHandler) handleConsumerFinalizedEvent(w http.ResponseWriter, r *http.Request, n store.ConsumerNegotiation) {
+	var msg struct {
+		Context   []string `json:"@context"`
+		Type      string   `json:"@type"`
+		EventType string   `json:"eventType"`
+	}
+	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
+	if err := json.NewDecoder(body).Decode(&msg); err != nil {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"the request body is not a JSON object in the DSP compact form")
+		return
+	}
+	if !checkEnvelope(w, msg.Context, msg.Type, ContractNegotiationEventMessageType) {
+		return
+	}
+	if msg.EventType != eventTypeFinalized {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "eventType must be FINALIZED")
+		return
+	}
+	if !finalizedEventLegalFrom(n.State) {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"finalized is only valid from VERIFIED, negotiation is "+n.State)
+		return
+	}
+
+	if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateFinalized, time.Now()); err != nil {
+		writeStateUpdateError(w, n.ConsumerPID, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleVerification serves POST /negotiations/{id}/agreement/verification.
@@ -248,16 +519,35 @@ func (h negotiationHandler) handleVerification(w http.ResponseWriter, r *http.Re
 	go h.pushAndStore(n, StateFinalized, eventCallbackPath, buildFinalizedEventMessage(n))
 }
 
-// handleTermination serves POST /negotiations/{id}/termination, from either
-// party. It is rejected from FINALIZED (CN:03-01) and from an already
-// TERMINATED negotiation — both are terminal states with nothing left to
-// terminate.
+// handleTermination serves POST /negotiations/{id}/termination, from
+// either party and, after this milestone, for either role — see
+// handleEvent's doc comment for why this dispatches rather than registering
+// a second route.
 func (h negotiationHandler) handleTermination(w http.ResponseWriter, r *http.Request) {
-	n, ok, err := h.lookup(w, r)
-	if err != nil || !ok {
+	id := r.PathValue("id")
+	if n, ok, err := h.store.Get(id); err != nil {
+		slog.Error("get negotiation", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	} else if ok {
+		h.handleProviderTermination(w, r, n)
 		return
 	}
+	if cn, ok, err := h.store.GetConsumer(id); err != nil {
+		slog.Error("get consumer negotiation", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	} else if ok {
+		h.handleConsumerTermination(w, r, cn)
+		return
+	}
+	writeError(w, ContractNegotiationErrorType, http.StatusNotFound, "no negotiation with id "+id)
+}
 
+// handleProviderTermination is handleTermination's provider-role branch —
+// unchanged behavior from before this milestone. It is rejected from
+// FINALIZED (CN:03-01) and from an already TERMINATED negotiation.
+func (h negotiationHandler) handleProviderTermination(w http.ResponseWriter, r *http.Request, n store.Negotiation) {
 	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
 	var msg envelope
 	if err := json.NewDecoder(body).Decode(&msg); err != nil {
@@ -281,13 +571,53 @@ func (h negotiationHandler) handleTermination(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleGetNegotiation serves GET /negotiations/{id}.
-func (h negotiationHandler) handleGetNegotiation(w http.ResponseWriter, r *http.Request) {
-	n, ok, err := h.lookup(w, r)
-	if err != nil || !ok {
+// handleConsumerTermination is handleTermination's consumer-role branch.
+func (h negotiationHandler) handleConsumerTermination(w http.ResponseWriter, r *http.Request, n store.ConsumerNegotiation) {
+	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
+	var msg envelope
+	if err := json.NewDecoder(body).Decode(&msg); err != nil {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	writeJSON(w, http.StatusOK, buildNegotiationStateDocument(n))
+	if !checkEnvelope(w, msg.Context, msg.Type, ContractNegotiationTerminationMessageType) {
+		return
+	}
+	if n.State == StateFinalized || n.State == StateTerminated {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"negotiation cannot be terminated from "+n.State)
+		return
+	}
+
+	if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateTerminated, time.Now()); err != nil {
+		writeStateUpdateError(w, n.ConsumerPID, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleGetNegotiation serves GET /negotiations/{id}, for either role — see
+// handleEvent's doc comment for why this dispatches rather than registering
+// a second route.
+func (h negotiationHandler) handleGetNegotiation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if n, ok, err := h.store.Get(id); err != nil {
+		slog.Error("get negotiation", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	} else if ok {
+		writeJSON(w, http.StatusOK, buildNegotiationStateDocument(n))
+		return
+	}
+	if cn, ok, err := h.store.GetConsumer(id); err != nil {
+		slog.Error("get consumer negotiation", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	} else if ok {
+		writeJSON(w, http.StatusOK, buildConsumerNegotiationStateDocument(cn))
+		return
+	}
+	writeError(w, ContractNegotiationErrorType, http.StatusNotFound, "no negotiation with id "+id)
 }
 
 // lookup resolves {id} to a stored negotiation, writing the appropriate

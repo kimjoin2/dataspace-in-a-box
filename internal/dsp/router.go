@@ -27,6 +27,9 @@ func NewRouter(cfg config.Config, st *store.Store) http.Handler {
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/agreement/verification", neg.handleVerification)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/termination", neg.handleTermination)
 	mux.HandleFunc("GET "+VersionPath+"/negotiations/{id}", neg.handleGetNegotiation)
+	mux.HandleFunc("POST "+VersionPath+"/negotiations/initiate", neg.handleInitiate)
+	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/offers", neg.handleOffers)
+	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/agreement", neg.handleAgreement)
 
 	// Transfer process mounts here next, in TCK order. Until then, requests
 	// below that path are correctly 404.
