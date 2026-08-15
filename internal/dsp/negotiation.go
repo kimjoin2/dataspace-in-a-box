@@ -359,3 +359,154 @@ func buildTerminationMessage(n store.Negotiation) TerminationMessage {
 		Code:        terminationCode,
 	}
 }
+
+// CounterRequestMessage is the body of the consumer role's counter-request
+// — POST {provider}/negotiations/{providerPid}/request — sent when this
+// connector's on_offer:counter policy decides to repeat its original ask
+// rather than accept a provider's counter-offer. Unlike RequestMessage (the
+// very first request, which has no providerPid yet), this carries the
+// providerPid the synchronous response to that first request returned:
+// without it, the TCK's own reference provider treats the message as a
+// duplicate initial request rather than a counter, and the test that
+// expects it hangs. See the design spec's "The 01-02 counter-request
+// shape".
+type CounterRequestMessage struct {
+	Context     []string `json:"@context"`
+	Type        string   `json:"@type"`
+	ProviderPID string   `json:"providerPid"`
+	ConsumerPID string   `json:"consumerPid"`
+	Offer       OfferRef `json:"offer"`
+}
+
+// VerificationMessage is the ContractAgreementVerificationMessage this
+// connector sends once its on_agreement:verify policy decides to verify a
+// received agreement.
+type VerificationMessage struct {
+	Context     []string `json:"@context"`
+	ID          string   `json:"@id"`
+	Type        string   `json:"@type"`
+	ProviderPID string   `json:"providerPid"`
+	ConsumerPID string   `json:"consumerPid"`
+}
+
+// buildConsumerRequestMessage is the initial ContractRequestMessage this
+// connector sends as consumer. datasetID and offerID are echoed verbatim
+// from what POST /negotiations/initiate received — never regenerated. The
+// TCK's own mock provider recovers datasetID from offerID via its own
+// "offer"+datasetID convention, a different shape from this connector's
+// own provider-role offerIDSuffix convention; conflating the two would
+// break the request the TCK's mock provider needs to parse.
+func buildConsumerRequestMessage(consumerPID, datasetID, offerID, callbackAddress string) RequestMessage {
+	return RequestMessage{
+		Context:         []string{ContextURL},
+		Type:            ContractRequestMessageType,
+		ConsumerPID:     consumerPID,
+		Offer:           OfferRef{ID: offerID, Target: datasetID},
+		CallbackAddress: callbackAddress,
+	}
+}
+
+func buildCounterRequestMessage(n store.ConsumerNegotiation) CounterRequestMessage {
+	return CounterRequestMessage{
+		Context:     []string{ContextURL},
+		Type:        ContractRequestMessageType,
+		ProviderPID: n.ProviderPID,
+		ConsumerPID: n.ConsumerPID,
+		Offer:       OfferRef{ID: n.OfferID, Target: n.DatasetID},
+	}
+}
+
+func buildAcceptedEventMessage(n store.ConsumerNegotiation) EventMessage {
+	return EventMessage{
+		Context:     []string{ContextURL},
+		ID:          newMessageID(),
+		Type:        ContractNegotiationEventMessageType,
+		ProviderPID: n.ProviderPID,
+		ConsumerPID: n.ConsumerPID,
+		EventType:   eventTypeAccepted,
+	}
+}
+
+func buildVerificationMessage(n store.ConsumerNegotiation) VerificationMessage {
+	return VerificationMessage{
+		Context:     []string{ContextURL},
+		ID:          newMessageID(),
+		Type:        ContractAgreementVerificationMessageType,
+		ProviderPID: n.ProviderPID,
+		ConsumerPID: n.ConsumerPID,
+	}
+}
+
+func buildConsumerTerminationMessage(n store.ConsumerNegotiation) TerminationMessage {
+	return TerminationMessage{
+		Context:     []string{ContextURL},
+		ID:          newMessageID(),
+		Type:        ContractNegotiationTerminationMessageType,
+		ProviderPID: n.ProviderPID,
+		ConsumerPID: n.ConsumerPID,
+		Code:        terminationCode,
+	}
+}
+
+func buildConsumerNegotiationStateDocument(n store.ConsumerNegotiation) NegotiationStateDocument {
+	return NegotiationStateDocument{
+		Context:     []string{ContextURL},
+		ID:          newMessageID(),
+		Type:        ContractNegotiationType,
+		ProviderPID: n.ProviderPID,
+		ConsumerPID: n.ConsumerPID,
+		State:       n.State,
+	}
+}
+
+// resolvePolicy returns the consumer policy for datasetID, with every field
+// defaulted to this connector's sane, real-world behavior: accept an offer,
+// verify an agreement, wait if nothing arrives. See the design spec's "Why
+// a policy configuration, not a content rule".
+func resolvePolicy(cfg config.Config, datasetID string) config.ConsumerPolicy {
+	for _, p := range cfg.ConsumerPolicies {
+		if p.DatasetID == datasetID {
+			return normalizedPolicy(p)
+		}
+	}
+	return normalizedPolicy(config.ConsumerPolicy{DatasetID: datasetID})
+}
+
+func normalizedPolicy(p config.ConsumerPolicy) config.ConsumerPolicy {
+	if p.OnOffer == "" {
+		p.OnOffer = "accept"
+	}
+	if p.OnAgreement == "" {
+		p.OnAgreement = "verify"
+	}
+	if p.OnIdle == "" {
+		p.OnIdle = "wait"
+	}
+	return p
+}
+
+// offerLegalFrom reports whether an incoming ContractOfferMessage is a
+// legal transition from state — the consumer-role mirror of the provider's
+// own CN:03 structural checks. Only REQUESTED accepts an offer; CN_C:03-05
+// confirms a second offer is illegal once ACCEPTED, and there is no test
+// that ever sends a second offer while already OFFERED either.
+func offerLegalFrom(state string) bool {
+	return state == StateRequested
+}
+
+// agreementLegalFrom reports whether an incoming ContractAgreementMessage
+// is a legal transition from state. Legal from REQUESTED (the
+// direct-agreement path with no offer ever pushed, CN_C:01-04) or ACCEPTED
+// (the normal path after this connector accepted an offer); illegal from
+// OFFERED (CN_C:03-02).
+func agreementLegalFrom(state string) bool {
+	return state == StateRequested || state == StateAccepted
+}
+
+// finalizedEventLegalFrom reports whether an incoming FINALIZED event is a
+// legal transition from state. Legal only from VERIFIED — CN_C:03-01,
+// 03-03, 03-04, and 03-06 each require rejection from a different other
+// state.
+func finalizedEventLegalFrom(state string) bool {
+	return state == StateVerified
+}

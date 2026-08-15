@@ -190,3 +190,186 @@ func TestBuildTerminationMessage(t *testing.T) {
 		t.Errorf("msg = %+v, want it to carry n's identifiers", msg)
 	}
 }
+
+func testConsumerNegotiation() store.ConsumerNegotiation {
+	return store.ConsumerNegotiation{
+		ConsumerPID:     "urn:uuid:consumer-1",
+		ProviderPID:     "urn:uuid:provider-1",
+		ProviderBaseURL: "https://provider.example.org",
+		State:           StateOffered,
+		DatasetID:       "urn:dataset:a",
+		OfferID:         "urn:dataset:a#offer",
+	}
+}
+
+func TestBuildConsumerRequestMessage(t *testing.T) {
+	msg := buildConsumerRequestMessage("urn:uuid:consumer-1", "urn:dataset:a", "urn:dataset:a#offer", "https://connector.example.org/2025-1")
+	if msg.Type != ContractRequestMessageType {
+		t.Errorf("Type = %q, want %q", msg.Type, ContractRequestMessageType)
+	}
+	if msg.ConsumerPID != "urn:uuid:consumer-1" {
+		t.Errorf("ConsumerPID = %q, want urn:uuid:consumer-1", msg.ConsumerPID)
+	}
+	if msg.Offer.ID != "urn:dataset:a#offer" || msg.Offer.Target != "urn:dataset:a" {
+		t.Errorf("Offer = %+v, want the exact ids passed in, not regenerated", msg.Offer)
+	}
+	if msg.CallbackAddress != "https://connector.example.org/2025-1" {
+		t.Errorf("CallbackAddress = %q, want the address passed in", msg.CallbackAddress)
+	}
+}
+
+func TestBuildCounterRequestMessage(t *testing.T) {
+	n := testConsumerNegotiation()
+	msg := buildCounterRequestMessage(n)
+	if msg.Type != ContractRequestMessageType {
+		t.Errorf("Type = %q, want %q", msg.Type, ContractRequestMessageType)
+	}
+	if msg.ProviderPID != n.ProviderPID {
+		t.Errorf("ProviderPID = %q, want %q — a counter-request must carry it or the TCK's mock provider treats it as a duplicate initial request", msg.ProviderPID, n.ProviderPID)
+	}
+	if msg.ConsumerPID != n.ConsumerPID {
+		t.Errorf("ConsumerPID = %q, want %q", msg.ConsumerPID, n.ConsumerPID)
+	}
+	if msg.Offer.ID != n.OfferID || msg.Offer.Target != n.DatasetID {
+		t.Errorf("Offer = %+v, want the negotiation's original ask repeated", msg.Offer)
+	}
+}
+
+func TestBuildAcceptedEventMessage(t *testing.T) {
+	n := testConsumerNegotiation()
+	msg := buildAcceptedEventMessage(n)
+	if msg.Type != ContractNegotiationEventMessageType {
+		t.Errorf("Type = %q, want %q", msg.Type, ContractNegotiationEventMessageType)
+	}
+	if msg.EventType != eventTypeAccepted {
+		t.Errorf("EventType = %q, want %q", msg.EventType, eventTypeAccepted)
+	}
+	if msg.ProviderPID != n.ProviderPID || msg.ConsumerPID != n.ConsumerPID {
+		t.Errorf("msg = %+v, want it to carry n's identifiers", msg)
+	}
+}
+
+func TestBuildVerificationMessage(t *testing.T) {
+	n := testConsumerNegotiation()
+	msg := buildVerificationMessage(n)
+	if msg.Type != ContractAgreementVerificationMessageType {
+		t.Errorf("Type = %q, want %q", msg.Type, ContractAgreementVerificationMessageType)
+	}
+	if msg.ProviderPID != n.ProviderPID || msg.ConsumerPID != n.ConsumerPID {
+		t.Errorf("msg = %+v, want it to carry n's identifiers", msg)
+	}
+	if msg.ID == "" {
+		t.Error("ID is empty, want a generated message id")
+	}
+}
+
+func TestBuildConsumerTerminationMessage(t *testing.T) {
+	n := testConsumerNegotiation()
+	msg := buildConsumerTerminationMessage(n)
+	if msg.Type != ContractNegotiationTerminationMessageType {
+		t.Errorf("Type = %q, want %q", msg.Type, ContractNegotiationTerminationMessageType)
+	}
+	if msg.Code != terminationCode {
+		t.Errorf("Code = %q, want %q", msg.Code, terminationCode)
+	}
+	if msg.ProviderPID != n.ProviderPID || msg.ConsumerPID != n.ConsumerPID {
+		t.Errorf("msg = %+v, want it to carry n's identifiers", msg)
+	}
+}
+
+func TestBuildConsumerNegotiationStateDocument(t *testing.T) {
+	n := testConsumerNegotiation()
+	doc := buildConsumerNegotiationStateDocument(n)
+	if doc.Type != ContractNegotiationType {
+		t.Errorf("Type = %q, want %q", doc.Type, ContractNegotiationType)
+	}
+	if doc.ProviderPID != n.ProviderPID || doc.ConsumerPID != n.ConsumerPID || doc.State != n.State {
+		t.Errorf("doc = %+v, want it to carry n's identifiers and state", doc)
+	}
+}
+
+func TestResolvePolicy_UnmatchedDatasetGetsEveryDefault(t *testing.T) {
+	cfg := config.Config{}
+	p := resolvePolicy(cfg, "urn:dataset:unmatched")
+	if p.OnOffer != "accept" || p.OnAgreement != "verify" || p.OnIdle != "wait" {
+		t.Errorf("resolvePolicy = %+v, want accept/verify/wait for an unmatched dataset", p)
+	}
+}
+
+func TestResolvePolicy_UsesTheMatchingEntry(t *testing.T) {
+	cfg := config.Config{ConsumerPolicies: []config.ConsumerPolicy{
+		{DatasetID: "urn:dataset:a", OnOffer: "passive"},
+		{DatasetID: "urn:dataset:b", OnOffer: "reject"},
+	}}
+	p := resolvePolicy(cfg, "urn:dataset:b")
+	if p.OnOffer != "reject" {
+		t.Errorf("resolvePolicy(...,\"urn:dataset:b\") = %+v, want on_offer reject", p)
+	}
+}
+
+func TestResolvePolicy_UnsetFieldsOnAMatchedEntryStillDefault(t *testing.T) {
+	cfg := config.Config{ConsumerPolicies: []config.ConsumerPolicy{
+		{DatasetID: "urn:dataset:a", OnOffer: "passive"},
+	}}
+	p := resolvePolicy(cfg, "urn:dataset:a")
+	if p.OnOffer != "passive" {
+		t.Errorf("OnOffer = %q, want passive (the configured value)", p.OnOffer)
+	}
+	if p.OnAgreement != "verify" || p.OnIdle != "wait" {
+		t.Errorf("OnAgreement/OnIdle = %q/%q, want the defaults for fields the entry left unset", p.OnAgreement, p.OnIdle)
+	}
+}
+
+func TestOfferLegalFrom(t *testing.T) {
+	cases := []struct {
+		state string
+		want  bool
+	}{
+		{StateRequested, true},
+		{StateOffered, false},
+		{StateAccepted, false},
+		{StateAgreed, false},
+		{StateVerified, false},
+	}
+	for _, c := range cases {
+		if got := offerLegalFrom(c.state); got != c.want {
+			t.Errorf("offerLegalFrom(%q) = %v, want %v", c.state, got, c.want)
+		}
+	}
+}
+
+func TestAgreementLegalFrom(t *testing.T) {
+	cases := []struct {
+		state string
+		want  bool
+	}{
+		{StateRequested, true},
+		{StateAccepted, true},
+		{StateOffered, false},
+		{StateAgreed, false},
+		{StateVerified, false},
+	}
+	for _, c := range cases {
+		if got := agreementLegalFrom(c.state); got != c.want {
+			t.Errorf("agreementLegalFrom(%q) = %v, want %v", c.state, got, c.want)
+		}
+	}
+}
+
+func TestFinalizedEventLegalFrom(t *testing.T) {
+	cases := []struct {
+		state string
+		want  bool
+	}{
+		{StateVerified, true},
+		{StateRequested, false},
+		{StateOffered, false},
+		{StateAccepted, false},
+		{StateAgreed, false},
+	}
+	for _, c := range cases {
+		if got := finalizedEventLegalFrom(c.state); got != c.want {
+			t.Errorf("finalizedEventLegalFrom(%q) = %v, want %v", c.state, got, c.want)
+		}
+	}
+}
