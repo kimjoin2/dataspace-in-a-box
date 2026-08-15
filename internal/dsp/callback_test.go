@@ -110,3 +110,29 @@ func TestValidateCallbackURLRespectsLookupTimeout(t *testing.T) {
 			elapsed, callbackHostnameLookupTimeout)
 	}
 }
+
+func TestPushCallbackReturnsTrueOnSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if !pushCallback(srv.URL, map[string]string{"hello": "world"}) {
+		t.Error("pushCallback = false, want true for a server that accepts the push")
+	}
+}
+
+func TestPushCallbackReturnsFalseAfterExhaustingRetries(t *testing.T) {
+	orig := callbackRetryBackoffs
+	callbackRetryBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { callbackRetryBackoffs = orig }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	if pushCallback(srv.URL, map[string]string{"hello": "world"}) {
+		t.Error("pushCallback = true, want false once every attempt is rejected")
+	}
+}

@@ -67,29 +67,28 @@ var callbackHostnameLookupTimeout = 5 * time.Second
 var callbackRetryBackoffs = []time.Duration{300 * time.Millisecond, 700 * time.Millisecond, 1500 * time.Millisecond, 3 * time.Second}
 
 // pushCallback sends v as a JSON POST to url, retrying on failure per
-// callbackRetryBackoffs. Still best-effort overall: if every attempt fails,
-// it is logged and never returned to the caller. The provider is
-// authoritative over negotiation state in this protocol, so a dropped push
-// does not corrupt anything a consumer cannot recover from
-// GET /negotiations/{id}.
+// callbackRetryBackoffs, and reports whether it ultimately succeeded. Most
+// callers discard the return value: the provider role's own pushes, and
+// most of this connector's consumer-role reactions, write their state
+// unconditionally once the push is dispatched (DECISIONS.md section 23.12).
+// The one exception is the consumer role's verify-on-agreement reaction,
+// which must not advance to VERIFIED unless this returns true — see the
+// design spec's "03-06 verification-ack rule".
 //
 // pushCallback itself does not filter url — callers must run it through
 // validateCallbackURL first (negotiation_handler.go's pushAndStore does).
-// Keeping the filter out of this function is what lets
-// TestPushCallbackSendsJSON exercise a real POST against an
-// httptest.Server, which is itself bound to loopback.
-func pushCallback(url string, v any) {
+func pushCallback(url string, v any) bool {
 	body, err := json.Marshal(v)
 	if err != nil {
 		slog.Error("marshal callback push", "url", url, "error", err)
-		return
+		return false
 	}
 	for attempt := 0; ; attempt++ {
 		if attemptPush(url, body, attempt) {
-			return
+			return true
 		}
 		if attempt >= len(callbackRetryBackoffs) {
-			return
+			return false
 		}
 		time.Sleep(callbackRetryBackoffs[attempt])
 	}
