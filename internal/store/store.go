@@ -42,6 +42,27 @@ type Negotiation struct {
 	UpdatedAt   time.Time
 }
 
+// ConsumerNegotiation is one persisted contract negotiation this connector
+// is running as consumer — the mirror of Negotiation, which is this
+// connector's provider-role state. Keyed by this connector's own generated
+// consumer pid, not the provider's. A second table rather than a role
+// column on negotiations: see the design spec's Storage section.
+type ConsumerNegotiation struct {
+	ConsumerPID string
+	// ProviderPID is empty until the initial request's synchronous response
+	// reveals it.
+	ProviderPID string
+	// ProviderBaseURL is the connectorAddress POST /negotiations/initiate
+	// supplied — every subsequent outbound call this connector makes as
+	// consumer for this negotiation is addressed relative to it.
+	ProviderBaseURL string
+	State           string
+	DatasetID       string
+	OfferID         string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS negotiations (
     provider_pid     TEXT PRIMARY KEY,
@@ -53,6 +74,18 @@ CREATE TABLE IF NOT EXISTS negotiations (
     rerequested      INTEGER NOT NULL DEFAULT 0,
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL
+);`
+
+const consumerSchema = `
+CREATE TABLE IF NOT EXISTS consumer_negotiations (
+    consumer_pid      TEXT PRIMARY KEY,
+    provider_pid      TEXT NOT NULL DEFAULT '',
+    provider_base_url TEXT NOT NULL,
+    state             TEXT NOT NULL,
+    dataset_id        TEXT NOT NULL,
+    offer_id          TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
 );`
 
 const timeFormat = time.RFC3339Nano
@@ -86,6 +119,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create schema in %s: %w", path, err)
+	}
+	if _, err := db.Exec(consumerSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create consumer schema in %s: %w", path, err)
 	}
 	if err := migrate(db); err != nil {
 		db.Close()
@@ -250,4 +287,100 @@ func (s *Store) explainNoUpdate(providerPID, want string) error {
 	}
 	return fmt.Errorf("update negotiation %s: %w: wanted %s, found state %s, rerequested %t",
 		providerPID, ErrStateChanged, want, n.State, n.Rerequested)
+}
+
+// CreateConsumer persists a new consumer-role negotiation.
+func (s *Store) CreateConsumer(n ConsumerNegotiation) error {
+	_, err := s.db.Exec(
+		`INSERT INTO consumer_negotiations (consumer_pid, provider_pid, provider_base_url, state, dataset_id, offer_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.ConsumerPID, n.ProviderPID, n.ProviderBaseURL, n.State, n.DatasetID, n.OfferID,
+		n.CreatedAt.UTC().Format(timeFormat), n.UpdatedAt.UTC().Format(timeFormat),
+	)
+	if err != nil {
+		return fmt.Errorf("create consumer negotiation %s: %w", n.ConsumerPID, err)
+	}
+	return nil
+}
+
+// GetConsumer returns the consumer-role negotiation with the given consumer pid.
+func (s *Store) GetConsumer(consumerPID string) (ConsumerNegotiation, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT consumer_pid, provider_pid, provider_base_url, state, dataset_id, offer_id, created_at, updated_at
+		 FROM consumer_negotiations WHERE consumer_pid = ?`, consumerPID)
+
+	var n ConsumerNegotiation
+	var created, updated string
+	err := row.Scan(&n.ConsumerPID, &n.ProviderPID, &n.ProviderBaseURL, &n.State, &n.DatasetID, &n.OfferID,
+		&created, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ConsumerNegotiation{}, false, nil
+	}
+	if err != nil {
+		return ConsumerNegotiation{}, false, fmt.Errorf("get consumer negotiation %s: %w", consumerPID, err)
+	}
+	if n.CreatedAt, err = time.Parse(timeFormat, created); err != nil {
+		return ConsumerNegotiation{}, false, fmt.Errorf("get consumer negotiation %s: parse created_at: %w", consumerPID, err)
+	}
+	if n.UpdatedAt, err = time.Parse(timeFormat, updated); err != nil {
+		return ConsumerNegotiation{}, false, fmt.Errorf("get consumer negotiation %s: parse updated_at: %w", consumerPID, err)
+	}
+	return n, true, nil
+}
+
+// SetConsumerState moves a consumer-role negotiation from state `from` to
+// state `to` — the same compare-and-swap SetState uses for the provider
+// role, for the same reason: consumer-role reactions also run in goroutines
+// (DECISIONS.md section 23.8) and can outlive a termination that arrived in
+// the meantime.
+func (s *Store) SetConsumerState(consumerPID, from, to string, updatedAt time.Time) error {
+	res, err := s.db.Exec(`UPDATE consumer_negotiations SET state = ?, updated_at = ? WHERE consumer_pid = ? AND state = ?`,
+		to, updatedAt.UTC().Format(timeFormat), consumerPID, from)
+	if err != nil {
+		return fmt.Errorf("update consumer negotiation %s: %w", consumerPID, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update consumer negotiation %s: %w", consumerPID, err)
+	}
+	if rows == 0 {
+		return s.explainNoConsumerUpdate(consumerPID, "state "+from)
+	}
+	return nil
+}
+
+// SetConsumerProviderPID records the counterparty's pid once the initial
+// request's synchronous response reveals it. A plain update, not a CAS:
+// nothing else ever writes this column, so there is no concurrent write to
+// lose a race against — see the design spec's "The initial request"
+// section.
+func (s *Store) SetConsumerProviderPID(consumerPID, providerPID string) error {
+	res, err := s.db.Exec(`UPDATE consumer_negotiations SET provider_pid = ? WHERE consumer_pid = ?`,
+		providerPID, consumerPID)
+	if err != nil {
+		return fmt.Errorf("update consumer negotiation %s: %w", consumerPID, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update consumer negotiation %s: %w", consumerPID, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("update consumer negotiation %s: %w", consumerPID, ErrNotFound)
+	}
+	return nil
+}
+
+// explainNoConsumerUpdate is explainNoUpdate's consumer-table counterpart —
+// kept separate because explainNoUpdate hard-codes a Get against
+// negotiations and would name the wrong table's state otherwise.
+func (s *Store) explainNoConsumerUpdate(consumerPID, want string) error {
+	n, ok, err := s.GetConsumer(consumerPID)
+	if err != nil {
+		return fmt.Errorf("update consumer negotiation %s: %w", consumerPID, err)
+	}
+	if !ok {
+		return fmt.Errorf("update consumer negotiation %s: %w", consumerPID, ErrNotFound)
+	}
+	return fmt.Errorf("update consumer negotiation %s: %w: wanted %s, found state %s",
+		consumerPID, ErrStateChanged, want, n.State)
 }

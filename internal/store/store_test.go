@@ -352,3 +352,198 @@ func TestConcurrentCreateOnFileBackedStore(t *testing.T) {
 		}
 	}
 }
+
+func testConsumerNegotiation() ConsumerNegotiation {
+	now := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
+	return ConsumerNegotiation{
+		ConsumerPID:     "urn:uuid:consumer-1",
+		ProviderBaseURL: "https://provider.example.org",
+		State:           "REQUESTED",
+		DatasetID:       "urn:dataset:a",
+		OfferID:         "urn:dataset:a#offer",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+}
+
+func TestCreateConsumerAndGetConsumer(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	n := testConsumerNegotiation()
+	if err := s.CreateConsumer(n); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+
+	got, ok, err := s.GetConsumer(n.ConsumerPID)
+	if err != nil {
+		t.Fatalf("GetConsumer: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetConsumer: not found, want the created negotiation")
+	}
+	if got.ConsumerPID != n.ConsumerPID || got.ProviderPID != n.ProviderPID ||
+		got.ProviderBaseURL != n.ProviderBaseURL || got.State != n.State ||
+		got.DatasetID != n.DatasetID || got.OfferID != n.OfferID {
+		t.Errorf("GetConsumer returned %+v, want %+v", got, n)
+	}
+	if !got.CreatedAt.Equal(n.CreatedAt) || !got.UpdatedAt.Equal(n.UpdatedAt) {
+		t.Errorf("timestamps = %v/%v, want %v/%v", got.CreatedAt, got.UpdatedAt, n.CreatedAt, n.UpdatedAt)
+	}
+}
+
+func TestGetConsumerMissingReturnsFalse(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	_, ok, err := s.GetConsumer("does-not-exist")
+	if err != nil {
+		t.Fatalf("GetConsumer: %v", err)
+	}
+	if ok {
+		t.Error("GetConsumer: found a negotiation that was never created")
+	}
+}
+
+func TestSetConsumerStateUpdatesRow(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	n := testConsumerNegotiation()
+	if err := s.CreateConsumer(n); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+
+	updatedAt := n.UpdatedAt.Add(time.Hour)
+	if err := s.SetConsumerState(n.ConsumerPID, "REQUESTED", "OFFERED", updatedAt); err != nil {
+		t.Fatalf("SetConsumerState: %v", err)
+	}
+
+	got, ok, err := s.GetConsumer(n.ConsumerPID)
+	if err != nil {
+		t.Fatalf("GetConsumer: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetConsumer: not found after SetConsumerState")
+	}
+	if got.State != "OFFERED" {
+		t.Errorf("State = %q, want OFFERED", got.State)
+	}
+	if !got.UpdatedAt.Equal(updatedAt) {
+		t.Errorf("UpdatedAt = %v, want %v", got.UpdatedAt, updatedAt)
+	}
+}
+
+func TestSetConsumerStateFromTheWrongStateIsRejected(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	n := testConsumerNegotiation()
+	if err := s.CreateConsumer(n); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+
+	err = s.SetConsumerState(n.ConsumerPID, "AGREED", "VERIFIED", time.Now())
+	if !errors.Is(err, ErrStateChanged) {
+		t.Errorf("SetConsumerState from the wrong state = %v, want ErrStateChanged", err)
+	}
+}
+
+func TestSetConsumerStateMissingIsError(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	err = s.SetConsumerState("does-not-exist", "REQUESTED", "OFFERED", time.Now())
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetConsumerState on a missing negotiation = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSetConsumerProviderPIDUpdatesRow(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	n := testConsumerNegotiation()
+	if err := s.CreateConsumer(n); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+
+	if err := s.SetConsumerProviderPID(n.ConsumerPID, "urn:uuid:provider-1"); err != nil {
+		t.Fatalf("SetConsumerProviderPID: %v", err)
+	}
+
+	got, ok, err := s.GetConsumer(n.ConsumerPID)
+	if err != nil {
+		t.Fatalf("GetConsumer: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetConsumer: not found")
+	}
+	if got.ProviderPID != "urn:uuid:provider-1" {
+		t.Errorf("ProviderPID = %q, want urn:uuid:provider-1", got.ProviderPID)
+	}
+}
+
+func TestSetConsumerProviderPIDMissingIsError(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.SetConsumerProviderPID("does-not-exist", "urn:uuid:provider-1"); err == nil {
+		t.Error("SetConsumerProviderPID: expected an error updating a negotiation that does not exist")
+	}
+}
+
+func TestOpenPersistsBothTablesAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/dsbox.db"
+
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	n := testConsumerNegotiation()
+	if err := s1.CreateConsumer(n); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer s2.Close()
+
+	got, ok, err := s2.GetConsumer(n.ConsumerPID)
+	if err != nil {
+		t.Fatalf("GetConsumer: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetConsumer: the row created before reopening the store is gone")
+	}
+	if got.ConsumerPID != n.ConsumerPID {
+		t.Errorf("ConsumerPID = %q, want %q", got.ConsumerPID, n.ConsumerPID)
+	}
+}
