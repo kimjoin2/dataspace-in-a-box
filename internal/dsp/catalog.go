@@ -8,13 +8,21 @@ import (
 
 // DSP node type names and the derived-value rules for catalog documents.
 //
-// Every node this project emits carries @type, including where the JSON Schema
-// does not require it. The DSP context defines most terms inside type-scoped
-// contexts — participantId and dataset only inside Catalog, hasPolicy and
-// distribution only inside Dataset, format and accessService only inside
-// Distribution, endpointURL only inside DataService. A node without @type
-// therefore loses those keys silently during expansion: the document still
-// parses, and the information is simply gone.
+// The five node types named here — Catalog, Dataset, Offer, Distribution,
+// DataService — each carry @type, including where the JSON Schema does not
+// require it. The DSP context defines most terms inside type-scoped contexts:
+// participantId and dataset only inside Catalog, hasPolicy and distribution
+// only inside Dataset, format and accessService only inside Distribution,
+// endpointURL only inside DataService. A node without @type therefore loses
+// those keys silently during expansion: the document still parses, and the
+// information is simply gone.
+//
+// The ODRL rule nodes are outside that rule and are why it is stated about
+// these five rather than about everything this project emits: Permission
+// below carries no @type, and neither does negotiation.go's
+// TerminationReason. Both are shapes the TCK accepts as they stand, and
+// adding a @type no schema asks for would change a passing wire shape on
+// reasoning alone.
 const (
 	CatalogType      = "Catalog"
 	DatasetType      = "Dataset"

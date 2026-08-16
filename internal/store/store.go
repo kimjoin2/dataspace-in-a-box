@@ -353,10 +353,12 @@ func (s *Store) SetConsumerState(consumerPID, from, to string, updatedAt time.Ti
 // request's synchronous response reveals it. A plain update, not a CAS:
 // nothing else ever writes this column, so there is no concurrent write to
 // lose a race against — see the design spec's "The initial request"
-// section.
-func (s *Store) SetConsumerProviderPID(consumerPID, providerPID string) error {
-	res, err := s.db.Exec(`UPDATE consumer_negotiations SET provider_pid = ? WHERE consumer_pid = ?`,
-		providerPID, consumerPID)
+// section. It refreshes updated_at like every other write here: this is a
+// change to the row, and leaving the column alone would have it report a
+// time the row demonstrably did not last change at.
+func (s *Store) SetConsumerProviderPID(consumerPID, providerPID string, updatedAt time.Time) error {
+	res, err := s.db.Exec(`UPDATE consumer_negotiations SET provider_pid = ?, updated_at = ? WHERE consumer_pid = ?`,
+		providerPID, updatedAt.UTC().Format(timeFormat), consumerPID)
 	if err != nil {
 		return fmt.Errorf("update consumer negotiation %s: %w", consumerPID, err)
 	}

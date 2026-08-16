@@ -63,7 +63,11 @@ var callbackHostnameLookupTimeout = 5 * time.Second
 // fixed, the race shrank back to the occasional single retry this schedule
 // was originally sized for. What remains genuinely unproven is only the
 // margin: whether 5 attempts is enough for network conditions other than
-// this project's own (§23.7). A var, not a const, so tests can shorten it.
+// this project's own (§23.7). A var, not a const, so tests can shorten it —
+// once, in TestMain, and never restored. Pushes run on goroutines that
+// outlive the test that started them and read this inside the retry loop, so
+// a per-test assign-and-restore is a data race `go test -race` reports; see
+// callback_test.go's TestMain.
 var callbackRetryBackoffs = []time.Duration{300 * time.Millisecond, 700 * time.Millisecond, 1500 * time.Millisecond, 3 * time.Second}
 
 // pushCallback sends v as a JSON POST to url, retrying on failure per

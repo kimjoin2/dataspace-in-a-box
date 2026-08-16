@@ -516,10 +516,13 @@ otherwise advance the negotiation to `AGREED`.
 To be precise about what is being checked, since the wording invites a
 stronger reading than the code supports: the validity period is *this
 connector's own*, `config.Dataset.ValidityUntil` from YAML, evaluated by
-`isValid`. It is not an ODRL constraint parsed from an inbound message — no
-code in `internal/dsp` parses one. See §24.6 for what does happen to a
-counterparty-authored constraint, and why the provider role never needed to
-ask.
+`isValid`. It is not an ODRL constraint evaluated from an inbound message —
+no code in `internal/dsp` evaluates one. (Since §24.6, inbound constraint
+nodes are *parsed*, structurally: `Permission.Constraint []json.RawMessage`
+and `carriesConstraint` establish that one is present, which is exactly what
+§14 means by "parses successfully". What no code does is interpret what it
+says.) See §24.6 for what does happen to a counterparty-authored constraint,
+and why the provider role never needed to ask.
 
 *Trade-off accepted.* `CN:02-07` needs a termination trigger that fires
 *after* a negotiation has already passed this check once (at `AGREED`) — a
@@ -721,9 +724,12 @@ produced had it been checked a moment later.
 ## 24. Contract negotiation (consumer role)
 
 **Decision.** Seven decisions taken while implementing the contract
-negotiation protocol's consumer role. The provider role's §23 is untouched:
-everything here is additive, and the `CN` suite's pass count is unchanged by
-this milestone.
+negotiation protocol's consumer role. No decision in §23 is reversed or
+amended: everything here is additive, and the `CN` suite's pass count is
+unchanged by this milestone. The §23 *text* did move — §23.4 gained a
+paragraph pinning down what its "validity-period constraint" is and is not,
+which §24.6 made worth saying explicitly. That is a clarification of what
+§23.4 always decided, not a change to it.
 
 **24.1 Consumer-role negotiations live in a second table,
 `consumer_negotiations`, not in the existing `negotiations` table behind a
@@ -861,8 +867,9 @@ offer alone would leave the rule violable through a door the TCK itself
 uses.
 
 **Why this gap was consumer-only.** Not because the provider role checks
-constraints — no non-test code in `internal/dsp` parses an ODRL constraint,
-and §23.4's "validity-period constraint" is this connector's own advertised
+constraints — no non-test code in `internal/dsp` evaluates an ODRL
+constraint, only detects that one is there, and §23.4's "validity-period
+constraint" is this connector's own advertised
 `config.Dataset.ValidityUntil` read from YAML (`isValid`), not anything
 recovered from an inbound message. The provider role is *structurally
 immune*: it matches a request against its own advertised offer by identifier
@@ -903,8 +910,14 @@ lean inbound struct as the outbound body is exactly the defect the first real
 `CN_C` run found — all 16 tests were rejected before the negotiation could
 start, with `required property 'permission' not found, required property
 'prohibition' not found, required property '@type' not found`. Every offer
-this connector emits, in either role, now goes through one constructor,
-`newNegotiationOffer`.
+this connector emits *in a negotiation message*, in either role, now goes
+through one constructor, `newNegotiationOffer` — `buildOfferMessage`,
+`buildConsumerRequestMessage`, and `buildCounterRequestMessage`. The
+catalog's `hasPolicy` offer is a different node and stays where it is, built
+inline by `buildDataset` in `catalog.go`: it is that file's own `Offer` type,
+not a `NegotiationOffer`, because the catalog schema *forbids* the `target`
+`newNegotiationOffer` always sets. Anyone changing the shape of an emitted
+offer therefore has two places to look, not one.
 
 *Trade-off accepted.* Two Go types for one DSP message, which has to be kept
 in mind whenever that message's shape changes. The alternative — one struct

@@ -486,7 +486,8 @@ func TestSetConsumerProviderPIDUpdatesRow(t *testing.T) {
 		t.Fatalf("CreateConsumer: %v", err)
 	}
 
-	if err := s.SetConsumerProviderPID(n.ConsumerPID, "urn:uuid:provider-1"); err != nil {
+	updated := n.CreatedAt.Add(time.Minute)
+	if err := s.SetConsumerProviderPID(n.ConsumerPID, "urn:uuid:provider-1", updated); err != nil {
 		t.Fatalf("SetConsumerProviderPID: %v", err)
 	}
 
@@ -500,6 +501,13 @@ func TestSetConsumerProviderPIDUpdatesRow(t *testing.T) {
 	if got.ProviderPID != "urn:uuid:provider-1" {
 		t.Errorf("ProviderPID = %q, want urn:uuid:provider-1", got.ProviderPID)
 	}
+	// Recording the pid is a change to the row, so updated_at must move with
+	// it — every other write here refreshes it, and a column that lied about
+	// when the row last changed would be worse than not having one.
+	if !got.UpdatedAt.Equal(updated) {
+		t.Errorf("UpdatedAt = %s, want %s — recording the provider pid must refresh it",
+			got.UpdatedAt, updated.UTC())
+	}
 }
 
 func TestSetConsumerProviderPIDMissingIsError(t *testing.T) {
@@ -509,7 +517,7 @@ func TestSetConsumerProviderPIDMissingIsError(t *testing.T) {
 	}
 	defer s.Close()
 
-	if err := s.SetConsumerProviderPID("does-not-exist", "urn:uuid:provider-1"); err == nil {
+	if err := s.SetConsumerProviderPID("does-not-exist", "urn:uuid:provider-1", time.Now()); err == nil {
 		t.Error("SetConsumerProviderPID: expected an error updating a negotiation that does not exist")
 	}
 }

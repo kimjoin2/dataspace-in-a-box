@@ -4,9 +4,30 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 )
+
+// TestMain shortens callbackRetryBackoffs once, for the whole package, before
+// any test runs — what that var's own doc comment says tests may do, but done
+// here rather than per-test. The real schedule would spend 5.5s sleeping in
+// every test that exhausts it, and what those tests are about is the outcome,
+// not the length of the waits.
+//
+// Once, and never restored, is the load-bearing part. Every push runs on a
+// fire-and-forget goroutine (DECISIONS.md §23.8) with no handle to join, so a
+// test that assigned this var and restored it in a defer would be writing it
+// while a push it started — or one a previous test started — is still reading
+// it inside pushCallback's retry loop. That is a data race `go test -race`
+// reports, and it is not fixable by waiting: the loop's last read of this var
+// happens after the last HTTP response the test could possibly observe. This
+// single write, on the main goroutine before m.Run, has nothing to race
+// against.
+func TestMain(m *testing.M) {
+	callbackRetryBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
+	os.Exit(m.Run())
+}
 
 func TestPushCallbackSendsJSON(t *testing.T) {
 	received := make(chan map[string]any, 1)
@@ -33,15 +54,10 @@ func TestPushCallbackSendsJSON(t *testing.T) {
 }
 
 // TestPushCallbackToUnreachableURLDoesNotPanic exercises the path where every
-// attempt fails. It shortens callbackRetryBackoffs — what that var's own doc
-// comment says tests may do — because the real schedule would spend 5.5s
-// sleeping here, and what is under test is that exhausting the retries
+// attempt fails. It runs against TestMain's shortened backoff schedule, so
+// exhausting the retries costs milliseconds; what is under test is that it
 // returns quietly, not how long the waits are.
 func TestPushCallbackToUnreachableURLDoesNotPanic(t *testing.T) {
-	orig := callbackRetryBackoffs
-	callbackRetryBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
-	defer func() { callbackRetryBackoffs = orig }()
-
 	pushCallback("http://127.0.0.1:1/unreachable", map[string]string{"hello": "world"})
 }
 
@@ -123,10 +139,6 @@ func TestPushCallbackReturnsTrueOnSuccess(t *testing.T) {
 }
 
 func TestPushCallbackReturnsFalseAfterExhaustingRetries(t *testing.T) {
-	orig := callbackRetryBackoffs
-	callbackRetryBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
-	defer func() { callbackRetryBackoffs = orig }()
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))

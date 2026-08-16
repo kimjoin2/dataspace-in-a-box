@@ -140,8 +140,16 @@ func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Reques
 			"providerId, offerId, datasetId, and connectorAddress are all required")
 		return
 	}
+	// The rejection reason is logged, not echoed. validateOutgoingCallback
+	// reports which address a hostname resolved to, and §24.2 keeps this
+	// endpoint open to anonymous callers — returning that text would make it
+	// a name-resolution oracle for the network this connector sits on. The
+	// provider role's equivalent rejection (pushAndStore) logs for the same
+	// reason.
 	if err := validateOutgoingCallback(body.ConnectorAddress); err != nil {
-		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "connectorAddress: "+err.Error())
+		slog.Warn("reject initiate", "connector_address", body.ConnectorAddress, "error", err)
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"connectorAddress is not an address this connector will send to")
 		return
 	}
 
@@ -184,7 +192,7 @@ func (h negotiationHandler) startNegotiation(n store.ConsumerNegotiation) {
 		slog.Error("send initial request", "consumer_pid", n.ConsumerPID, "error", err)
 		return
 	}
-	if err := h.store.SetConsumerProviderPID(n.ConsumerPID, providerPID); err != nil {
+	if err := h.store.SetConsumerProviderPID(n.ConsumerPID, providerPID, time.Now()); err != nil {
 		slog.Error("record provider pid", "consumer_pid", n.ConsumerPID, "error", err)
 		return
 	}
@@ -247,6 +255,7 @@ func (h negotiationHandler) handleOffers(w http.ResponseWriter, r *http.Request)
 // been durably recorded as OFFERED. constrained reports whether the offer
 // carried a constraint — see decideOfferReaction for what that changes.
 func (h negotiationHandler) reactToOffer(n store.ConsumerNegotiation, constrained bool) {
+	n = h.resolveProviderPID(n)
 	policy := resolvePolicy(h.cfg, n.DatasetID)
 	action := decideOfferReaction(policy.OnOffer, constrained)
 	if action != policy.OnOffer {
@@ -269,6 +278,43 @@ func (h negotiationHandler) reactToOffer(n store.ConsumerNegotiation, constraine
 	case "passive":
 		// Take no action; the negotiation durably holds OFFERED.
 	}
+}
+
+// resolveProviderPID re-reads n's row when the copy the handler took carries
+// no provider pid yet, so a pid recorded in the meantime is still picked up.
+//
+// The window is real but narrow. startNegotiation writes the pid only once
+// the initial request's synchronous response has returned
+// (SetConsumerProviderPID), while the handler that spawned this reaction read
+// its row from whatever was stored when the provider's push arrived. A push
+// that wins that race leaves n.ProviderPID empty, and every outbound path
+// template in negotiation_client.go formats it into the URL — producing
+// {base}/negotiations//events, which 404s through all five §23.7 attempts
+// while the reaction's own state write lands anyway. Re-reading closes it for
+// the local-SQLite-write-versus-network-round-trip timings that actually
+// occur; a push that beats the write outright still cannot be repaired here,
+// which is why the remaining case is logged at error rather than passed over.
+//
+// Only the pid is adopted from the fresh row. n.State stays the caller's,
+// because it is the precondition this reaction's compare-and-swap was decided
+// against (§23.12) — refreshing it would let a stale reaction overwrite a
+// state that moved on while it was deciding, which is the exact thing the
+// compare-and-swap exists to prevent.
+func (h negotiationHandler) resolveProviderPID(n store.ConsumerNegotiation) store.ConsumerNegotiation {
+	if n.ProviderPID == "" {
+		current, ok, err := h.store.GetConsumer(n.ConsumerPID)
+		if err != nil {
+			slog.Error("get consumer negotiation", "consumer_pid", n.ConsumerPID, "error", err)
+		} else if ok {
+			n.ProviderPID = current.ProviderPID
+		}
+	}
+	if n.ProviderPID == "" {
+		slog.Error("reacting to a push that arrived before the provider pid was recorded; "+
+			"the outbound message will be addressed to a malformed url and cannot be delivered",
+			"consumer_pid", n.ConsumerPID, "dataset_id", n.DatasetID)
+	}
+	return n
 }
 
 // handleAgreement serves POST /negotiations/{id}/agreement, a
@@ -321,6 +367,7 @@ func (h negotiationHandler) handleAgreement(w http.ResponseWriter, r *http.Reque
 // reports whether the agreement carried a constraint — see
 // decideAgreementReaction.
 func (h negotiationHandler) reactToAgreement(n store.ConsumerNegotiation, constrained bool) {
+	n = h.resolveProviderPID(n)
 	policy := resolvePolicy(h.cfg, n.DatasetID)
 	action := decideAgreementReaction(policy.OnAgreement, constrained)
 	if action != policy.OnAgreement {
@@ -638,9 +685,18 @@ func (h negotiationHandler) handleGetNegotiation(w http.ResponseWriter, r *http.
 	writeError(w, ContractNegotiationErrorType, http.StatusNotFound, "no negotiation with id "+id)
 }
 
-// lookup resolves {id} to a stored negotiation, writing the appropriate
-// error response and returning ok=false if it cannot. Every handler above
-// except handleContractRequest starts with this.
+// lookup resolves {id} to a stored *provider-role* negotiation, writing the
+// appropriate error response and returning ok=false if it cannot.
+//
+// After this milestone's role-dispatch routing, only handleReRequest and
+// handleVerification use it. Those two serve the messages DSP sends
+// consumer-to-provider, so their {id} can be nothing but a pid this connector
+// generated as provider. The three handlers that serve both roles cannot use
+// it — handleEvent, handleTermination, and handleGetNegotiation must try the
+// consumer table before concluding {id} is unknown, so each does its own
+// two-table lookup and dispatches on which one answered (see handleEvent's
+// doc comment). handleOffers and handleAgreement are consumer-role only and
+// call GetConsumer directly.
 func (h negotiationHandler) lookup(w http.ResponseWriter, r *http.Request) (store.Negotiation, bool, error) {
 	providerPID := r.PathValue("id")
 	n, ok, err := h.store.Get(providerPID)
@@ -687,14 +743,19 @@ func checkEnvelope(w http.ResponseWriter, context []string, gotType, wantType st
 // so the state precondition that handler checked no longer holds — the same
 // 400 that check would have produced had it run a moment later. Anything
 // else is a real storage failure.
-func writeStateUpdateError(w http.ResponseWriter, providerPID string, err error) {
+//
+// negotiationPID is whichever pid identifies the negotiation in the table the
+// caller writes to: the provider pid from a provider-role handler, the
+// consumer pid from a consumer-role one. The log key is role-neutral for that
+// reason — naming it provider_pid mislabelled every consumer-role conflict.
+func writeStateUpdateError(w http.ResponseWriter, negotiationPID string, err error) {
 	if errors.Is(err, store.ErrStateChanged) {
-		slog.Warn("negotiation changed concurrently", "provider_pid", providerPID, "error", err)
+		slog.Warn("negotiation changed concurrently", "negotiation_pid", negotiationPID, "error", err)
 		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
-			"negotiation "+providerPID+" changed while this request was being handled")
+			"negotiation "+negotiationPID+" changed while this request was being handled")
 		return
 	}
-	slog.Error("update negotiation state", "provider_pid", providerPID, "error", err)
+	slog.Error("update negotiation state", "negotiation_pid", negotiationPID, "error", err)
 	w.WriteHeader(http.StatusInternalServerError)
 }
 
@@ -783,8 +844,11 @@ func (h negotiationHandler) delayedTerminate(n store.Negotiation) {
 // constructed URL is validated before anything is sent — see
 // validateCallbackURL's doc comment for why a request whose callbackAddress
 // resolves to this connector's own loopback network cannot be allowed
-// through. A rejection is logged and the push is skipped, matching
-// pushCallback's own best-effort, no-error-returned contract.
+// through. A rejection is logged and the push is skipped; the state write
+// below still runs, which is the same best-effort treatment pushAndStore
+// gives a push that was attempted and failed — it discards pushCallback's
+// bool return for the reason §23.12 gives, that the provider is
+// authoritative and a consumer can always recover via GET.
 func (h negotiationHandler) pushAndStore(n store.Negotiation, state, path string, msg any) {
 	callbackURL := n.CallbackAddress + fmt.Sprintf(path, n.ConsumerPID)
 	if err := validateOutgoingCallback(callbackURL); err != nil {

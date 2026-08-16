@@ -38,7 +38,7 @@ datasets:
     validity_until: 2020-01-01T00:00:00Z
 
 # CN_C: the consumer role's own autonomous reaction, keyed by the dataset_id
-# this connector itself requests (see config.properties below and
+# this connector itself requests (see config.properties alongside this file and
 # DECISIONS.md). Nine of the sixteen CN_C tests use the default policy
 # (accept/verify/wait) and need no entry here.
 consumer_policies:

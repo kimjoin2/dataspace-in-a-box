@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -937,9 +938,24 @@ func TestHandleInitiate_RespondsBeforeTheOutboundRequestCompletes(t *testing.T) 
 }
 
 func TestHandleInitiate_OnIdleAbandon_TerminatesThroughTheRetryingPath(t *testing.T) {
-	var attempts int
+	// attempts is written on the httptest server's goroutines and read by
+	// this test, so it is atomic rather than a plain int — the same
+	// cross-goroutine ordering problem TestHandleInitiate_Success solves with
+	// a channel, in a shape that counts.
+	var attempts atomic.Int64
+	// The consumer pid travels the same way, and for a concrete reason: it is
+	// generated inside handleInitiate, and this test needs it to wait for the
+	// reaction goroutine to finish before returning.
+	consumerPID := make(chan string, 1)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/negotiations/request" {
+			var msg map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				// Errorf, not Fatalf: this runs on the server's goroutine.
+				t.Errorf("provider: decode initial request: %v", err)
+			}
+			pid, _ := msg["consumerPid"].(string)
+			consumerPID <- pid
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(NegotiationStateDocument{ProviderPID: "urn:uuid:provider-1"})
 			return
@@ -948,18 +964,13 @@ func TestHandleInitiate_OnIdleAbandon_TerminatesThroughTheRetryingPath(t *testin
 		// the registration-order race this policy exists to survive — and
 		// accept the second, proving the send goes through pushCallback's
 		// retrying path rather than a bespoke one-shot send.
-		attempts++
-		if attempts == 1 {
+		if attempts.Add(1) == 1 {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer provider.Close()
-
-	origBackoffs := callbackRetryBackoffs
-	callbackRetryBackoffs = []time.Duration{time.Millisecond}
-	defer func() { callbackRetryBackoffs = origBackoffs }()
 
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -988,12 +999,20 @@ func TestHandleInitiate_OnIdleAbandon_TerminatesThroughTheRetryingPath(t *testin
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for attempts < 2 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	var pid string
+	select {
+	case pid = <-consumerPID:
+	case <-time.After(time.Second):
+		t.Fatal("the provider never received the initial contract request")
 	}
-	if attempts < 2 {
-		t.Fatalf("provider received %d termination attempt(s), want at least 2 — the first rejection must not be the end of it", attempts)
+
+	// Writing TERMINATED is startNegotiation's last act, so waiting for it
+	// both proves the abandon policy ran and bounds the goroutine, which
+	// would otherwise still be working when this test's deferred provider.Close
+	// and st.Close run.
+	waitForConsumerState(t, st, pid, StateTerminated)
+	if got := attempts.Load(); got < 2 {
+		t.Fatalf("provider received %d termination attempt(s), want at least 2 — the first rejection must not be the end of it", got)
 	}
 }
 
@@ -1059,6 +1078,12 @@ func TestHandleOffers_Passive_TakesNoAction(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
+	// A settle window, for the same reason the sibling
+	// ..._NeverAcknowledged_StaysAgreed has one: the state is already OFFERED
+	// when the handler returns, so waitForConsumerState below would come back
+	// immediately and this test would finish before a wrongly-dispatched
+	// reaction could reach the provider above and fail it.
+	time.Sleep(50 * time.Millisecond)
 	got := waitForConsumerState(t, st, n.ConsumerPID, StateOffered)
 	if got.State != StateOffered {
 		t.Errorf("State = %q, want it to durably hold OFFERED", got.State)
@@ -1088,11 +1113,15 @@ func TestHandleOffers_Reject_SendsTermination(t *testing.T) {
 }
 
 func TestHandleOffers_Counter_SendsCounterRequest(t *testing.T) {
-	var gotProviderPID string
+	// Buffered so the provider handler never blocks, and read from below
+	// rather than polled as a shared variable: the counter-request arrives on
+	// the goroutine reactToOffer runs on, so the channel is what orders that
+	// write against this test's read.
+	gotProviderPID := make(chan string, 1)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var msg CounterRequestMessage
 		json.NewDecoder(r.Body).Decode(&msg)
-		gotProviderPID = msg.ProviderPID
+		gotProviderPID <- msg.ProviderPID
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer provider.Close()
@@ -1110,17 +1139,81 @@ func TestHandleOffers_Counter_SendsCounterRequest(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for gotProviderPID == "" && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if gotProviderPID != n.ProviderPID {
-		t.Errorf("provider received ProviderPID = %q, want %q", gotProviderPID, n.ProviderPID)
+	select {
+	case gotPID := <-gotProviderPID:
+		if gotPID != n.ProviderPID {
+			t.Errorf("provider received ProviderPID = %q, want %q", gotPID, n.ProviderPID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the provider never received a counter-request")
 	}
 	got := waitForConsumerState(t, st, n.ConsumerPID, StateOffered)
 	if got.State != StateOffered {
 		t.Error("counter reaction must not change local state — the negotiation stays OFFERED")
 	}
+}
+
+// TestReactToOffer_PicksUpAProviderPIDRecordedAfterTheHandlerReadItsRow and
+// its agreement twin pin the fix for the window between a negotiation being
+// created and startNegotiation recording the provider's pid: a push that
+// arrives inside it hands the reaction a row whose ProviderPID is still
+// empty, and every outbound path template formats that pid into the URL. The
+// stale copy is what the reaction is called with here; the store already has
+// the pid, exactly as it would once the initial request's response landed.
+func TestReactToOffer_PicksUpAProviderPIDRecordedAfterTheHandlerReadItsRow(t *testing.T) {
+	gotPath := make(chan string, 1)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateOffered
+	stale := n
+	stale.ProviderPID = "" // what the handler read before the pid was stored
+	h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	h.reactToOffer(stale, false)
+
+	select {
+	case path := <-gotPath:
+		want := "/negotiations/" + n.ProviderPID + "/events"
+		if path != want {
+			t.Errorf("accepted event posted to %q, want %q — the pid recorded after the handler read its row must be picked up", path, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the provider never received the accepted event")
+	}
+	waitForConsumerState(t, st, n.ConsumerPID, StateAccepted)
+}
+
+func TestReactToAgreement_PicksUpAProviderPIDRecordedAfterTheHandlerReadItsRow(t *testing.T) {
+	gotPath := make(chan string, 1)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateAgreed
+	stale := n
+	stale.ProviderPID = ""
+	h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	h.reactToAgreement(stale, false)
+
+	select {
+	case path := <-gotPath:
+		want := "/negotiations/" + n.ProviderPID + "/agreement/verification"
+		if path != want {
+			t.Errorf("verification posted to %q, want %q", path, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the provider never received the verification")
+	}
+	waitForConsumerState(t, st, n.ConsumerPID, StateVerified)
 }
 
 func TestHandleOffers_IllegalFromAcceptedIs400(t *testing.T) {
@@ -1164,10 +1257,6 @@ func TestHandleAgreement_Verify_SendsVerification(t *testing.T) {
 }
 
 func TestHandleAgreement_Verify_NeverAcknowledged_StaysAgreed(t *testing.T) {
-	orig := callbackRetryBackoffs
-	callbackRetryBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
-	defer func() { callbackRetryBackoffs = orig }()
-
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))

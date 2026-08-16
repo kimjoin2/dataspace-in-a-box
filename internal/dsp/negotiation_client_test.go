@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
@@ -117,10 +116,6 @@ func TestSendVerification_ReturnsTrueOnSuccess(t *testing.T) {
 }
 
 func TestSendVerification_ReturnsFalseWhenNeverAcknowledged(t *testing.T) {
-	orig := callbackRetryBackoffs
-	callbackRetryBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
-	defer func() { callbackRetryBackoffs = orig }()
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))

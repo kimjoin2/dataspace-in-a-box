@@ -70,3 +70,94 @@ async-listener registration race produces (`DECISIONS.md` §23.7), and no
 other status code's behavior during that window has been observed. Worth
 doing when there is a real TCK run to verify it against, not on reasoning
 alone.
+
+## From the contract negotiation (consumer) milestone (2026-08)
+
+**Two package-level comments where one canonical package doc already
+exists.** `internal/dsp/negotiation_client.go:1` and
+`internal/dsp/negotiation.go:1-5` each open with a comment attached to the
+`package dsp` clause, though `internal/dsp/version.go:1` holds the canonical
+package doc — `go doc` concatenates them in file order, which is not what
+either was written for. `negotiation.go` at least says where the real one
+lives; `negotiation_client.go` does not. Fix both (detach them from the
+package clause, or fold them into a file-purpose comment above it) or
+neither; fixing one is the worst of the three states.
+
+**Two test overrides of package vars still assign-and-restore, the pattern
+`callbackRetryBackoffs` was moved out of.** `validateOutgoingCallback`
+(`negotiation_handler_test.go:117`, and three `defer` restores) and
+`terminateAfterOfferDelay` (`:233`) are both read on push goroutines that can
+outlive the test that set them, which is structurally the same race the three
+`callbackRetryBackoffs` restores were. They are clean today — `go test -race
+-count=6 -shuffle=on ./internal/dsp/` passes, because every test that
+overrides them waits for the push it triggered to land — and they predate the
+consumer milestone. Now that CI runs `-race`, though, they are the most
+likely source of a future flake on an unrelated PR. The fix is the one
+`callbackRetryBackoffs` got: set once in `TestMain`, never restore.
+
+**`TestSendAcceptedEvent_*` and `TestSendVerification_*` do not assert the
+request path.** Both assert the body and the return value, and both build the
+URL from a path template with the provider pid formatted into it — the thing
+most likely to be wrong. Their siblings `TestSendCounterRequest_*` and
+`TestSendConsumerTermination_*` both check `r.URL.Path` against the expected
+literal. The two new `TestReactTo*_PicksUpAProviderPID*` tests now cover
+those two paths incidentally, which is not the same as the direct sibling
+coverage the other two have.
+
+**No unknown-id-404 regression test for `handleTermination`'s dispatch
+path.** `handleEvent` and `handleGetNegotiation` each have one
+(`TestHandleEvent_UnknownIDIs404` and its catalog-side twin), in the same
+literal shape. `handleTermination` gained the identical two-table dispatch in
+this milestone and has only the found-in-consumer-table case
+(`TestHandleTermination_DispatchesToConsumerBranch`). Nothing currently pins
+that a pid in neither table still produces a JSON `404` rather than falling
+through.
+
+**`handleProviderAcceptedEvent` and `handleConsumerFinalizedEvent` declare an
+identical anonymous decode struct.** Three fields (`@context`, `@type`,
+`eventType`), byte-for-byte the same in both. Extracting a named
+`eventEnvelope` next to `envelope` would remove the duplication, but with
+exactly two call sites in one file it would also be an abstraction introduced
+before a third case exists to shape it. Worth doing if a third event handler
+ever appears — not before.
+
+**Constraint-triggered terminations carry no `reason`, only `code: "1"`.**
+`buildConsumerTerminationMessage` sets no `Reason`, so a counterparty whose
+offer was rejected for carrying a constraint this connector cannot enforce
+(§24.6) is told only that the negotiation ended. §14's case for rejecting
+rather than ignoring is that "explicit rejection is honest"; a bare code is
+explicit but not informative, and `TerminationMessage.Reason` already exists
+(`omitempty`) to carry the sentence. Deferred rather than done because adding
+a field to a message the TCK validates is a wire-shape change, and this is
+worth doing when there is a real TCK run available to verify it against.
+
+**Two `dsbox` instances on `127.0.0.1` cannot negotiate with each other.**
+`dev_mode` (`internal/config/config.go:170-171`) relaxes only the `https`
+requirement on `public_url`; it does not reach `isDisallowedCallbackIP`
+(`internal/dsp/callback.go:175-178`), so `POST /negotiations/initiate` with
+`connectorAddress: http://127.0.0.1:8090` is rejected `400`. Pre-existing —
+§23.6 chose that guard's reach deliberately, and widening it is a design
+decision rather than a cleanup, which is why this is recorded and not fixed
+here. It still deserves attention: for a project promising "clone, run,
+working in ten minutes", two instances on localhost is the first thing a
+reader tries, and the failure gives them a `400` with no hint of why.
+
+**Before the transfer-process milestone: split
+`internal/dsp/negotiation_handler.go`.** 803 lines, with a 1,463-line test
+file beside it. The seam already exists and needs no design work: routing and
+the provider role stay, and a new `negotiation_consumer_handler.go` takes
+`handleInitiate`, `startNegotiation`, `handleOffers`, `reactToOffer`,
+`resolveProviderPID`, `handleAgreement`, `reactToAgreement`,
+`handleConsumerFinalizedEvent`, and `handleConsumerTermination`. Do it as a
+pure move, on its own, *before* that milestone's diff lands — deliberately
+not done in the CN_C fix wave, because folding an 800-line move into the same
+commit range that fixed three data races would have obscured both.
+
+**For the transfer milestone: the consumer never checks that an inbound
+agreement's `target` is the dataset it asked for.** `handleAgreement`
+correlates by consumer pid alone, and `reactToAgreement` resolves policy from
+the stored `DatasetID`, never from the message — so a provider could agree to
+a different target than the one requested and this connector would verify it.
+Harmless today only because nothing downstream reads the agreement. Transfer
+process is exactly where an agreement stops being inert, so this closes there
+or not at all. Same family as §24.6: do not adopt terms you did not ask for.

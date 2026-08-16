@@ -14,7 +14,12 @@ jobs:
         with:
           go-version: "1.26"
       - run: go vet ./...
-      - run: go test ./...
+      # -race, not a bare `go test`. This project's entire concurrency story
+      # is fire-and-forget push goroutines (DECISIONS.md §23.8) that outlive
+      # the handler that spawned them, and nothing else in this pipeline would
+      # notice one of them racing a state write. A bare run stayed green
+      # through three tests that the detector fails outright.
+      - run: go test -race ./...
 
   tck:
     runs-on: ubuntu-latest
