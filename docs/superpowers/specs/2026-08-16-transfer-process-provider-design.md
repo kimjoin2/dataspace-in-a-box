@@ -23,7 +23,11 @@ data plane is verified by this project's own tests and by nothing else.**
 
 Delivered in two phases, one spec and two implementation plans:
 
-- **Phase A — control plane.** Ends with `TP` at 15/15 in the compliance gate,
+- **Phase A — control plane**, including the provider's own autonomous
+  transitions, which the TCK turned out to require (see "Autonomous provider
+  behavior, keyed by agreement" — that section is an amendment written after
+  implementation began, and it is the largest thing this milestone got wrong on
+  the first pass). Ends with `TP` at 15/15 in the compliance gate,
   merged. The TCK is the authority for this phase.
 - **Phase B — data plane.** Serves a dataset's bytes over an authorized pull
   endpoint. Raises no TCK number at all.
@@ -114,6 +118,50 @@ standard regardless — every node carries `@type`, per the project constraint.
 Outbound calls made while handling an inbound request dispatch with `go` and go
 through `pushCallback`'s retry schedule (`DECISIONS.md` §23.7, §23.8). Nothing
 about transfer changes that reasoning.
+
+### Autonomous provider behavior, keyed by agreement
+
+**Amended after implementation.** This section replaces an earlier claim that
+the provider pushes one `TransferStartMessage` and thereafter only reacts. The
+TCK falsified that, and the correction is large enough to be worth stating as a
+correction rather than quietly rewriting.
+
+In the `TP:01-xx` tests the TCK sends this connector exactly one message — the
+`TransferRequestMessage` — and thereafter only polls `GET /transfers/{id}`.
+There is no trigger, no control call, no out-of-band nudge. (The
+`recordXxxAction` calls at the top of every provider test are a TCK self-test
+path, switched off against a remote connector.) The connector is expected to
+decide its own subsequent transitions, and **the only test-varying field on the
+wire is `agreementId`** — the same shape the negotiation suites already use,
+where `datasetId` selects a configured policy.
+
+Two consequences, and the second is the one that is easy to miss:
+
+1. The connector must be able to emit a provider-initiated
+   `TransferSuspensionMessage`, `TransferCompletionMessage`, or
+   `TransferTerminationMessage` on a transfer of its own, with nothing inbound
+   prompting it.
+2. **Starting must itself be conditional.** Four of the sixteen provider tests
+   carry no "provider started" step at all — `TP:01-05`, `TP:02-05`,
+   `TP:03-01`, `TP:03-02` — and poll for `REQUESTED`. An unconditional start
+   does not merely fail to help there; it breaks them.
+
+So `config.Config` gains `transfer_policies`, a list keyed by `agreement_id`,
+each carrying the sequence of states this connector walks on its own after
+accepting a request. `[STARTED]` is the default for an agreement with no entry;
+`[]` means stay in `REQUESTED`; `[STARTED, SUSPENDED, STARTED, COMPLETED]` is
+the longest the TCK asks for. Each step pushes the matching message to the
+consumer's callback address through `pushCallback` and then advances the stored
+state, which is the same machinery the initial start already uses.
+
+*Trade-off accepted.* A configured script is a stand-in for judgement this
+connector does not have. A real provider decides to suspend or complete a
+transfer for operational reasons — the data ran out, the window closed, an
+operator intervened — and v1 has none of those inputs, exactly as v1's consumer
+role has no reason of its own to reject an offer and takes that from
+`consumer_policies` instead. The honest framing is the same in both places:
+this is the connector's *configured* autonomous behavior, and the configuration
+is where a real reason would eventually plug in.
 
 ### Agreement validation
 

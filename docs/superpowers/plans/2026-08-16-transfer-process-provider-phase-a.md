@@ -40,8 +40,10 @@
 | `internal/dsp/transfer.go` | message documents, state machine, pure decisions | 6 |
 | `internal/dsp/transfer_handler.go` | inbound handlers | 7 |
 | `internal/dsp/router.go` | mount the transfer routes | 7 |
-| `test/tck/config.properties`, `test/tck/run.sh`, `cmd/tckgate/main.go` | fixtures, seeding, gate | 8 |
-| `README.md`, `DECISIONS.md` | status table, §25 | 8 |
+| `internal/config/config.go` | `transfer_policies` — the provider's own transitions, keyed by agreement | 8 |
+| `internal/dsp/transfer_handler.go` | the driver that walks a configured sequence | 8 |
+| `test/tck/config.properties`, `test/tck/run.sh`, `test/tck/dsbox.yaml`, `cmd/tckgate/main.go` | fixtures, seeding, gate | 9 |
+| `README.md`, `DECISIONS.md` | status table, §25 | 9 |
 
 Transfer code goes in its own files from the start. `negotiation_handler.go` was split at 867 lines in the previous milestone precisely so this one would not grow it further.
 
@@ -1643,7 +1645,7 @@ type transferHandler struct {
 ```
 
 - `handleTransferRequest`: decode with `http.MaxBytesReader` and `maxNegotiationRequestBodyBytes`; `checkEnvelope(w, msg.Context, msg.Type, TransferRequestMessageType)`; reject an empty `consumerPid`, `agreementId`, `format`, or `callbackAddress` with `400`; `GetAgreement` and reject an unknown id with `400`; generate the provider pid with `newMessageID()`; `CreateTransfer` in `TransferRequested`; write the `TransferProcessDoc`; then `go h.startTransfer(t)`.
-- `startTransfer`: pushes `buildTransferStartMessage(t)` to `t.CallbackAddress + "/transfers/" + t.ConsumerPID + "/start"` through `pushCallback`, then `SetTransferState(..., TransferRequested, TransferStarted, ...)`. Confirm the exact callback path against the TCK log in Task 8 — if it is wrong, every `TP` test times out, and the log says so plainly.
+- `startTransfer`: pushes `buildTransferStartMessage(t)` to `t.CallbackAddress + "/transfers/" + t.ConsumerPID + "/start"` through `pushCallback`, then `SetTransferState(..., TransferRequested, TransferStarted, ...)`. Confirm the exact callback path against the TCK log in Task 9 — if it is wrong, every `TP` test times out, and the log says so plainly.
 - `handleTransferStart`, `handleTransferCompletion`, `handleTransferSuspension`, `handleTransferTermination`: look the transfer up (`404` if absent), `checkEnvelope`, check the matching `...LegalFrom` (`400` if illegal), then `SetTransferState`.
 - `handleGetTransfer`: look up (`404` if absent), write `buildTransferProcessDoc`.
 
@@ -1678,7 +1680,195 @@ git commit -m "feat: add transfer process handlers and routing"
 
 ---
 
-### Task 8: TCK fixtures, seeding, gate, and the real run
+### Task 8: Autonomous provider transitions, keyed by agreement
+
+> **Added after Task 7, because the TCK falsified the plan's scope.** See the spec's
+> "Autonomous provider behavior, keyed by agreement" — an amendment written after
+> implementation began. Without this task, roughly 8 of the suite's 15 counted
+> tests fail, and the gate count of 15 in Task 9 does not hold.
+
+**Files:**
+- Modify: `internal/config/config.go`, `internal/config/config_test.go`, `config.example.yaml`
+- Modify: `internal/dsp/transfer_handler.go`, `internal/dsp/transfer_handler_test.go`
+
+**Interfaces:**
+- Consumes: everything Tasks 3, 6 and 7 produce.
+- Produces: `config.TransferPolicy{AgreementID string; Sequence []string}`, `config.Config.TransferPolicies []TransferPolicy`, and a `resolveTransferSequence(cfg, agreementID) []string` in the `dsp` package.
+
+**Why it exists.** In `TP:01-xx` the TCK sends exactly one message — the `TransferRequestMessage` — and thereafter only polls `GET /transfers/{id}`. No trigger, no control call. The connector decides its own subsequent transitions, and the only test-varying field on the wire is `agreementId`. This is the same shape `consumer_policies` already has, where `datasetId` selects a configured reaction.
+
+**The sequences the TCK asks for**, each the states this connector walks on its own after accepting a request:
+
+| Selector | Sequence |
+|---|---|
+| default (no entry) | `[STARTED]` |
+| `TP:01-01`'s agreement | `[STARTED, TERMINATED]` |
+| `TP:01-02`'s | `[STARTED, COMPLETED]` |
+| `TP:01-03`'s | `[STARTED, SUSPENDED, TERMINATED]` |
+| `TP:01-04`'s | `[STARTED, SUSPENDED, STARTED, COMPLETED]` |
+| `TP:01-05`'s | `[TERMINATED]` |
+| `TP:02-05`, `TP:03-01`, `TP:03-02`'s | `[]` — stay in `REQUESTED` |
+
+**The trap that is easy to miss:** starting must itself become conditional. Four provider tests carry no "provider started" step and poll for `REQUESTED`; today's unconditional start breaks them.
+
+- [ ] **Step 1: Write the failing config tests**
+
+Append to `internal/config/config_test.go`, matching the file's existing `minimal`/`env` helpers:
+
+```go
+func TestTransferPoliciesEmptyWhenAbsent(t *testing.T) {
+	cfg, err := Load(minimal(""), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.TransferPolicies) != 0 {
+		t.Errorf("TransferPolicies = %v, want empty when the key is absent", cfg.TransferPolicies)
+	}
+}
+
+func TestTransferPolicyParses(t *testing.T) {
+	cfg, err := Load(minimal("transfer_policies:\n  - agreement_id: urn:uuid:a\n    sequence: [STARTED, SUSPENDED, TERMINATED]\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.TransferPolicies) != 1 {
+		t.Fatalf("TransferPolicies = %v, want one entry", cfg.TransferPolicies)
+	}
+	p := cfg.TransferPolicies[0]
+	if p.AgreementID != "urn:uuid:a" || len(p.Sequence) != 3 || p.Sequence[1] != "SUSPENDED" {
+		t.Errorf("TransferPolicies[0] = %+v, want the parsed fixture", p)
+	}
+}
+
+func TestTransferPolicyEmptySequenceIsValid(t *testing.T) {
+	// An explicit empty sequence is the only way to say "accept the request and
+	// stay in REQUESTED", which four TCK tests assert. It must survive loading
+	// as a present-but-empty entry, distinct from having no entry at all.
+	cfg, err := Load(minimal("transfer_policies:\n  - agreement_id: urn:uuid:a\n    sequence: []\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.TransferPolicies) != 1 || cfg.TransferPolicies[0].Sequence == nil && len(cfg.TransferPolicies[0].Sequence) != 0 {
+		t.Errorf("TransferPolicies = %+v, want one entry with an empty sequence", cfg.TransferPolicies)
+	}
+}
+
+func TestTransferPolicyRejectsAnUnknownState(t *testing.T) {
+	_, err := Load(minimal("transfer_policies:\n  - agreement_id: urn:uuid:a\n    sequence: [STARTED, NONSENSE]\n"), env(nil))
+	if err == nil {
+		t.Error("Load: expected an error for a sequence naming a state that is not a transfer state")
+	}
+}
+
+func TestTransferPolicyRequiresAnAgreementID(t *testing.T) {
+	_, err := Load(minimal("transfer_policies:\n  - sequence: [STARTED]\n"), env(nil))
+	if err == nil {
+		t.Error("Load: expected an error for a policy with no agreement_id")
+	}
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `go test ./internal/config/ -run TransferPolic -v`
+Expected: FAIL — `TransferPolicies` undefined.
+
+- [ ] **Step 3: Add the config type and validation**
+
+In `internal/config/config.go`, beside `ConsumerPolicy`:
+
+```go
+// TransferPolicy configures this connector's autonomous behavior as transfer
+// provider, keyed by the agreement a transfer is requested under. Sequence is
+// the states it walks on its own after accepting the request, pushing the
+// matching message to the consumer's callback address at each step.
+//
+// An agreement with no entry gets [STARTED]: accept, then start. An explicit
+// empty sequence means accept and stay in REQUESTED, which is a different
+// thing from having no entry and is why the field cannot simply be omitted.
+//
+// This is the transfer analogue of ConsumerPolicy, and it exists for the same
+// reason: v1 has none of the operational inputs a real provider would use to
+// decide to suspend or complete a transfer, so the decision comes from
+// configuration instead. See the design spec's "Autonomous provider behavior,
+// keyed by agreement".
+type TransferPolicy struct {
+	AgreementID string   `yaml:"agreement_id"`
+	Sequence    []string `yaml:"sequence"`
+}
+```
+
+Add `TransferPolicies []TransferPolicy \`yaml:"transfer_policies"\`` to `Config`, and validate in `validate()`: `agreement_id` is required, and every element of `Sequence` must be one of `STARTED`, `SUSPENDED`, `COMPLETED`, `TERMINATED`. Reject `REQUESTED` in a sequence — it is the state the transfer starts in, not one it can be driven to. Follow the file's existing one-`if`-per-rule style and its error-message voice.
+
+- [ ] **Step 4: Run the config tests to verify they pass**
+
+Run: `go test ./internal/config/ -run TransferPolic -v`
+Expected: PASS, 5 tests.
+
+- [ ] **Step 5: Write the failing driver tests**
+
+Append to `internal/dsp/transfer_handler_test.go`. Read the file's existing helpers first (`newTestTransferHandler`, `seedAgreement`, `waitForTransferState`) and reuse them rather than adding new ones.
+
+Cover, each as its own test function:
+
+1. `resolveTransferSequence` returns `[]string{TransferStarted}` for an agreement with no configured entry.
+2. It returns the configured sequence for a matching `agreement_id`.
+3. It returns an empty sequence — not the default — for an entry configured with `sequence: []`.
+4. An agreement configured `[]` leaves the transfer in `REQUESTED` after `POST /transfers/request`, and **pushes nothing**. Assert both: poll briefly and confirm the stored state is still `REQUESTED`, and use a fake consumer that records every request it receives, asserting it received none.
+5. An agreement configured `[STARTED, TERMINATED]` walks both steps: the fake consumer receives a `TransferStartMessage` then a `TransferTerminationMessage`, in that order, and the stored state ends `TERMINATED`.
+6. An agreement configured `[STARTED, SUSPENDED, STARTED, COMPLETED]` walks all four in order and ends `COMPLETED` — this is `TP:01-04`, the longest sequence and the one that revisits `STARTED`.
+
+For 5 and 6, assert the **order** of received message `@type`s, not merely that each arrived. A driver that pushed them concurrently would satisfy a set assertion and fail the TCK, whose handler registration is single-shot and ordered.
+
+- [ ] **Step 6: Run them to verify they fail**
+
+Run: `go test ./internal/dsp/ -run 'TransferSequence|TransferPolicy' -v`
+Expected: FAIL — `resolveTransferSequence` undefined.
+
+- [ ] **Step 7: Implement the resolver and the driver**
+
+In `internal/dsp/transfer_handler.go`:
+
+```go
+// resolveTransferSequence returns the states this connector walks on its own
+// after accepting a transfer request under this agreement. An agreement with
+// no configured entry starts and stops there; an entry with an empty sequence
+// deliberately does nothing, which is how a transfer stays in REQUESTED.
+func resolveTransferSequence(cfg config.Config, agreementID string) []string {
+	for _, p := range cfg.TransferPolicies {
+		if p.AgreementID == agreementID {
+			return p.Sequence
+		}
+	}
+	return []string{TransferStarted}
+}
+```
+
+Replace the unconditional `go h.startTransfer(t)` with `go h.driveTransfer(t)`, which walks the resolved sequence. Each step:
+
+- picks the message for the target state — `buildTransferStartMessage` for `STARTED`, and the suspension / completion / termination builders for the others;
+- pushes it to `t.CallbackAddress + "/transfers/" + t.ConsumerPID + "/" + <segment>` through `pushCallback`, where the segment is `start`, `suspension`, `completion`, or `termination`;
+- then advances the stored state with `SetTransferState` from the state it currently holds to the target, exactly as `startTransfer` does today;
+- and **stops the whole sequence** if a state write is lost to `ErrStateChanged` — a counterparty that terminated the transfer mid-sequence has taken it over, and continuing would push messages for a transfer that is no longer in the state they claim.
+
+Keep `startTransfer`'s existing shape for the single-step case rather than writing a second idiom: the driver is that function generalised over a list, including its `validateOutgoingCallback` gate and its `ErrStateChanged` handling.
+
+- [ ] **Step 8: Run the driver tests to verify they pass**
+
+Run: `go test ./internal/dsp/ -run 'TransferSequence|TransferPolicy' -v && go test ./internal/dsp/ -run Transfer -v`
+Expected: PASS, and the Task 7 transfer tests still pass — several of them assume the default `[STARTED]` behavior, which the resolver must preserve.
+
+- [ ] **Step 9: Full gates and commit**
+
+```bash
+go test ./... && go test -race -count=2 ./internal/dsp/ && gofmt -l . && go vet ./...
+git add internal/config/config.go internal/config/config_test.go config.example.yaml internal/dsp/transfer_handler.go internal/dsp/transfer_handler_test.go
+git commit -m "feat: drive provider-initiated transfer transitions from configuration"
+```
+
+---
+
+### Task 9: TCK fixtures, seeding, gate, and the real run
 
 **Files:**
 - Modify: `test/tck/config.properties`
@@ -1730,23 +1920,85 @@ seed_agreement() {
 	fi
 }
 
-seed_agreement urn:uuid:tck-agreement-1
+seed_agreement urn:uuid:tck-tp-01-01
+seed_agreement urn:uuid:tck-tp-01-02
+seed_agreement urn:uuid:tck-tp-01-03
+seed_agreement urn:uuid:tck-tp-01-04
+seed_agreement urn:uuid:tck-tp-01-05
+seed_agreement urn:uuid:tck-tp-default
+seed_agreement urn:uuid:tck-tp-nostart
 ```
 
-Add one `seed_agreement` line per distinct agreement id used in `config.properties`. Seeding must fail the run loudly: a silent seeding failure would look exactly like a protocol bug.
+Seven ids, matching Step 3's `config.properties` and Step 3b's `transfer_policies`. Seeding must fail the run loudly: a silent seeding failure would look exactly like a protocol bug, since a connector that rejects an unknown agreement and a connector that was never given one produce the same `400`.
 
-- [ ] **Step 3: Pin the agreement ids in `config.properties`**
+- [ ] **Step 3: Pin the agreement id for every test in `config.properties`**
 
-Add, with a comment explaining the key derivation:
+**The key derivation is settled**, not a guess: `InstanceInjector.getKey` builds it as the test method's name uppercased, an underscore, then the field name uppercased — no camelCase splitting, so `agreementId` becomes `AGREEMENTID` as one token. It is scoped to the individual `@Test` method, with no class-level or global fallback. See `docs/superpowers/specs/2026-08-16-transfer-process-tck-wire-contract.md` §1.1.
+
+That means **sixteen keys, one per test method**, not one. `tp_01_01..05`, `tp_02_01..05`, `tp_03_01..06`.
+
+**A missing or blank key fails silently.** `@ConfigParam.required()` defaults to `false` and the test class constructor pre-seeds `agreementId` with a random UUID, so injection just returns and the random value wins. A green test is not evidence the key was read.
+
+Each id selects the agreement *and* the autonomous behavior, because the agreement id is the only test-varying field on the wire. Use distinct ids so `dsbox.yaml`'s `transfer_policies` can key on them:
 
 ```properties
-# TP: the agreement each test cites. Without an override the TCK generates a
-# random UUID, and this connector rejects a transfer under an agreement it has
-# no record of — so every test needs an id that run.sh has imported.
-TP_01_01_AGREEMENTID=urn:uuid:tck-agreement-1
+# TP: the agreement each test cites. The id is also the selector for this
+# connector's autonomous behavior (see dsbox.yaml's transfer_policies) —
+# there is no other test-varying field on the wire.
+#
+# The key is <TESTMETHOD>_<FIELDNAME> uppercased, per test method, with no
+# class-level fallback: a missing key silently falls back to a random UUID.
+TP_01_01_AGREEMENTID=urn:uuid:tck-tp-01-01
+TP_01_02_AGREEMENTID=urn:uuid:tck-tp-01-02
+TP_01_03_AGREEMENTID=urn:uuid:tck-tp-01-03
+TP_01_04_AGREEMENTID=urn:uuid:tck-tp-01-04
+TP_01_05_AGREEMENTID=urn:uuid:tck-tp-01-05
+TP_02_01_AGREEMENTID=urn:uuid:tck-tp-default
+TP_02_02_AGREEMENTID=urn:uuid:tck-tp-default
+TP_02_03_AGREEMENTID=urn:uuid:tck-tp-default
+TP_02_04_AGREEMENTID=urn:uuid:tck-tp-default
+TP_02_05_AGREEMENTID=urn:uuid:tck-tp-nostart
+TP_03_01_AGREEMENTID=urn:uuid:tck-tp-nostart
+TP_03_02_AGREEMENTID=urn:uuid:tck-tp-nostart
+TP_03_03_AGREEMENTID=urn:uuid:tck-tp-default
+TP_03_04_AGREEMENTID=urn:uuid:tck-tp-default
+TP_03_05_AGREEMENTID=urn:uuid:tck-tp-default
+TP_03_06_AGREEMENTID=urn:uuid:tck-tp-default
 ```
 
-**The key spelling is unconfirmed.** It is derived by the TCK core from the test id and the `@ConfigParam` field name; `TP_01_01_AGREEMENTID` follows the `CN_C_01_02_DATASETID` precedent, but the previous milestone found a related assumption wrong. If the first run shows random UUIDs still arriving, the derivation differs — find the real one from the TCK core classes rather than guessing twice.
+`TP_02_04` is included even though that test is `@Disabled` upstream — the key costs nothing and stops the list from looking like it has a hole.
+
+**On the first run, prove the keys were read.** Set one to a sentinel and confirm that exact string arrives as `agreementId` on the wire, in the connector's log. This is the single highest-value check of the first run: everything else can look right while every test silently uses a random UUID.
+
+- [ ] **Step 3b: Configure the autonomous behavior in `dsbox.yaml`**
+
+```yaml
+# TP: what this connector does on its own after accepting a transfer request,
+# keyed by the agreement it was requested under. The TCK sends one message and
+# then only polls, so the agreement id is the only thing that can select a
+# behavior — see the design spec's "Autonomous provider behavior".
+#
+# An agreement with no entry here gets [STARTED]. An explicit empty sequence
+# means accept and stay in REQUESTED, which four tests assert and which an
+# unconditional start would break.
+transfer_policies:
+  - agreement_id: urn:uuid:tck-tp-01-01
+    sequence: [STARTED, TERMINATED]
+  - agreement_id: urn:uuid:tck-tp-01-02
+    sequence: [STARTED, COMPLETED]
+  - agreement_id: urn:uuid:tck-tp-01-03
+    sequence: [STARTED, SUSPENDED, TERMINATED]
+  - agreement_id: urn:uuid:tck-tp-01-04
+    sequence: [STARTED, SUSPENDED, STARTED, COMPLETED]
+  - agreement_id: urn:uuid:tck-tp-01-05
+    sequence: [TERMINATED]
+  - agreement_id: urn:uuid:tck-tp-nostart
+    sequence: []
+```
+
+`urn:uuid:tck-tp-default` needs no entry — the default is `[STARTED]`, which is what `TP:02-01..04` and `TP:03-03..06` expect.
+
+Every id above must also be seeded in Step 2, including `tck-tp-default` and `tck-tp-nostart`.
 
 - [ ] **Step 4: Add the dataset the agreements cover**
 
@@ -1798,6 +2050,6 @@ git commit -m "feat: add the transfer process provider role to the compliance ga
 
 ## Notes for the executor
 
-- Task 8 is the only task whose success is decided by something outside this repository. Everything before it can be green and still wrong; treat the first `make tck` as the real review.
+- Task 9 is the only task whose success is decided by something outside this repository. Everything before it can be green and still wrong; treat the first `make tck` as the real review. Task 8 exists because that turned out to be true before the run rather than during it — the TCK was read instead, and it falsified the plan's scope.
 - Two values in this plan are explicitly unconfirmed and will be settled by that run: the `config.properties` key derivation (Step 3) and the callback path `startTransfer` pushes to (Task 7). Both fail loudly rather than silently.
 - Phase B — the HTTP-PULL data plane — is a separate plan, written after this one is merged. Do not start it here, and do not emit a `dataAddress` in anticipation of it.
