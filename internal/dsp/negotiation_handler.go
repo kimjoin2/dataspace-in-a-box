@@ -447,18 +447,39 @@ func (h negotiationHandler) dispatch(n store.Negotiation, outcome negotiationOut
 		h.pushAndStore(n, StateOffered, offerCallbackPath, buildOfferMessage(n))
 	case outcome.pushAgreement:
 		h.pushAndStore(n, StateAgreed, agreementCallbackPath, buildAgreementMessage(n, h.cfg.PublicURL, h.cfg.ParticipantID))
+
+		// pushAndStore is void and swallows store.ErrStateChanged, so the
+		// transition above may have been dropped in favour of a newer state —
+		// a termination that arrived while the push was still retrying, for
+		// instance. Re-read before recording: an agreement row is what the
+		// transfer protocol treats as proof a contract exists, so it must
+		// follow the state that actually landed, not the one this branch
+		// intended. A termination arriving between this Get and the INSERT
+		// below is a residual race, accepted rather than closed here — closing
+		// it needs one transaction spanning the state write and the agreement
+		// insert, which is a larger change than this call site should make.
+		current, ok, err := h.store.Get(n.ProviderPID)
+		if err != nil {
+			slog.Error("re-read negotiation before recording agreement", "provider_pid", n.ProviderPID, "error", err)
+			return
+		}
+		if !ok || current.State != StateAgreed {
+			slog.Warn("negotiation moved past AGREED before the agreement could be recorded",
+				"provider_pid", n.ProviderPID, "current_state", current.State)
+			return
+		}
+
 		// The agreement this connector just issued becomes a durable record, so
 		// the transfer protocol can answer "does this agreement exist" without
 		// scanning negotiations. The id is the one buildAgreementMessage puts on
 		// the wire: this negotiation's provider pid.
-		err := h.store.CreateAgreement(store.Agreement{
+		if err := h.store.CreateAgreement(store.Agreement{
 			AgreementID: n.ProviderPID,
 			DatasetID:   n.DatasetID,
 			ConsumerPID: n.ConsumerPID,
 			Origin:      store.OriginNegotiated,
 			CreatedAt:   time.Now().UTC(),
-		})
-		if err != nil {
+		}); err != nil {
 			// Log and continue. The agreement has already been announced to the
 			// counterparty, so refusing to advance here would leave the two sides
 			// disagreeing about a contract that was in fact made.

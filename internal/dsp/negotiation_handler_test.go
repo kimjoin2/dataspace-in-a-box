@@ -79,6 +79,26 @@ func waitForState(t *testing.T, st *store.Store, providerPID, want string) store
 	return store.Negotiation{}
 }
 
+// waitForAgreement polls until agreementID has a recorded agreement row, or
+// fails the test after one second. CreateAgreement runs strictly after
+// pushAndStore returns (see dispatch's pushAgreement case), so a caller that
+// has only synchronized with the state write via waitForState can still
+// observe StateAgreed before the agreement row exists — the same gap
+// waitForState's doc comment describes between the push and the state write.
+func waitForAgreement(t *testing.T, st *store.Store, agreementID string) store.Agreement {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		a, ok, err := st.GetAgreement(agreementID)
+		if err == nil && ok {
+			return a
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("no agreement recorded for %q within the deadline", agreementID)
+	return store.Agreement{}
+}
+
 func (fc *fakeCallback) neverReceives(t *testing.T, pathSuffix string, within time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -939,14 +959,8 @@ func TestNegotiationReachingAgreedRecordsTheAgreement(t *testing.T) {
 
 	fc.wait(t, "/agreement")
 	n := waitForState(t, st, doc.ProviderPID, StateAgreed)
+	got := waitForAgreement(t, st, n.ProviderPID)
 
-	got, ok, err := st.GetAgreement(n.ProviderPID)
-	if err != nil {
-		t.Fatalf("GetAgreement: %v", err)
-	}
-	if !ok {
-		t.Fatal("a negotiation reached AGREED but recorded no agreement")
-	}
 	if got.AgreementID != n.ProviderPID {
 		t.Errorf("AgreementID = %q, want the negotiation's provider pid %q — buildAgreementMessage puts that value on the wire", got.AgreementID, n.ProviderPID)
 	}
