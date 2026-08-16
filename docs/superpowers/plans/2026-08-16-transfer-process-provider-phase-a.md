@@ -1412,9 +1412,16 @@ func TestTransferRequestWithUnknownAgreementIs400(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("POST /transfers/request citing an unknown agreement = %d, want 400", rec.Code)
 	}
-	if _, ok, _ := st.GetTransfer("urn:uuid:tp-1"); ok {
-		t.Error("a transfer was stored for an agreement this connector has no record of")
+	// Assert on the response rather than on the store. The handler generates
+	// its own provider pid, so a "was anything stored?" check would have to
+	// guess that pid — and a check for an id the handler was never going to
+	// use passes whether or not a transfer was created, which is worse than
+	// no check at all. A 400 with no providerPid is the property the
+	// counterparty and the TCK actually observe.
+	if strings.Contains(rec.Body.String(), "providerPid") {
+		t.Errorf("a rejected request returned a providerPid: %q", rec.Body.String())
 	}
+	_ = st
 }
 
 func TestTransferRequestBadEnvelopeIs400(t *testing.T) {
