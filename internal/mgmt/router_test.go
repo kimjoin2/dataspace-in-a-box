@@ -24,6 +24,9 @@ func newTestRouter(t *testing.T) (http.Handler, *store.Store) {
 	return NewRouter(config.Config{MgmtToken: testToken}, st), st
 }
 
+// TestHealthReturnsOK sends no Authorization header, so it also pins that
+// /health is unauthenticated (DECISIONS.md §25.4): a readiness probe must not
+// need a credential.
 func TestHealthReturnsOK(t *testing.T) {
 	h, _ := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -35,15 +38,6 @@ func TestHealthReturnsOK(t *testing.T) {
 	}
 	if got, want := rec.Body.String(), `{"status":"ok"}`; got != want {
 		t.Errorf("body = %s, want %s", got, want)
-	}
-}
-
-func TestHealthNeedsNoToken(t *testing.T) {
-	h, _ := newTestRouter(t)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if rec.Code != http.StatusOK {
-		t.Errorf("GET /health = %d, want 200 without a token", rec.Code)
 	}
 }
 
@@ -111,6 +105,74 @@ func TestPostAgreementsWithWrongTokenIs401(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Errorf("401 body = %q, want empty — a rejection must not say why it was rejected", rec.Body.String())
+	}
+}
+
+// TestPostAgreementsAcceptsAnyCaseOfTheScheme pins RFC 9110 §11.1: the auth
+// scheme is a case-insensitive token, so a client that writes `bearer` or
+// `BEARER` is presenting the same credential. The token after it is not
+// folded, which the wrong-token test above still proves.
+func TestPostAgreementsAcceptsAnyCaseOfTheScheme(t *testing.T) {
+	for _, scheme := range []string{"Bearer", "bearer", "BEARER", "BeArEr"} {
+		h, _ := newTestRouter(t)
+		body := strings.NewReader(`{"agreementId":"urn:uuid:a-1","datasetId":"urn:dataset:a"}`)
+		req := httptest.NewRequest(http.MethodPost, "/agreements", body)
+		req.Header.Set("Authorization", scheme+" "+testToken)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Errorf("POST /agreements with scheme %q = %d, want 201", scheme, rec.Code)
+		}
+	}
+}
+
+// TestPostAgreementsRejectsAnotherScheme and its bare-token sibling below are
+// the other half of the case-folding above: folding the scheme must not turn
+// into accepting the credential under any scheme, or under none.
+func TestPostAgreementsRejectsAnotherScheme(t *testing.T) {
+	for name, header := range map[string]string{
+		"Basic":         "Basic " + testToken,
+		"a made-up one": "Token " + testToken,
+		// "Bearerx <t>" — "Bearer" with a letter glued on, so a comparison
+		// that matched the scheme without its trailing space would accept it.
+		"a scheme that merely starts with Bearer": "Bearerx " + testToken,
+	} {
+		h, _ := newTestRouter(t)
+		body := strings.NewReader(`{"agreementId":"urn:uuid:a-1","datasetId":"urn:dataset:a"}`)
+		req := httptest.NewRequest(http.MethodPost, "/agreements", body)
+		req.Header.Set("Authorization", header)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("POST /agreements with %s = %d, want 401", name, rec.Code)
+		}
+	}
+}
+
+func TestPostAgreementsRejectsABareToken(t *testing.T) {
+	h, _ := newTestRouter(t)
+	body := strings.NewReader(`{"agreementId":"urn:uuid:a-1","datasetId":"urn:dataset:a"}`)
+	req := httptest.NewRequest(http.MethodPost, "/agreements", body)
+	req.Header.Set("Authorization", testToken) // no scheme at all
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("POST /agreements with a bare token and no scheme = %d, want 401", rec.Code)
+	}
+}
+
+// TestUnauthorizedCarriesAChallenge pins RFC 9110 §15.5.2, which makes a
+// WWW-Authenticate challenge a MUST on a 401.
+func TestUnauthorizedCarriesAChallenge(t *testing.T) {
+	h, _ := newTestRouter(t)
+	body := strings.NewReader(`{"agreementId":"urn:uuid:a-1","datasetId":"urn:dataset:a"}`)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/agreements", body))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /agreements with no Authorization header = %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != "Bearer" {
+		t.Errorf("WWW-Authenticate = %q, want %q", got, "Bearer")
 	}
 }
 

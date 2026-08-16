@@ -19,7 +19,13 @@ jobs:
       # the handler that spawned them, and nothing else in this pipeline would
       # notice one of them racing a state write. A bare run stayed green
       # through three tests that the detector fails outright.
-      - run: go test -race ./...
+      #
+      # -count=2 because a race is an interleaving, not a state: a single run
+      # samples one schedule and can miss it. Tests here already depend on
+      # goroutine interleaving — the transfer driver's steps, the
+      # counterparty-takes-over case — and the plan specifies -count=2 for the
+      # local command, so a one-shot CI run was the weaker of the two gates.
+      - run: go test -race -count=2 ./...
 
   tck:
     runs-on: ubuntu-latest

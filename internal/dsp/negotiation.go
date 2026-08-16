@@ -50,6 +50,14 @@ const (
 	terminationCode = "1"
 )
 
+// Every top-level message type below, inbound and outbound, declares
+// `@context` as `[]string` and `@type` as an unprefixed term. Neither is a
+// style choice:
+// the TCK rejects a bare-string `@context` and silently skips validation on a
+// prefixed `@type`, then fails expansion. The failure modes are spelled out on
+// TransferProcessDoc in transfer.go, with the evidence pointer; they apply
+// identically here.
+
 // RequestMessage is the body of POST /negotiations/request and
 // POST /negotiations/{id}/request — a ContractRequestMessage, whether it is
 // the initial request or a counter-offer/resend. Only the fields this

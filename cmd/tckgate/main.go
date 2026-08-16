@@ -17,11 +17,13 @@ import (
 
 // expected holds the number of results each gated suite must produce. A suite
 // enters this map only when its protocol is implemented, and the count is how
-// many tests that suite contains upstream. Requiring an exact count means a run
-// that stops halfway through a suite fails instead of reporting green.
-// TP is 15, not 16: the suite declares 16 @MandatoryTest methods but tp_02_04
-// also carries JUnit's @Disabled, and a disabled test produces no result. The
-// count here is results, not methods.
+// many results that suite produces upstream — which equals its test count only
+// when every test in it actually runs. evaluate counts results for every
+// suite, without exception. Requiring an exact count means a run that stops
+// halfway through a suite fails instead of reporting green.
+// TP is where the two diverge: the suite declares 16 @MandatoryTest methods
+// but tp_02_04 also carries JUnit's @Disabled, and a disabled test produces no
+// result, so the count is 15.
 var expected = map[string]int{"MET": 1, "CAT": 3, "CN": 15, "CN_C": 16, "TP": 15}
 
 // exempt names individual gated test IDs that are known to fail and are

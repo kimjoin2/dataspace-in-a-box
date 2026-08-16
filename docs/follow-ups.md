@@ -179,6 +179,71 @@ to decide there whether an unknown dataset is a `400` at import time or a
 failure at pull time. Importing a contract for something this connector cannot
 serve is the same defect family as §25.1, one level down.
 
+**The transfer legality model has no sender dimension, and DSP 2025-1 may
+require one.** `startLegalFrom` says a `TransferStartMessage` is legal from
+`REQUESTED`, and `applyTransition` applies that to an *inbound* message
+without asking who sent it — so a counterparty can move this connector's
+transfer from `REQUESTED` to `STARTED` itself. DSP 2025-1's state machine
+assigns the `REQUESTED → STARTED` transition to the provider, which if it
+holds means that inbound message should be refused. A green `TP` says nothing
+either way: 15/15 proves only that no test in the suite falsifies the current
+model, not that any test exercises it. So this is **untested, not falsified**,
+and the fault is in the plan and the design spec rather than in the
+implementation — the plan's legality table
+(`docs/superpowers/plans/2026-08-16-transfer-process-provider-phase-a.md`,
+"The legality rules, from the spec's state machine") is a from-state × message
+grid with no sender column, and the code implements the table it was given.
+Deliberately not changed here — this project's rule is that the spec and the
+TCK decide, not intuition, and nobody has yet read DSP 2025-1's own text on
+the assignment.
+
+What would settle it: the transfer-process state-machine section of the
+DSP 2025-1 specification, read for whether each transition names a party. If
+it does, `applyTransition` needs the sender as a second dimension (four
+predicates become eight, or each gains a role argument), and the four inbound
+endpoints have to say which role they are serving. **This must be settled
+before Phase B**, where `STARTED` stops being a label and becomes the gate on
+whether bytes are served: a counterparty that can drive its own transfer to
+`STARTED` would then be granting itself access.
+
+**`store.Agreement` has no consumer-role writer, and `origin` has no value for
+one.** `negotiation_consumer_handler.go` moves a consumer-role negotiation to
+`AGREED` — this connector accepting a remote provider's agreement — and writes
+no row; the two writers are both provider-side (a provider negotiation
+reaching `AGREED`, and `POST /agreements`). Nothing is broken in Phase A,
+because only the provider transfer path reads the table, and the struct's doc
+comment now says so rather than claiming the table records every contract this
+connector is party to. `TP_C` is where it bites: a consumer-role transfer has
+to cite an agreement it received, and will find the table empty. The decision
+to take there is whether this table gains a third writer plus a consumer-side
+`origin` value, or whether consumer transfers keep a record of their own — the
+same question §24.1 answered for negotiations by adding a second table.
+
+**A terminal step on a timer and a real data plane cannot both be right.**
+`transfer_policies` sequences are driven by `transferStepDelay` alone, so
+`[STARTED, COMPLETED]` completes 200 ms after starting. Harmless in Phase A,
+which moves no bytes. In Phase B `STARTED` is what authorizes a pull, so the
+same configuration would cut access before a consumer could fetch anything.
+Phase B has to either bound autonomous completion by something the data plane
+knows (bytes served, a pull observed, an idle window) or document plainly that
+a terminal step and a real `source_file` are mutually exclusive. Recorded in
+`DECISIONS.md` §25.7's trade-off as well, because it is a consequence of that
+decision rather than a defect in its implementation.
+
+**The agreement guard's residual race is recorded only in a comment.** In
+`negotiation_handler.go`'s `outcome.pushAgreement` branch, the negotiation is
+re-read before the agreement row is inserted, so an agreement is not recorded
+for a negotiation that was terminated while the push was still retrying. A
+termination arriving *between* that re-read and the `INSERT` still leaves a
+stale agreement row behind: the negotiation ends `TERMINATED` and the
+agreements table says a contract exists. Knowingly accepted when the guard was
+written — closing it needs one transaction spanning the state write and the
+agreement insert, which is a larger change than that call site should make —
+but a defect tracked only in a code comment is not tracked. The window is
+small and the consequence is bounded today (a transfer could be started under
+an agreement whose negotiation died), and it grows in Phase B, where that row
+is what authorizes serving bytes.
+
 **The 200 ms `transferStepDelay` has a margin nobody has measured.** The first
 real `TP` run needed zero retries — all eight `callback endpoint rejected
 push` lines in the connector log were negotiation pushes hitting the

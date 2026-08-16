@@ -63,11 +63,18 @@ type ConsumerNegotiation struct {
 	UpdatedAt       time.Time
 }
 
-// Agreement records that this connector is party to a contract. It is the
-// single source of truth for "does this agreement exist", which the transfer
-// protocol asks on every request. Rows arrive two ways: a negotiation
-// reaching AGREED, and an operator importing an agreement concluded outside
-// this connector.
+// Agreement records an agreement this connector issued as provider or an
+// operator imported. Those are its only two writers — a negotiation reaching
+// AGREED in the provider role, and POST /agreements — and Origin names which.
+//
+// It is the single source of truth for "does this agreement exist" as the
+// *provider-role* transfer protocol asks it, which is the only path that
+// reads the table today. It is deliberately not a record of every contract
+// this connector is party to: a consumer-role negotiation reaching AGREED —
+// this connector accepting a remote provider's agreement — writes no row
+// here, and Origin has no value that would describe one. See
+// docs/follow-ups.md: the consumer role has to decide whether this table
+// gains a third writer or consumer transfers keep a record of their own.
 type Agreement struct {
 	AgreementID string
 	DatasetID   string
@@ -152,13 +159,22 @@ const timeFormat = time.RFC3339Nano
 // Errors a conditional update can report. Both mean the UPDATE matched no
 // row; they differ in why, which is the difference between a bug and a lost
 // race, so callers can tell them apart with errors.Is.
+//
+// Both texts name no protocol on purpose. They started out negotiation-only
+// and are now returned by the consumer-negotiation and transfer tables too,
+// where "negotiation not found" in a transfer warning is simply false — and
+// these strings reach the connector log, which test/tck/run.sh captures
+// because it is this project's evidence surface for what actually happened on
+// the wire. The wrapping message supplies the table and the id
+// ("update transfer <pid>: record changed concurrently: ..."), so the
+// sentinel does not have to. TestSentinelErrorsNameNoProtocol pins this.
 var (
-	// ErrNotFound means there is no negotiation with that provider pid.
-	ErrNotFound = errors.New("negotiation not found")
-	// ErrStateChanged means the negotiation exists but no longer holds the
+	// ErrNotFound means there is no record with that primary key.
+	ErrNotFound = errors.New("record not found")
+	// ErrStateChanged means the record exists but no longer holds the
 	// value the caller expected to update from — something else changed it
 	// first, and the caller's decision was made against a stale read.
-	ErrStateChanged = errors.New("negotiation changed concurrently")
+	ErrStateChanged = errors.New("record changed concurrently")
 )
 
 // Open opens (creating if necessary) the SQLite file at path, enables WAL
@@ -466,7 +482,7 @@ func (s *Store) CreateAgreement(a Agreement) error {
 		a.CreatedAt.UTC().Format(timeFormat),
 	)
 	if err != nil {
-		return fmt.Errorf("create agreement: %w", err)
+		return fmt.Errorf("create agreement %s: %w", a.AgreementID, err)
 	}
 	return nil
 }
@@ -484,11 +500,11 @@ func (s *Store) GetAgreement(agreementID string) (Agreement, bool, error) {
 		return Agreement{}, false, nil
 	}
 	if err != nil {
-		return Agreement{}, false, fmt.Errorf("get agreement: %w", err)
+		return Agreement{}, false, fmt.Errorf("get agreement %s: %w", agreementID, err)
 	}
 	a.CreatedAt, err = time.Parse(timeFormat, createdAt)
 	if err != nil {
-		return Agreement{}, false, fmt.Errorf("parse agreement created_at: %w", err)
+		return Agreement{}, false, fmt.Errorf("get agreement %s: parse created_at: %w", agreementID, err)
 	}
 	return a, true, nil
 }

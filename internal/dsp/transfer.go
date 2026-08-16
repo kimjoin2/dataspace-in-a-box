@@ -44,6 +44,20 @@ type TransferRequestMessage struct {
 
 // TransferProcessDoc is the response body for every transfer endpoint that
 // returns the process itself.
+//
+// Two things about its shape are execution-verified wire requirements rather
+// than style, and both are recorded here because `Context []string` is exactly
+// the field a tidy-up turns into a `string`:
+//   - `@context` must be a JSON *array* of strings. A bare string fails with
+//     `Invalid message: [string found, array expected, ...]`.
+//   - `@type` must be the unprefixed term `"TransferProcess"`. The TCK looks
+//     its validator up by the raw value, so `"dspace:TransferProcess"` skips
+//     validation silently and then breaks JSON-LD expansion with
+//     `Property '.../state' was not found`.
+//
+// The wire contract calls these the single most likely thing to get wrong —
+// docs/superpowers/specs/2026-08-16-transfer-process-tck-wire-contract.md
+// §1.4. The same two rules govern every other message in this package.
 type TransferProcessDoc struct {
 	Context     []string `json:"@context"`
 	Type        string   `json:"@type"`

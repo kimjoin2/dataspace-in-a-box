@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -741,5 +742,48 @@ func TestSetTransferStateMissingIsNotFound(t *testing.T) {
 
 	if err := s.SetTransferState("urn:uuid:nope", "REQUESTED", "STARTED", time.Now().UTC()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("SetTransferState on a missing transfer = %v, want ErrNotFound", err)
+	}
+}
+
+// TestSentinelErrorsNameNoProtocol pins the two sentinel texts. Both are
+// returned by three tables now — negotiations, consumer_negotiations, and
+// transfer_processes — and both reach the connector log, which
+// test/tck/run.sh captures as this project's evidence surface for what
+// happened on the wire. A sentinel that says "negotiation" makes every
+// transfer warning that carries it read as a negotiation fault. Nothing else
+// asserts these strings, and errors.Is would keep passing through a wrong one.
+func TestSentinelErrorsNameNoProtocol(t *testing.T) {
+	if got, want := ErrNotFound.Error(), "record not found"; got != want {
+		t.Errorf("ErrNotFound = %q, want %q", got, want)
+	}
+	if got, want := ErrStateChanged.Error(), "record changed concurrently"; got != want {
+		t.Errorf("ErrStateChanged = %q, want %q", got, want)
+	}
+	for _, err := range []error{ErrNotFound, ErrStateChanged} {
+		for _, protocol := range []string{"negotiation", "transfer", "agreement"} {
+			if strings.Contains(err.Error(), protocol) {
+				t.Errorf("%q names %q: it is returned for every table, so its text must name none", err, protocol)
+			}
+		}
+	}
+}
+
+// TestTransferErrorNamesTheTransfer is the other half: the sentinel names no
+// table, so the wrapping message must. Without it a "record changed
+// concurrently" line in the log says nothing about what changed.
+func TestTransferErrorNamesTheTransfer(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	tp := testTransfer()
+	if err := s.CreateTransfer(tp); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+	got := s.SetTransferState(tp.ProviderPID, "STARTED", "COMPLETED", time.Now().UTC()).Error()
+	if !strings.Contains(got, "update transfer") || !strings.Contains(got, tp.ProviderPID) {
+		t.Errorf("SetTransferState error = %q, want it to name the transfer and its pid", got)
 	}
 }

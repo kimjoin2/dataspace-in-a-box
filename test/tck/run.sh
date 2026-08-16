@@ -50,12 +50,19 @@ echo ' ready'
 # that rejects an unknown agreement and a connector that was never given the
 # agreement both answer 400, so a silent seeding failure would be
 # indistinguishable from a protocol bug for the whole run.
+#
+# The `|| true` is what makes that loud failure reachable. Under `set -e` a
+# command substitution that exits non-zero aborts the script at the assignment
+# itself, before the diagnostic below can print — so a transport failure
+# (connection refused, DNS, TLS) would kill the run with a bare exit code and
+# no message, which is exactly what this block exists to prevent. With it,
+# curl's own '%{http_code}' of 000 flows through to the check and gets named.
 seed_agreement() {
 	code=$(curl -s -o /dev/null -w '%{http_code}' \
 		-X POST http://127.0.0.1:8081/agreements \
 		-H 'Authorization: Bearer tck-harness-token-0' \
 		-H 'Content-Type: application/json' \
-		-d "{\"agreementId\":\"$1\",\"datasetId\":\"urn:dataset:tck-transfer\"}")
+		-d "{\"agreementId\":\"$1\",\"datasetId\":\"urn:dataset:tck-transfer\"}") || true
 	if [ "$code" != "201" ]; then
 		echo "seeding agreement $1 failed with HTTP $code" >&2
 		exit 1

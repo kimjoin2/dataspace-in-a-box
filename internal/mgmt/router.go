@@ -38,19 +38,48 @@ func NewRouter(cfg config.Config, st *store.Store) http.Handler {
 	return mux
 }
 
+// bearerPrefix is the auth-scheme token plus its separating space, as it
+// appears at the head of an Authorization header value.
+const bearerPrefix = "Bearer "
+
 // authenticated rejects any request without the configured bearer token. An
 // empty configured token rejects everything: a missing token must never read
 // as "no auth required", or the localhost default becomes an open write
 // endpoint the moment mgmt_addr changes.
 func authenticated(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		presented, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		presented, ok := cutBearerPrefix(r.Header.Get("Authorization"))
 		if token == "" || !ok || subtle.ConstantTimeCompare([]byte(presented), []byte(token)) != 1 {
+			// RFC 9110 §15.5.2 makes a challenge a MUST on a 401, and a
+			// client that gets none is told it was refused without being told
+			// how to authenticate. No realm parameter: this API has exactly
+			// one protection space, so naming it would add a string an
+			// operator has to keep in step with nothing.
+			w.Header().Set("WWW-Authenticate", "Bearer")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// cutBearerPrefix strips the auth scheme from an Authorization header value,
+// reporting whether the value carried that scheme at all.
+//
+// The scheme is matched case-insensitively because RFC 9110 §11.1 defines it
+// as a case-insensitive token: `bearer <t>` and `BEARER <t>` present the same
+// credential as `Bearer <t>`. A case-sensitive match fails closed, so this is
+// interoperability rather than a hole — but this is the connector's first
+// authenticated endpoint, and a client that capitalises the scheme its own
+// way would be refused for a reason no error message explains.
+//
+// Only the scheme is folded. The credential itself is returned byte-exact and
+// still compared in constant time by the caller.
+func cutBearerPrefix(header string) (string, bool) {
+	if len(header) < len(bearerPrefix) || !strings.EqualFold(header[:len(bearerPrefix)], bearerPrefix) {
+		return "", false
+	}
+	return header[len(bearerPrefix):], true
 }
 
 type agreementHandler struct {

@@ -10,7 +10,12 @@ services:
     volumes:
       - ./dsbox.yaml:/etc/dsbox/config.yaml:ro
     ports:
-      # Management port, published for the readiness probe only.
+      # Management port. Two things reach it, and both are in run.sh: the
+      # readiness probe on /health, and seven authenticated POST /agreements
+      # calls that seed the TP suite's fixture agreements (DECISIONS.md
+      # §25.8). The seeding is why a port on the security-relevant listener is
+      # published at all — /health alone would not justify it. Bound to
+      # 127.0.0.1, never 0.0.0.0: this listener takes writes.
       - "127.0.0.1:8081:8081"
 
   tck:

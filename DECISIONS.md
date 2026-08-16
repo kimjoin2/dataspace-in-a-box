@@ -948,10 +948,16 @@ gap — is the shape §24.6 took in the previous milestone and had to be
 reversed, and the stakes here are higher than a policy constraint: accepting
 an unknown `agreementId` means a counterparty can start a transfer by citing a
 contract that was never made. That is `CLAUDE.md`'s "never accept a constraint
-that is not enforced" applied to the contract itself. `400` and not `404`, per
-§23.2's rule and for its reason: the counterparty's own client throws on a
-`404` even where it expects an error, so a `404` would abort the exchange
-rather than be read as the refusal it is.
+that is not enforced" applied to the contract itself. `400` and not `404`,
+which is a standing rule of this connector rather than one this document
+numbers anywhere: **every rejection a DSP endpoint emits is in `[400, 500)`
+and never `404`, and `404` means only that the `{id}` names nothing.** The
+reason is the counterparty. Its own client checks for `404` *before* it
+consults whether an error was expected, so a `404` raises immediately and
+aborts the exchange instead of being read as the refusal it is. The evidence
+is in the wire contract's §1.6
+(`docs/superpowers/specs/2026-08-16-transfer-process-tck-wire-contract.md`),
+and this milestone's plan carries it as a constraint.
 
 The agreement is matched by id alone. Also requiring the request's
 `consumerPid` to match would reject every imported agreement, since an
@@ -1091,7 +1097,7 @@ Two consequences, and the second is the one that is easy to miss:
    `REQUESTED` twice, the first time immediately after the request.
 
 The only test-varying field on the wire is `agreementId`, so that is what
-selects the behavior — the same shape §24.3's `consumer_policies` already
+selects the behavior — the same shape §24.4's `consumer_policies` already
 uses, where `dataset_id` selects a policy. `config.TransferPolicy` is a list
 keyed by `agreement_id`, each carrying the sequence of states this connector
 walks on its own. An agreement with no entry gets `[STARTED]`; an entry with
@@ -1101,6 +1107,21 @@ message through `pushCallback` and then advances the stored state — §23.12's
 ordering, unchanged, for the reason §23.12 gives: in DSP the provider does not
 become `STARTED` and then say so, it becomes `STARTED` by delivering the start
 message.
+
+**A configured step is checked against the same legality table an inbound
+message is, and an illegal one ends the sequence.** Configuration validation
+can only check that each element names a known state; whether a step is legal
+depends on where the previous one left the transfer, which is runtime. So
+`sequence: [COMPLETED]`, `[STARTED, STARTED]`, and `[TERMINATED, STARTED]` all
+load cleanly and would otherwise emit messages this same connector answers
+`400` to when they arrive from the other side. Enforcing the table outward but
+not inward makes it advisory, which is `CLAUDE.md`'s "never accept a constraint
+that is not enforced" read from the side that is easier to forget. The check
+lives in `dsp`, beside the table, rather than in configuration validation:
+`dsp` imports `config`, so the reverse would be an import cycle. It ends the
+sequence rather than skipping the step, because a sequence that has gone
+illegal has no meaningful remainder. Every shipped fixture is legal, so nothing
+this connector does today changes; a misconfigured deployment does.
 
 The steps are spaced by `transferStepDelay`, 200 ms. That is not a robustness
 nicety either: the counterparty registers its handler for step N+1 only after
@@ -1118,6 +1139,30 @@ this is the connector's *configured* autonomous behavior, and the
 configuration is where a real reason would eventually plug in. The narrower
 cost is that `transfer_policies` reads like a test fixture in
 `config.example.yaml`, because in this milestone that is mostly what it is.
+
+Two further consequences follow from the choice of key and the choice of
+clock, and neither was named above:
+
+- **The selector cannot address a negotiated agreement.** A negotiated
+  agreement's id is the issuing negotiation's provider pid — that is the id
+  `buildAgreementMessage` puts on the wire and the one the row is written
+  under, in `negotiation_handler.go` — and it does not exist until that
+  negotiation is under way, so nobody can write it into a configuration file
+  beforehand. `transfer_policies` is therefore usable only for *imported*
+  agreements, whose ids the operator chose — which is exactly the TCK's
+  situation and nobody else's today. A deployment that wants autonomous
+  behavior on agreements it negotiated needs a different key, and there is no
+  obvious one on the wire: `agreementId` is the only test-varying field, and
+  `datasetId` is not carried on a `TransferRequestMessage` at all.
+- **The sequence is driven by a clock, and Phase B makes state the access
+  control.** The only thing between two steps is `transferStepDelay`.
+  `[STARTED, COMPLETED]` therefore completes 200 ms after starting, which is
+  fine while there is no data plane and wrong the moment there is one: `STARTED`
+  is what will authorize a pull, so a terminal step on a timer cuts access
+  before a byte could be fetched. Phase B has to either bound autonomous
+  completion by something the data plane knows, or say plainly that a terminal
+  step and a real `source_file` cannot be configured together. Tracked in
+  `docs/follow-ups.md`.
 
 **25.8 The TCK harness imports its fixture agreements through the management
 API, in `run.sh`, and fails the run loudly if any import does not answer
