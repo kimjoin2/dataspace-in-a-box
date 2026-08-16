@@ -513,6 +513,14 @@ use. The check runs at two points: when an unmatched request would otherwise
 earn only an informational counter-offer, and when an `ACCEPTED` event would
 otherwise advance the negotiation to `AGREED`.
 
+To be precise about what is being checked, since the wording invites a
+stronger reading than the code supports: the validity period is *this
+connector's own*, `config.Dataset.ValidityUntil` from YAML, evaluated by
+`isValid`. It is not an ODRL constraint parsed from an inbound message — no
+code in `internal/dsp` parses one. See §24.6 for what does happen to a
+counterparty-authored constraint, and why the provider role never needed to
+ask.
+
 *Trade-off accepted.* `CN:02-07` needs a termination trigger that fires
 *after* a negotiation has already passed this check once (at `AGREED`) — a
 check performed once at accept-time cannot produce that. `CN:02-07` is
@@ -828,23 +836,58 @@ provider direction — the two are different because §23.12's ordering rule
 exists to keep "not `AGREED` yet" identical to "the consumer does not have
 the agreement yet", which has no consumer-side counterpart.
 
-**24.6 `on_offer: accept` accepts an offer without inspecting its
-`permission`/`constraint` content at all.** This is the consumer-side mirror
-of `CLAUDE.md`'s "never accept a constraint that is not enforced", and it is
-named here as a gap rather than left implicit. The provider role honors that
-rule (§23.4: a validity-period constraint is checked, and any other
-constraint shape is rejected). The consumer role does not, because every
-constraint list the TCK's mock provider sends is empty — there is no fixture
-that would exercise a check, and building one against no test would be
-speculative code whose correctness nothing could confirm.
+**24.6 A received offer or agreement carrying *any* constraint is rejected,
+because the consumer role enforces none.** `CLAUDE.md` states the rule
+without exception — "never accept a constraint that is not enforced" — and
+§14 calls silent non-enforcement "a security bug wearing a feature costume",
+so this cannot be a documented exemption. Since v1 evaluates no constraint at
+all, "any constraint this connector cannot enforce" is simply "any
+constraint", and the guard needs no taxonomy and no evaluator: `Permission`
+gained an inbound-only `Constraint []json.RawMessage` (omitempty, so nothing
+this connector emits changed by a byte), and `decideOfferReaction` /
+`decideAgreementReaction` divert the two adopting actions — `on_offer:
+accept` and `on_agreement: verify` — onto the existing reject path when one
+is present. That is §14's "parses successfully but causes the negotiation to
+be rejected", literally: `json.RawMessage` requires well-formed JSON and
+interprets none of it. The other actions are untouched, because none of them
+adopts the counterparty's terms: `counter` re-proposes this connector's own
+ask, `passive` holds `OFFERED` agreeing to nothing, `reject` already
+terminates.
 
-*Trade-off accepted.* A real, non-TCK provider that returned an offer
-carrying an actual constraint would have it auto-accepted today, and this
-connector would then hold an agreement whose terms it never evaluated and
-cannot enforce. That is a genuine compliance gap against this project's own
-policy rule, closed by the same work that gives the consumer role a real
-trigger (24.2): at that point there is a caller to reject on behalf of, and
-a reason to decide what an unenforceable constraint should do.
+The agreement side is guarded as well as the offer side, and not for
+symmetry: an agreement is the binding artifact, and `CN_C:01-04`'s
+direct-agreement path sends one with no offer ever pushed, so a check on the
+offer alone would leave the rule violable through a door the TCK itself
+uses.
+
+**Why this gap was consumer-only.** Not because the provider role checks
+constraints — no non-test code in `internal/dsp` parses an ODRL constraint,
+and §23.4's "validity-period constraint" is this connector's own advertised
+`config.Dataset.ValidityUntil` read from YAML (`isValid`), not anything
+recovered from an inbound message. The provider role is *structurally
+immune*: it matches a request against its own advertised offer by identifier
+and then emits an agreement built entirely from its own configuration, so no
+counterparty-authored policy content ever becomes a term it commits to. The
+consumer role has no such immunity — the provider pushes the offer and the
+agreement, and accepting them means adopting terms this connector did not
+write. That asymmetry, not a difference in diligence, is the whole reason
+this guard belongs here.
+
+*Trade-off accepted.* A legitimate counterparty whose offer carries an
+ordinary, reasonable constraint gets terminated rather than negotiated with,
+which will feel blunt the first time a real provider is on the other end.
+That is §14's accepted cost ("real-world policies will frequently be
+rejected"), now paid on this side too. Two narrower limits are worth naming
+rather than implying: the check is presence-only, so it cannot one day
+"allow the validity-period constraint through" without a real evaluator
+first existing; and it looks only at `permission`, since `NegotiationOffer`
+declares no `prohibition` field (an inbound prohibition is dropped at decode
+and is a rule, not a constraint — outside both this rule's wording and this
+milestone's scope, but a real question for whoever adds prohibition
+support). No TCK fixture exercises any of this — `createOfferPolicy`
+hard-codes an empty constraint list — so it is unit tests, per §19's
+layering, that hold it: both directions are pinned, including the empty
+constraint list the TCK actually sends.
 
 **24.7 The consumer's outbound `ContractRequestMessage` is its own type,
 `ConsumerRequestMessage`, separate from the inbound-decoding

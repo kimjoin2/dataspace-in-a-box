@@ -174,6 +174,52 @@ func decideReRequestMatches(currentOfferID, requestedOfferID string) bool {
 	return requestedOfferID == currentOfferID
 }
 
+// carriesConstraint reports whether any rule in permission carries a
+// constraint. It does not look at what the constraint says, because v1
+// evaluates none of them (DECISIONS.md §14): presence alone is the whole
+// question.
+func carriesConstraint(permission []Permission) bool {
+	for _, p := range permission {
+		if len(p.Constraint) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// decideOfferReaction returns the on_offer action to take for a received
+// offer. It is the identity function except in one case: an offer that
+// carries a constraint can never be accepted, because this connector
+// enforces no constraint at all, and `CLAUDE.md` states the rule without
+// exception — "never accept a constraint that is not enforced". Such an
+// offer takes the same path as a configured on_offer: reject, which is
+// DECISIONS.md §14's "parses successfully but causes the negotiation to be
+// rejected" exactly.
+//
+// The other three actions need no adjustment. counter declines the offer and
+// re-proposes this connector's own ask, passive holds OFFERED without
+// agreeing to anything, and reject already terminates — none of them adopt
+// the counterparty's terms, which is the thing the rule forbids.
+func decideOfferReaction(onOffer string, constrained bool) string {
+	if constrained && onOffer == "accept" {
+		return "reject"
+	}
+	return onOffer
+}
+
+// decideAgreementReaction is decideOfferReaction's counterpart for a
+// received agreement, and matters more: an agreement is the binding
+// artifact, and verifying one is this connector's strongest possible
+// statement that it accepts those terms. It also closes the direct-agreement
+// path (`CN_C:01-04`), where a provider sends an agreement with no offer
+// ever pushed and decideOfferReaction is therefore never consulted.
+func decideAgreementReaction(onAgreement string, constrained bool) string {
+	if constrained && onAgreement == "verify" {
+		return "reject"
+	}
+	return onAgreement
+}
+
 // NegotiationOffer is the ODRL offer object carried in negotiation protocol
 // messages, in either direction. Unlike catalog.go's Offer (which never
 // carries a target — the schema forbids it there), a negotiation offer always

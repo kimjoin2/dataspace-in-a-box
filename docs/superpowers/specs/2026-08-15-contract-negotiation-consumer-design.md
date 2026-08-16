@@ -44,6 +44,17 @@ this spec flagged as verifiable only by a real run, the `01-02`
 counter-request shape and `02-02`'s abandon-through-`pushCallback` path.
 Nothing else in this spec needed correcting, and no exemption was needed.
 
+**Third revision, from task review (2026-08-16).** This spec's policy table
+described `on_offer: accept` and `on_agreement: verify` unconditionally,
+which made them accept constraints this connector cannot enforce — a direct
+violation of `CLAUDE.md`'s "never accept a constraint that is not enforced"
+that the first draft of `DECISIONS.md` §24.6 recorded as a gap rather than
+closed. It is now closed: both actions divert to the existing reject path
+when the received offer or agreement carries any constraint. The table rows
+below say so, and §24.6 carries the reasoning. No TCK behavior changed —
+`createOfferPolicy` hard-codes an empty constraint list, and `CN_C` stayed
+16 of 16 with `CN` at 14 of 15 across the run that verified it.
+
 ## Scope
 
 **In scope**
@@ -231,11 +242,11 @@ unmatched `dataset_id` gets every field's default: accept, verify, wait.
 
 | Field | Value | Behavior |
 |---|---|---|
-| `on_offer` | `accept` (default) | Send `ACCEPTED` immediately on receiving an offer. |
+| `on_offer` | `accept` (default) | Send `ACCEPTED` immediately on receiving an offer — unless the offer carries a constraint, which diverts it to the `reject` path below (`DECISIONS.md` §24.6). |
 | `on_offer` | `passive` | Take no action; the negotiation durably holds `OFFERED`. |
 | `on_offer` | `reject` | Send `TERMINATED` immediately on receiving an offer. |
 | `on_offer` | `counter` | Send exactly one re-request repeating the original `dataset_id`/`offer_id` — see "The `01-02` counter-request shape" for why this cannot be the bare initial-request body resent. No CAS guard is needed here, unlike `DECISIONS.md` §23.9's provider-role rule: an offer is only ever legal once per negotiation (see "Structural guards" — `OFFERED` is illegal-from for a second offer), so exactly one goroutine ever reacts to exactly one offer. The provider-role rule guards against an external, uncontrolled actor sending a second HTTP request; here this connector is the one deciding to send, once, and the state machine itself already makes a second send unreachable. |
-| `on_agreement` | `verify` (default) | Send `ContractAgreementVerificationMessage` on receiving an agreement; only advance local state to `VERIFIED` once that send is acknowledged — see "The `03-06` verification-ack rule". |
+| `on_agreement` | `verify` (default) | Send `ContractAgreementVerificationMessage` on receiving an agreement; only advance local state to `VERIFIED` once that send is acknowledged — see "The `03-06` verification-ack rule". An agreement carrying a constraint is diverted to `reject` instead, same as an offer (`DECISIONS.md` §24.6). |
 | `on_agreement` | `reject` | Send `TERMINATED` immediately on receiving an agreement. |
 | `on_idle` | `wait` (default) | Take no action after the initial request; wait indefinitely (bounded only by the TCK's own patience window) for the provider's next move. |
 | `on_idle` | `abandon` | Send a termination through `pushCallback`'s retrying path (not a bespoke one-shot call) immediately after the initial request's synchronous acknowledgement. A one-shot, un-retried send would not survive `CN_C:02-02`: the TCK registers its termination-receiving handler only after observing this connector reach `REQUESTED`, the same registration-order gap `DECISIONS.md` §23.7 already documents for the provider role's own async pushes, and the TCK's own reference consumer covers it with a 100ms pause between requesting and abandoning. This design does not add a matching sleep — `pushCallback`'s existing 300/700/1500/3000ms backoff is the same mechanism already trusted to cover this class of race, and reusing it is simpler than adding a second, bespoke delay. |

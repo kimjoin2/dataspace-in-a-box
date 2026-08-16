@@ -237,14 +237,23 @@ func (h negotiationHandler) handleOffers(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusOK)
 
 	n.State = StateOffered
-	go h.reactToOffer(n)
+	// The offer's own content does not survive into the stored row, so
+	// whether it carried a constraint is decided here, while the decoded
+	// message is still in hand, and passed to the reaction.
+	go h.reactToOffer(n, carriesConstraint(msg.Offer.Permission))
 }
 
 // reactToOffer applies this connector's on_offer policy once an offer has
-// been durably recorded as OFFERED.
-func (h negotiationHandler) reactToOffer(n store.ConsumerNegotiation) {
+// been durably recorded as OFFERED. constrained reports whether the offer
+// carried a constraint — see decideOfferReaction for what that changes.
+func (h negotiationHandler) reactToOffer(n store.ConsumerNegotiation, constrained bool) {
 	policy := resolvePolicy(h.cfg, n.DatasetID)
-	switch policy.OnOffer {
+	action := decideOfferReaction(policy.OnOffer, constrained)
+	if action != policy.OnOffer {
+		slog.Info("rejecting an offer whose constraints this connector cannot enforce",
+			"consumer_pid", n.ConsumerPID, "dataset_id", n.DatasetID, "configured_on_offer", policy.OnOffer)
+	}
+	switch action {
 	case "accept":
 		sendAcceptedEvent(n)
 		if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateAccepted, time.Now()); err != nil {
@@ -300,16 +309,25 @@ func (h negotiationHandler) handleAgreement(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusOK)
 
 	n.State = StateAgreed
-	go h.reactToAgreement(n)
+	// Same reasoning as handleOffers: the agreement's terms are not stored,
+	// so the constraint question is answered here.
+	go h.reactToAgreement(n, carriesConstraint(msg.Agreement.Permission))
 }
 
 // reactToAgreement applies this connector's on_agreement policy. The verify
 // branch's state write is gated on sendVerification's return value — see
 // the design spec's "03-06 verification-ack rule": this connector must not
-// report VERIFIED unless the provider actually acknowledged it.
-func (h negotiationHandler) reactToAgreement(n store.ConsumerNegotiation) {
+// report VERIFIED unless the provider actually acknowledged it. constrained
+// reports whether the agreement carried a constraint — see
+// decideAgreementReaction.
+func (h negotiationHandler) reactToAgreement(n store.ConsumerNegotiation, constrained bool) {
 	policy := resolvePolicy(h.cfg, n.DatasetID)
-	switch policy.OnAgreement {
+	action := decideAgreementReaction(policy.OnAgreement, constrained)
+	if action != policy.OnAgreement {
+		slog.Info("rejecting an agreement whose constraints this connector cannot enforce",
+			"consumer_pid", n.ConsumerPID, "dataset_id", n.DatasetID, "configured_on_agreement", policy.OnAgreement)
+	}
+	switch action {
 	case "verify":
 		if !sendVerification(n) {
 			return

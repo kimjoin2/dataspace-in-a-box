@@ -1,6 +1,10 @@
 package dsp
 
-import "github.com/kimjoin2/dataspace-in-a-box/internal/config"
+import (
+	"encoding/json"
+
+	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
+)
 
 // DSP node type names and the derived-value rules for catalog documents.
 //
@@ -68,11 +72,27 @@ type Offer struct {
 	Permission []Permission `json:"permission"`
 }
 
-// Permission is one ODRL rule. This milestone advertises unrestricted use and
-// nothing else, because the code that would enforce anything narrower belongs
-// to the negotiation milestone.
+// Permission is one ODRL rule. This connector advertises unrestricted use and
+// nothing else — it never sets Constraint, which is why that field is
+// omitempty and every permission this project emits is byte-identical to
+// before it existed.
+//
+// Constraint exists for the inbound direction only. DECISIONS.md §14 evaluates
+// exactly two policy shapes, unrestricted use and a validity period, and
+// requires any other constraint to parse and then have the negotiation
+// rejected. The consumer role is where a counterparty's constraint can first
+// reach this connector, so that is where the rule is enforced — see
+// decideOfferReaction and decideAgreementReaction.
+//
+// The elements are deliberately opaque. v1 evaluates no constraint at all, so
+// the only question worth asking is whether one is present; json.RawMessage
+// still requires each to be well-formed JSON, which is precisely §14's "parses
+// successfully but causes the negotiation to be rejected" — parsed, never
+// interpreted. Giving the fields names this connector cannot act on would
+// suggest an evaluator that does not exist.
 type Permission struct {
-	Action string `json:"action"`
+	Action     string            `json:"action"`
+	Constraint []json.RawMessage `json:"constraint,omitempty"`
 }
 
 // Distribution describes how a dataset can be obtained.

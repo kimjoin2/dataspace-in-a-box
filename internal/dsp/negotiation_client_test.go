@@ -18,7 +18,12 @@ func TestSendInitialRequest_Success(t *testing.T) {
 		// real TCK.
 		var msg map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-			t.Fatalf("provider: decode request: %v", err)
+			// Errorf, not Fatalf: this runs on the server's goroutine, where
+			// Fatalf would Goexit that goroutine and hang the request rather
+			// than fail the test — the same hazard assertEmittedOffer's doc
+			// comment describes.
+			t.Errorf("provider: decode request: %v", err)
+			return
 		}
 		assertEmittedOffer(t, msg, "urn:dataset:a#offer", "urn:dataset:a")
 		w.WriteHeader(http.StatusCreated)

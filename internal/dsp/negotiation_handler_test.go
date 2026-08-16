@@ -850,6 +850,32 @@ func TestHandleInitiate_Success(t *testing.T) {
 	}
 	// The exact ids the initiate call supplied, echoed rather than regenerated.
 	assertEmittedOffer(t, msg, "urn:dataset:a#offer", "urn:dataset:a")
+
+	// The channel above unblocks when the provider *receives* the request,
+	// but startNegotiation then reads the response and records the
+	// providerPid — work still in flight at that moment, on a goroutine that
+	// would otherwise outlive this test and its deferred st.Close(). Waiting
+	// for that write both bounds the goroutine and covers the step nothing
+	// else at this level asserted: that startNegotiation stores the pid
+	// sendInitialRequest actually returned.
+	consumerPID, _ := msg["consumerPid"].(string)
+	if consumerPID == "" {
+		t.Fatalf("the request carries no consumerPid: %v", msg)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		n, ok, err := st.GetConsumer(consumerPID)
+		if err != nil {
+			t.Fatalf("GetConsumer: %v", err)
+		}
+		if ok && n.ProviderPID == "urn:uuid:provider-1" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stored ProviderPID = %q, want the pid the provider returned", n.ProviderPID)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func TestHandleInitiate_MissingFieldIs400(t *testing.T) {
@@ -1207,15 +1233,118 @@ func TestHandleAgreement_IllegalFromOfferedIs400(t *testing.T) {
 // read, nothing more (matching this project's own direct-field-check
 // convention).
 func offerMessageJSON(n store.ConsumerNegotiation) string {
+	return offerMessageJSONWithPermission(n, `[]`)
+}
+
+// offerMessageJSONWithPermission is offerMessageJSON with the offer's
+// permission array supplied verbatim, so the constraint-guard tests can vary
+// the one thing they are about.
+func offerMessageJSONWithPermission(n store.ConsumerNegotiation, permission string) string {
 	return `{"@context":["` + ContextURL + `"],"@type":"` + ContractOfferMessageType + `",` +
 		`"providerPid":"` + n.ProviderPID + `","consumerPid":"` + n.ConsumerPID + `",` +
-		`"offer":{"@id":"` + n.OfferID + `","target":"` + n.DatasetID + `","permission":[]}}`
+		`"offer":{"@id":"` + n.OfferID + `","target":"` + n.DatasetID + `","permission":` + permission + `}}`
 }
 
 func agreementMessageJSON(n store.ConsumerNegotiation) string {
+	return agreementMessageJSONWithPermission(n, `[]`)
+}
+
+func agreementMessageJSONWithPermission(n store.ConsumerNegotiation, permission string) string {
 	return `{"@context":["` + ContextURL + `"],"@type":"` + ContractAgreementMessageType + `",` +
 		`"providerPid":"` + n.ProviderPID + `","consumerPid":"` + n.ConsumerPID + `",` +
-		`"agreement":{"@id":"` + n.ProviderPID + `","target":"` + n.DatasetID + `","permission":[],"assigner":"x","assignee":"y","timestamp":"2026-08-15T00:00:00Z"}}`
+		`"agreement":{"@id":"` + n.ProviderPID + `","target":"` + n.DatasetID + `","permission":` + permission +
+		`,"assigner":"x","assignee":"y","timestamp":"2026-08-15T00:00:00Z"}}`
+}
+
+// The permission arrays the constraint-guard tests vary over. unconstrained*
+// are the shapes the TCK's own mock provider sends —
+// NegotiationFunctions.createOfferPolicy hard-codes an empty constraint list —
+// and are the negative controls that keep the guard from firing on them.
+const (
+	unconstrainedPermission      = `[{"action":"use"}]`
+	unconstrainedEmptyConstraint = `[{"action":"use","constraint":[]}]`
+	constrainedPermission        = `[{"action":"use","constraint":[{"leftOperand":"spatial","operator":"eq","rightOperand":"EU"}]}]`
+	constrainedSecondRule        = `[{"action":"use"},{"action":"use","constraint":[{"leftOperand":"spatial","operator":"eq","rightOperand":"EU"}]}]`
+)
+
+// TestHandleOffers_ConstraintGuard pins both directions of the rule
+// CLAUDE.md states without exception — "never accept a constraint that is not
+// enforced". This connector enforces none, so an offer carrying any
+// constraint must take the reject path instead of the configured accept one,
+// while the unconstrained shapes the TCK actually sends must still accept.
+func TestHandleOffers_ConstraintGuard(t *testing.T) {
+	cases := []struct {
+		name       string
+		permission string
+		want       string
+	}{
+		{"no rules at all", `[]`, StateAccepted},
+		{"a rule with no constraint key", unconstrainedPermission, StateAccepted},
+		{"a rule with an empty constraint list", unconstrainedEmptyConstraint, StateAccepted},
+		{"a rule carrying a constraint", constrainedPermission, StateTerminated},
+		{"a constraint on the second rule only", constrainedSecondRule, StateTerminated},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer provider.Close()
+
+			n := testConsumerNegotiationAt(provider.URL)
+			n.State = StateRequested
+			// No consumer_policies entry: on_offer defaults to accept, so
+			// anything other than ACCEPTED here is the guard firing.
+			h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+			req := httptest.NewRequest("POST", "/x", strings.NewReader(offerMessageJSONWithPermission(n, c.permission)))
+			req.SetPathValue("id", n.ConsumerPID)
+			w := httptest.NewRecorder()
+			h.handleOffers(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 — the guard rejects the negotiation, not the message", w.Code)
+			}
+
+			waitForConsumerState(t, st, n.ConsumerPID, c.want)
+		})
+	}
+}
+
+// TestHandleAgreement_ConstraintGuard is the same rule on the binding
+// artifact, and covers the direct-agreement path (CN_C:01-04) where no offer
+// is ever pushed and the offer-side guard is therefore never consulted.
+func TestHandleAgreement_ConstraintGuard(t *testing.T) {
+	cases := []struct {
+		name       string
+		permission string
+		want       string
+	}{
+		{"a rule with no constraint key", unconstrainedPermission, StateVerified},
+		{"a rule with an empty constraint list", unconstrainedEmptyConstraint, StateVerified},
+		{"a rule carrying a constraint", constrainedPermission, StateTerminated},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer provider.Close()
+
+			n := testConsumerNegotiationAt(provider.URL)
+			n.State = StateRequested
+			h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+			req := httptest.NewRequest("POST", "/x", strings.NewReader(agreementMessageJSONWithPermission(n, c.permission)))
+			req.SetPathValue("id", n.ConsumerPID)
+			w := httptest.NewRecorder()
+			h.handleAgreement(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+
+			waitForConsumerState(t, st, n.ConsumerPID, c.want)
+		})
+	}
 }
 
 func TestHandleEvent_DispatchesToConsumerBranchForAFinalizedEvent(t *testing.T) {

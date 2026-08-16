@@ -375,6 +375,70 @@ func TestResolvePolicy_UnsetFieldsOnAMatchedEntryStillDefault(t *testing.T) {
 	}
 }
 
+func TestCarriesConstraint(t *testing.T) {
+	constraint := []json.RawMessage{json.RawMessage(`{"leftOperand":"spatial"}`)}
+	cases := []struct {
+		name       string
+		permission []Permission
+		want       bool
+	}{
+		{"no rules", nil, false},
+		{"an empty rule list", []Permission{}, false},
+		{"a rule with no constraint", []Permission{{Action: useAction}}, false},
+		{"a rule with an empty constraint list", []Permission{{Action: useAction, Constraint: []json.RawMessage{}}}, false},
+		{"a rule with a constraint", []Permission{{Action: useAction, Constraint: constraint}}, true},
+		{"a constraint on the second rule only", []Permission{{Action: useAction}, {Action: useAction, Constraint: constraint}}, true},
+	}
+	for _, c := range cases {
+		if got := carriesConstraint(c.permission); got != c.want {
+			t.Errorf("carriesConstraint(%s) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestDecideOfferReaction(t *testing.T) {
+	cases := []struct {
+		onOffer     string
+		constrained bool
+		want        string
+	}{
+		// An unconstrained offer is never adjusted, whatever the policy says.
+		{"accept", false, "accept"},
+		{"reject", false, "reject"},
+		{"counter", false, "counter"},
+		{"passive", false, "passive"},
+		// Only accept is unsafe for a constrained offer: it is the one
+		// action that adopts the counterparty's terms.
+		{"accept", true, "reject"},
+		{"reject", true, "reject"},
+		{"counter", true, "counter"},
+		{"passive", true, "passive"},
+	}
+	for _, c := range cases {
+		if got := decideOfferReaction(c.onOffer, c.constrained); got != c.want {
+			t.Errorf("decideOfferReaction(%q, %v) = %q, want %q", c.onOffer, c.constrained, got, c.want)
+		}
+	}
+}
+
+func TestDecideAgreementReaction(t *testing.T) {
+	cases := []struct {
+		onAgreement string
+		constrained bool
+		want        string
+	}{
+		{"verify", false, "verify"},
+		{"reject", false, "reject"},
+		{"verify", true, "reject"},
+		{"reject", true, "reject"},
+	}
+	for _, c := range cases {
+		if got := decideAgreementReaction(c.onAgreement, c.constrained); got != c.want {
+			t.Errorf("decideAgreementReaction(%q, %v) = %q, want %q", c.onAgreement, c.constrained, got, c.want)
+		}
+	}
+}
+
 func TestOfferLegalFrom(t *testing.T) {
 	cases := []struct {
 		state string
