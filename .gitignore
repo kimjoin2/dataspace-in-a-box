@@ -13,3 +13,8 @@
 
 # Captured TCK output; regenerate with `make tck`
 /tck-output.txt
+
+# Linked worktrees for in-progress branches. A worktree here is a full second
+# checkout, so leaving it untracked means one `git add -A` on the main checkout
+# commits an entire duplicate tree.
+/.claude/worktrees/
