@@ -63,9 +63,11 @@ type RequestMessage struct {
 	CallbackAddress string   `json:"callbackAddress"`
 }
 
-// OfferRef is the nested offer object inside a RequestMessage. Its own
-// @type is deliberately not read: the TCK's own source marks that field
-// "@DspTestingWorkaround(Remove @type)", so parsing must not depend on it.
+// OfferRef is the nested offer object inside an *inbound* RequestMessage.
+// Its own @type is deliberately not read: the TCK's own source marks that
+// field "@DspTestingWorkaround(Remove @type)", so parsing must not depend on
+// it. This type is for decoding only — an outbound offer must carry every
+// field the TCK's schema requires, which is what NegotiationOffer is for.
 type OfferRef struct {
 	ID     string `json:"@id"`
 	Target string `json:"target"`
@@ -173,14 +175,35 @@ func decideReRequestMatches(currentOfferID, requestedOfferID string) bool {
 }
 
 // NegotiationOffer is the ODRL offer object carried in negotiation protocol
-// messages. Unlike catalog.go's Offer (which never carries a target — the
-// schema forbids it there), a negotiation offer always names its target
-// dataset explicitly.
+// messages, in either direction. Unlike catalog.go's Offer (which never
+// carries a target — the schema forbids it there), a negotiation offer always
+// names its target dataset explicitly.
+//
+// Every field here is load-bearing against the TCK's own
+// negotiation/contract-schema.json, where an offer is a MessageOffer:
+// allOf[ PolicyClass (@id required), { @type const "Offer", target },
+// anyOf[ permission | prohibition ] ] with @type required. permission and
+// prohibition are each an array with minItems 1, so a *single* non-empty
+// permission satisfies the anyOf and there is deliberately no prohibition
+// field: emitting "prohibition": [] would turn a valid message invalid.
 type NegotiationOffer struct {
 	ID         string       `json:"@id"`
 	Type       string       `json:"@type"`
 	Target     string       `json:"target"`
 	Permission []Permission `json:"permission"`
+}
+
+// newNegotiationOffer builds the offer node this connector sends for
+// offerID/datasetID. Every builder that emits one goes through it, in either
+// role, so there is exactly one place where the shape NegotiationOffer's doc
+// comment describes is actually produced.
+func newNegotiationOffer(offerID, datasetID string) NegotiationOffer {
+	return NegotiationOffer{
+		ID:         offerID,
+		Type:       OfferType,
+		Target:     datasetID,
+		Permission: []Permission{{Action: useAction}},
+	}
 }
 
 // OfferMessage is the ContractOfferMessage pushed to a consumer's callback
@@ -301,12 +324,7 @@ func buildOfferMessage(n store.Negotiation) OfferMessage {
 		Type:        ContractOfferMessageType,
 		ProviderPID: n.ProviderPID,
 		ConsumerPID: n.ConsumerPID,
-		Offer: NegotiationOffer{
-			ID:         n.DatasetID + offerIDSuffix,
-			Type:       OfferType,
-			Target:     n.DatasetID,
-			Permission: []Permission{{Action: useAction}},
-		},
+		Offer:       newNegotiationOffer(n.DatasetID+offerIDSuffix, n.DatasetID),
 	}
 }
 
@@ -360,22 +378,41 @@ func buildTerminationMessage(n store.Negotiation) TerminationMessage {
 	}
 }
 
+// ConsumerRequestMessage is the initial ContractRequestMessage this
+// connector sends as consumer — POST {provider}/negotiations/request.
+//
+// It is a separate type from RequestMessage, which decodes the same DSP
+// message inbound, because the two directions have opposite obligations.
+// Inbound, DECISIONS.md section 22.5 declares only the fields this connector
+// reads, and OfferRef's doc comment forbids depending on the offer's @type
+// at all. Outbound, the TCK validates what this connector emits against its
+// own schema, so the offer must be a complete NegotiationOffer. Sharing one
+// struct would force one of those two rules to bend; CounterRequestMessage
+// is already separate for the same kind of reason.
+type ConsumerRequestMessage struct {
+	Context         []string         `json:"@context"`
+	Type            string           `json:"@type"`
+	ConsumerPID     string           `json:"consumerPid"`
+	Offer           NegotiationOffer `json:"offer"`
+	CallbackAddress string           `json:"callbackAddress"`
+}
+
 // CounterRequestMessage is the body of the consumer role's counter-request
 // — POST {provider}/negotiations/{providerPid}/request — sent when this
 // connector's on_offer:counter policy decides to repeat its original ask
-// rather than accept a provider's counter-offer. Unlike RequestMessage (the
-// very first request, which has no providerPid yet), this carries the
-// providerPid the synchronous response to that first request returned:
-// without it, the TCK's own reference provider treats the message as a
-// duplicate initial request rather than a counter, and the test that
-// expects it hangs. See the design spec's "The 01-02 counter-request
+// rather than accept a provider's counter-offer. Unlike
+// ConsumerRequestMessage (the very first request, which has no providerPid
+// yet), this carries the providerPid the synchronous response to that first
+// request returned: without it, the TCK's own reference provider treats the
+// message as a duplicate initial request rather than a counter, and the test
+// that expects it hangs. See the design spec's "The 01-02 counter-request
 // shape".
 type CounterRequestMessage struct {
-	Context     []string `json:"@context"`
-	Type        string   `json:"@type"`
-	ProviderPID string   `json:"providerPid"`
-	ConsumerPID string   `json:"consumerPid"`
-	Offer       OfferRef `json:"offer"`
+	Context     []string         `json:"@context"`
+	Type        string           `json:"@type"`
+	ProviderPID string           `json:"providerPid"`
+	ConsumerPID string           `json:"consumerPid"`
+	Offer       NegotiationOffer `json:"offer"`
 }
 
 // VerificationMessage is the ContractAgreementVerificationMessage this
@@ -396,12 +433,12 @@ type VerificationMessage struct {
 // "offer"+datasetID convention, a different shape from this connector's
 // own provider-role offerIDSuffix convention; conflating the two would
 // break the request the TCK's mock provider needs to parse.
-func buildConsumerRequestMessage(consumerPID, datasetID, offerID, callbackAddress string) RequestMessage {
-	return RequestMessage{
+func buildConsumerRequestMessage(consumerPID, datasetID, offerID, callbackAddress string) ConsumerRequestMessage {
+	return ConsumerRequestMessage{
 		Context:         []string{ContextURL},
 		Type:            ContractRequestMessageType,
 		ConsumerPID:     consumerPID,
-		Offer:           OfferRef{ID: offerID, Target: datasetID},
+		Offer:           newNegotiationOffer(offerID, datasetID),
 		CallbackAddress: callbackAddress,
 	}
 }
@@ -412,7 +449,7 @@ func buildCounterRequestMessage(n store.ConsumerNegotiation) CounterRequestMessa
 		Type:        ContractRequestMessageType,
 		ProviderPID: n.ProviderPID,
 		ConsumerPID: n.ConsumerPID,
-		Offer:       OfferRef{ID: n.OfferID, Target: n.DatasetID},
+		Offer:       newNegotiationOffer(n.OfferID, n.DatasetID),
 	}
 }
 

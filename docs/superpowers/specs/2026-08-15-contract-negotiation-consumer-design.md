@@ -30,6 +30,20 @@ state machine, and the harness plan on that finding. The endpoint contract,
 the routing-collision analysis, and the storage/callback-reuse plan were all
 independently confirmed accurate and are carried over largely unchanged.
 
+**Second revision, after the first real TCK run (2026-08-16).** This spec
+described the outbound `ContractRequestMessage`'s *identifiers* in detail
+and said nothing about its offer node's *shape*, which left the
+implementation free to reuse the lean inbound decoding struct as the
+outbound body. It did, and all 16 `CN_C` tests were rejected by the TCK's
+own validator before a single negotiation could start: `required property
+'permission' not found, required property 'prohibition' not found, required
+property '@type' not found`. The requirement is recorded in "The initial
+request" below and in `DECISIONS.md` §24.7. Once corrected, `CN_C` passed
+16 of 16 on the next run with no other change — including both mechanisms
+this spec flagged as verifiable only by a real run, the `01-02`
+counter-request shape and `02-02`'s abandon-through-`pushCallback` path.
+Nothing else in this spec needed correcting, and no exemption was needed.
+
 ## Scope
 
 **In scope**
@@ -442,7 +456,12 @@ TCK run confirms or refutes that.
 The outbound `ContractRequestMessage` carries `callbackAddress:
 config.Config.PublicURL + VersionPath` and echoes `datasetId`/`offerId`
 verbatim from the initiate call (see "The endpoints" above — never
-regenerated). The response is a synchronous `ContractNegotiation` state
+regenerated). Its nested offer must be a complete `MessageOffer` per the
+TCK's own `negotiation/contract-schema.json` — `@id`, `@type: "Offer"`,
+`target`, and a `permission` array of at least one rule — not the two-field
+shape the inbound decoding struct declares; see the second revision note
+above and `DECISIONS.md` §24.7. The response is a synchronous
+`ContractNegotiation` state
 document; its `providerPid` is parsed out and written to the row with a
 plain (non-CAS) update — nothing else ever writes this field. This write
 races against the provider's own async pushes only in principle; in

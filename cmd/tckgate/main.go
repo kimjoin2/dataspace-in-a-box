@@ -19,7 +19,7 @@ import (
 // enters this map only when its protocol is implemented, and the count is how
 // many tests that suite contains upstream. Requiring an exact count means a run
 // that stops halfway through a suite fails instead of reporting green.
-var expected = map[string]int{"MET": 1, "CAT": 3, "CN": 15}
+var expected = map[string]int{"MET": 1, "CAT": 3, "CN": 15, "CN_C": 16}
 
 // exempt names individual gated test IDs that are known to fail and are
 // tracked rather than required — see docs/follow-ups.md for each entry's

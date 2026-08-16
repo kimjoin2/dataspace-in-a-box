@@ -30,7 +30,7 @@ const (
 // this is called, so the registration race pushCallback's retry schedule
 // exists for does not apply here — see the design spec's "The initial
 // request: goroutine dispatch, no retry" section.
-func sendInitialRequest(providerBaseURL string, msg RequestMessage) (string, error) {
+func sendInitialRequest(providerBaseURL string, msg ConsumerRequestMessage) (string, error) {
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return "", fmt.Errorf("marshal initial request: %w", err)

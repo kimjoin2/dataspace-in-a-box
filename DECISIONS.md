@@ -709,3 +709,165 @@ by the request that overtook it — unavoidable in an asynchronous protocol,
 and the provider's record ends up right. On the synchronous handlers a lost
 race becomes a `400`, the same rejection the state precondition would have
 produced had it been checked a moment later.
+
+## 24. Contract negotiation (consumer role)
+
+**Decision.** Seven decisions taken while implementing the contract
+negotiation protocol's consumer role. The provider role's §23 is untouched:
+everything here is additive, and the `CN` suite's pass count is unchanged by
+this milestone.
+
+**24.1 Consumer-role negotiations live in a second table,
+`consumer_negotiations`, not in the existing `negotiations` table behind a
+`role` column.** The provider table is 14 of 15 TCK tests deep. A shared
+table would make every row carry columns that mean different things
+depending on which role wrote it — `callback_address` is per-negotiation
+data for a provider and a constant for a consumer, `rerequested` (§23.9)
+guards an external actor's second HTTP call and has no consumer-role
+equivalent at all — and would put a `WHERE role = 'provider'` into every
+query the provider milestone shipped without one. A second table costs one
+more `CREATE TABLE IF NOT EXISTS` and a handful of CRUD functions shaped
+exactly like the ones already there, including the same compare-and-swap
+`SetConsumerState` for the same reason §23.12 needed `SetState`: consumer
+reactions also run in goroutines and can outlive a termination that arrived
+while they were retrying.
+
+*Trade-off accepted.* Two tables that hold the same protocol's state, so a
+future query spanning both roles has to union them, and `explainNoUpdate`
+needed a consumer-table twin rather than being reused — it hard-codes a
+lookup against `negotiations`, and sharing it would have made a failed
+consumer-side update report the wrong table's state.
+
+**24.2 `POST /negotiations/initiate` is an unauthenticated, TCK-shaped
+trigger hook on the *public* listener, and a real management-API trigger is
+deliberately not built in this milestone.** `DspSystemLauncher.start()`
+requires `dataspacetck.dsp.connector.negotiation.initiate.url`
+unconditionally, and the TCK's own client POSTs plain JSON (not JSON-LD:
+`{providerId, offerId, datasetId, connectorAddress}`, confirmed from the
+`postJson(url, body, false, true)` call site) and requires `200`. Building a
+real "start a negotiation" management feature is a different concern —
+it would mean settling a production UX question (how does an operator pick a
+provider and an offer?) as a side effect of a test-harness requirement.
+Unauthenticated is consistent with §23.11's already-accepted posture, which
+covers this connector's negotiation surface regardless of which role
+receives the request.
+
+*Trade-off accepted.* Until a management trigger exists, this endpoint is
+the *only* way to start a negotiation as consumer, and it is open to
+anonymous callers — one request creates a row, a goroutine, and outbound
+POSTs to an address the caller chose. §23.6's SSRF guard
+(`validateOutgoingCallback`) is applied to `connectorAddress` for exactly
+that reason, and §23.11's closing note applies unchanged: the real fix is
+enforcing §10's connector-to-connector JWT on this listener, not patching
+this handler.
+
+**24.3 The initial outbound `ContractRequestMessage` is sent once, with no
+retry — the only outbound call in this connector that is not routed through
+`pushCallback`.** §23.7's retry schedule exists to survive a race on the
+*receiving* side: the TCK registers a callback listener as a sequential
+pipeline stage that can still be running when this connector's push lands.
+Here this connector is the initiator, and the provider it calls is an
+already-listening server by the time `/negotiations/initiate` fires. There
+is no equivalent registration race in this direction. The call is also
+genuinely different work rather than a `pushCallback` variant:
+`pushCallback` discards the response body, and this call exists to read
+`providerPid` out of the provider's synchronous `ContractNegotiation`
+response.
+
+*Trade-off accepted.* A transient network failure on the initial request
+loses the negotiation silently — the row stays `REQUESTED` with an empty
+`provider_pid`, nothing retries, and only the log records it. Acceptable
+because there is nothing to retry *toward* until `providerPid` is known, and
+because a real trigger (24.2) would be the natural place to surface the
+failure to whoever asked for the negotiation.
+
+**24.4 What this connector does with an offer, an agreement, or silence is
+configuration (`consumer_policies`), keyed by the `dataset_id` this
+connector itself requested — not a rule derived from the content of what it
+receives.** All 16 `CN_C` tests send the identical wire input at a given
+juncture and require different reactions: `CN_C:01-01` must auto-accept an
+offer, `CN_C:02-04` must take no action on the same kind of offer,
+`CN_C:01-03` must terminate on it, `CN_C:01-02` must counter it. There is no
+content-based signal that could distinguish them even in principle — the
+TCK's mock provider echoes this connector's own `datasetId`/`offerId` back
+verbatim and `NegotiationFunctions.createOfferPolicy` hard-codes an empty
+constraint list. `AbstractContractNegotiationConsumerTest` declares exactly
+one `@ConfigParam` this project controls per test, `datasetId`, so the
+reaction has to be a function of what this connector chose to request. Three
+independent fields, each defaulting to the behavior a real consumer should
+have with no configuration at all: `on_offer` (accept), `on_agreement`
+(verify), `on_idle` (wait).
+
+*Trade-off accepted.* This is honestly a TCK-driven mechanism today, and is
+recorded as one rather than presented as a finished product feature: a
+connector configured in advance to negotiate for named datasets under named
+acceptance rules is a reasonable "minimum operational dataspace" capability,
+but nothing outside the TCK harness can reach it yet, because 24.2 is the
+only trigger that exists.
+
+**24.5 `pushCallback` returns whether the push ultimately succeeded, and the
+consumer's local state advances to `VERIFIED` only when it did.** `CN_C:03-06`
+is not a timing window that could be widened away. Unlike `01-01`, `01-04`,
+and `02-06`, that test never calls `.expectVerifiedMessage(...)`, so no
+handler is ever registered for this connector's verification POST, and the
+TCK's dispatcher answers an unregistered path with a plain `404` — for the
+whole life of the test. Storing `VERIFIED` on send, mirroring §23.12's
+provider-role push-then-store, makes that test fail deterministically. The
+signature change is small (`func pushCallback(url string, v any) bool`, the
+retry loop unchanged) and every other caller discards the result, including
+all of the provider role's pushes.
+
+*Trade-off accepted.* This connector's `VERIFIED` now depends on a
+counterparty's acknowledgement rather than on its own action, so a provider
+that receives the verification and fails to answer leaves this side at
+`AGREED` while the provider considers itself verified. That divergence is
+real, and it is the correct side to err on: claiming `VERIFIED` for a
+message nobody confirmed receiving is the stronger lie. It is also a
+deliberate asymmetry with §23.12, which stores unconditionally in the
+provider direction — the two are different because §23.12's ordering rule
+exists to keep "not `AGREED` yet" identical to "the consumer does not have
+the agreement yet", which has no consumer-side counterpart.
+
+**24.6 `on_offer: accept` accepts an offer without inspecting its
+`permission`/`constraint` content at all.** This is the consumer-side mirror
+of `CLAUDE.md`'s "never accept a constraint that is not enforced", and it is
+named here as a gap rather than left implicit. The provider role honors that
+rule (§23.4: a validity-period constraint is checked, and any other
+constraint shape is rejected). The consumer role does not, because every
+constraint list the TCK's mock provider sends is empty — there is no fixture
+that would exercise a check, and building one against no test would be
+speculative code whose correctness nothing could confirm.
+
+*Trade-off accepted.* A real, non-TCK provider that returned an offer
+carrying an actual constraint would have it auto-accepted today, and this
+connector would then hold an agreement whose terms it never evaluated and
+cannot enforce. That is a genuine compliance gap against this project's own
+policy rule, closed by the same work that gives the consumer role a real
+trigger (24.2): at that point there is a caller to reject on behalf of, and
+a reason to decide what an unenforceable constraint should do.
+
+**24.7 The consumer's outbound `ContractRequestMessage` is its own type,
+`ConsumerRequestMessage`, separate from the inbound-decoding
+`RequestMessage`.** The same DSP message has opposite obligations in the two
+directions. Inbound, §22.5's direct-field-check approach declares only the
+fields this connector reads, and the nested offer must not depend on `@type`
+at all — the TCK's own source marks that field
+`@DspTestingWorkaround(Remove @type)`. Outbound, the TCK validates what this
+connector emits against `negotiation/contract-schema.json`, where an offer
+is a `MessageOffer`: `@id` and `@type` both required, and an `anyOf` that
+needs a `permission` (or `prohibition`) array of `minItems: 1`. Reusing the
+lean inbound struct as the outbound body is exactly the defect the first real
+`CN_C` run found — all 16 tests were rejected before the negotiation could
+start, with `required property 'permission' not found, required property
+'prohibition' not found, required property '@type' not found`. Every offer
+this connector emits, in either role, now goes through one constructor,
+`newNegotiationOffer`.
+
+*Trade-off accepted.* Two Go types for one DSP message, which has to be kept
+in mind whenever that message's shape changes. The alternative — one struct
+carrying every field — would have forced the inbound path to declare an
+offer `@type` it is specifically forbidden to rely on. Note also what the
+error taught: the `anyOf` names both `permission` and `prohibition` because
+the whole branch failed, not because both are required, and `minItems: 1`
+means emitting an empty `prohibition` to "satisfy" it would turn a valid
+message invalid.

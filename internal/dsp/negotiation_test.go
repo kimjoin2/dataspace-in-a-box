@@ -1,12 +1,77 @@
 package dsp
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
+
+// assertEmittedOffer checks the offer node msg serializes to against the
+// MessageOffer definition in the TCK's own negotiation/contract-schema.json,
+// which is what validates every message this connector sends:
+//
+//	allOf[ PolicyClass (@id required),
+//	       { @type const "Offer", target },
+//	       anyOf[ required permission | required prohibition ] ]
+//
+// with @type required, permission/prohibition arrays of minItems 1, and Rule
+// requiring action.
+//
+// It deliberately inspects serialized JSON rather than the Go struct. The
+// defect this guards against was a builder filling in an offer type that had
+// no @type and no permission field at all: every struct-level assertion in
+// this file passed, because a field that does not exist cannot be asserted
+// wrong, and the first real TCK run rejected all sixteen consumer tests.
+//
+// It reports through t.Errorf only, never t.Fatalf, because two of its
+// callers run it inside an httptest handler — on a goroutine where t.Fatalf
+// would call runtime.Goexit on the wrong stack instead of failing the test.
+func assertEmittedOffer(t *testing.T, msg any, wantOfferID, wantTarget string) {
+	t.Helper()
+	b, err := json.Marshal(msg)
+	if err != nil {
+		t.Errorf("marshal message: %v", err)
+		return
+	}
+	var envelope struct {
+		Offer map[string]any `json:"offer"`
+	}
+	if err := json.Unmarshal(b, &envelope); err != nil {
+		t.Errorf("unmarshal message: %v", err)
+		return
+	}
+	offer := envelope.Offer
+	if offer == nil {
+		t.Errorf("the emitted message carries no offer node: %s", b)
+		return
+	}
+	if offer["@type"] != OfferType {
+		t.Errorf("offer @type = %v, want %q — MessageOffer requires @type", offer["@type"], OfferType)
+	}
+	if offer["@id"] != wantOfferID {
+		t.Errorf("offer @id = %v, want %q — PolicyClass requires @id", offer["@id"], wantOfferID)
+	}
+	if offer["target"] != wantTarget {
+		t.Errorf("offer target = %v, want %q", offer["target"], wantTarget)
+	}
+	perms, ok := offer["permission"].([]any)
+	switch {
+	case !ok || len(perms) == 0:
+		t.Errorf("offer permission = %v, want a non-empty array — it is what satisfies MessageOffer's anyOf, and minItems is 1",
+			offer["permission"])
+	default:
+		rule, ok := perms[0].(map[string]any)
+		if !ok || rule["action"] != useAction {
+			t.Errorf("offer permission[0] = %v, want a rule with action %q — Rule requires action", perms[0], useAction)
+		}
+	}
+	if v, present := offer["prohibition"]; present {
+		t.Errorf("offer carries prohibition = %v; the anyOf is already satisfied by permission, and minItems 1 makes an empty prohibition invalid", v)
+	}
+}
 
 func cfgWithDataset(id string, validityUntil *time.Time) config.Config {
 	return config.Config{Datasets: []config.Dataset{{ID: id, ValidityUntil: validityUntil}}}
@@ -128,16 +193,8 @@ func TestBuildOfferMessage(t *testing.T) {
 	if msg.ProviderPID != n.ProviderPID || msg.ConsumerPID != n.ConsumerPID {
 		t.Errorf("msg = %+v, want it to carry n's identifiers", msg)
 	}
-	wantOfferID := n.DatasetID + offerIDSuffix
-	if msg.Offer.ID != wantOfferID {
-		t.Errorf("Offer.ID = %q, want %q (the connector's canonical offer, not the requested one)", msg.Offer.ID, wantOfferID)
-	}
-	if msg.Offer.Target != n.DatasetID {
-		t.Errorf("Offer.Target = %q, want %q", msg.Offer.Target, n.DatasetID)
-	}
-	if len(msg.Offer.Permission) != 1 || msg.Offer.Permission[0].Action != useAction {
-		t.Errorf("Offer.Permission = %v, want one permission with action %q", msg.Offer.Permission, useAction)
-	}
+	// The canonical offer this connector advertises, not the requested one.
+	assertEmittedOffer(t, msg, n.DatasetID+offerIDSuffix, n.DatasetID)
 }
 
 func TestBuildAgreementMessage(t *testing.T) {
@@ -210,9 +267,8 @@ func TestBuildConsumerRequestMessage(t *testing.T) {
 	if msg.ConsumerPID != "urn:uuid:consumer-1" {
 		t.Errorf("ConsumerPID = %q, want urn:uuid:consumer-1", msg.ConsumerPID)
 	}
-	if msg.Offer.ID != "urn:dataset:a#offer" || msg.Offer.Target != "urn:dataset:a" {
-		t.Errorf("Offer = %+v, want the exact ids passed in, not regenerated", msg.Offer)
-	}
+	// The ids are echoed verbatim from the initiate call, never regenerated.
+	assertEmittedOffer(t, msg, "urn:dataset:a#offer", "urn:dataset:a")
 	if msg.CallbackAddress != "https://connector.example.org/2025-1" {
 		t.Errorf("CallbackAddress = %q, want the address passed in", msg.CallbackAddress)
 	}
@@ -230,9 +286,8 @@ func TestBuildCounterRequestMessage(t *testing.T) {
 	if msg.ConsumerPID != n.ConsumerPID {
 		t.Errorf("ConsumerPID = %q, want %q", msg.ConsumerPID, n.ConsumerPID)
 	}
-	if msg.Offer.ID != n.OfferID || msg.Offer.Target != n.DatasetID {
-		t.Errorf("Offer = %+v, want the negotiation's original ask repeated", msg.Offer)
-	}
+	// The negotiation's original ask, repeated.
+	assertEmittedOffer(t, msg, n.OfferID, n.DatasetID)
 }
 
 func TestBuildAcceptedEventMessage(t *testing.T) {

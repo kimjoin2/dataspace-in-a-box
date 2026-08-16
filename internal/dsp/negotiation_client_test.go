@@ -12,13 +12,15 @@ import (
 
 func TestSendInitialRequest_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var msg RequestMessage
+		// Decoded as a map, not into RequestMessage: a typed decode would
+		// silently discard anything the schema requires and this connector
+		// failed to send, which is exactly how the missing @type reached the
+		// real TCK.
+		var msg map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
 			t.Fatalf("provider: decode request: %v", err)
 		}
-		if msg.Offer.ID != "urn:dataset:a#offer" || msg.Offer.Target != "urn:dataset:a" {
-			t.Errorf("provider received Offer = %+v, want the exact ids sent", msg.Offer)
-		}
+		assertEmittedOffer(t, msg, "urn:dataset:a#offer", "urn:dataset:a")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(NegotiationStateDocument{ProviderPID: "urn:uuid:provider-1"})
 	}))
@@ -54,7 +56,10 @@ func testConsumerNegotiationAt(url string) store.ConsumerNegotiation {
 
 func TestSendCounterRequest_PostsProviderPIDAndOffer(t *testing.T) {
 	var gotPath string
-	var gotBody CounterRequestMessage
+	// A map, not CounterRequestMessage, for the reason given in
+	// TestSendInitialRequest_Success: the counter-request's offer is
+	// validated by the same TCK schema as the initial request's.
+	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		json.NewDecoder(r.Body).Decode(&gotBody)
@@ -70,9 +75,11 @@ func TestSendCounterRequest_PostsProviderPIDAndOffer(t *testing.T) {
 	if gotPath != wantPath {
 		t.Errorf("path = %q, want %q", gotPath, wantPath)
 	}
-	if gotBody.ProviderPID != n.ProviderPID || gotBody.Offer.ID != n.OfferID {
-		t.Errorf("body = %+v, want providerPid and the original offer", gotBody)
+	if gotBody["providerPid"] != n.ProviderPID {
+		t.Errorf("providerPid = %v, want %q — without it the TCK's mock provider reads a counter-request as a duplicate initial request",
+			gotBody["providerPid"], n.ProviderPID)
 	}
+	assertEmittedOffer(t, gotBody, n.OfferID, n.DatasetID)
 }
 
 func TestSendAcceptedEvent_PostsEventType(t *testing.T) {

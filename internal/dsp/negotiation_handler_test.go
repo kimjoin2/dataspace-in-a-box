@@ -795,11 +795,18 @@ func waitForConsumerState(t *testing.T, st *store.Store, consumerPID, want strin
 }
 
 func TestHandleInitiate_Success(t *testing.T) {
-	var gotOffer OfferRef
+	// Buffered so the provider handler never blocks, and read from below
+	// instead of polling a shared variable: the request arrives on the
+	// goroutine handleInitiate dispatches, so the channel is what orders the
+	// write against this test's read.
+	received := make(chan map[string]any, 1)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var msg RequestMessage
+		// A map, not RequestMessage: what matters here is what actually went
+		// on the wire, since the TCK validates the request against its own
+		// schema before the negotiation is allowed to start.
+		var msg map[string]any
 		json.NewDecoder(r.Body).Decode(&msg)
-		gotOffer = msg.Offer
+		received <- msg
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(NegotiationStateDocument{ProviderPID: "urn:uuid:provider-1"})
 	}))
@@ -829,24 +836,20 @@ func TestHandleInitiate_Success(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	// The handler generates its own consumer pid; find the one row this test
-	// created by listing what state REQUESTED holds. There is exactly one
-	// negotiation in this store, so this is a targeted poll, not a scan.
-	var found store.ConsumerNegotiation
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		// gotOffer is set only after the provider receives the request, which
-		// only happens after the row exists — safe to read here without a race
-		// once gotOffer.ID is non-empty.
-		if gotOffer.ID != "" {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	var msg map[string]any
+	select {
+	case msg = <-received:
+	case <-time.After(time.Second):
+		t.Fatal("the provider never received the initial contract request")
 	}
-	if gotOffer.ID != "urn:dataset:a#offer" || gotOffer.Target != "urn:dataset:a" {
-		t.Fatalf("provider received Offer = %+v, want the exact initiate-call ids", gotOffer)
+	if msg["@type"] != ContractRequestMessageType {
+		t.Errorf("@type = %v, want %q", msg["@type"], ContractRequestMessageType)
 	}
-	_ = found
+	if msg["callbackAddress"] != cfg.PublicURL+VersionPath {
+		t.Errorf("callbackAddress = %v, want %q", msg["callbackAddress"], cfg.PublicURL+VersionPath)
+	}
+	// The exact ids the initiate call supplied, echoed rather than regenerated.
+	assertEmittedOffer(t, msg, "urn:dataset:a#offer", "urn:dataset:a")
 }
 
 func TestHandleInitiate_MissingFieldIs400(t *testing.T) {

@@ -36,3 +36,19 @@ datasets:
   # validity_until — the expired-offer paths (CN_02_01, CN_02_05, CN_02_06).
   - id: urn:dataset:cn-expired
     validity_until: 2020-01-01T00:00:00Z
+
+# CN_C: the consumer role's own autonomous reaction, keyed by the dataset_id
+# this connector itself requests (see config.properties below and
+# DECISIONS.md). Nine of the sixteen CN_C tests use the default policy
+# (accept/verify/wait) and need no entry here.
+consumer_policies:
+  - dataset_id: urn:dataset:cn-c-counter-offer
+    on_offer: counter
+  - dataset_id: urn:dataset:cn-c-reject-offer
+    on_offer: reject
+  - dataset_id: urn:dataset:cn-c-abandon
+    on_idle: abandon
+  - dataset_id: urn:dataset:cn-c-reject-agreement
+    on_agreement: reject
+  - dataset_id: urn:dataset:cn-c-passive-offer
+    on_offer: passive
