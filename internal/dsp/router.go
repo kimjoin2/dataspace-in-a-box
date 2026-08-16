@@ -31,8 +31,16 @@ func NewRouter(cfg config.Config, st *store.Store) http.Handler {
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/offers", neg.handleOffers)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/agreement", neg.handleAgreement)
 
-	// Transfer process mounts here next, in TCK order. Until then, requests
-	// below that path are correctly 404.
+	// {id} on the five addressed transfer routes is this connector's own
+	// generated provider pid, the same convention the provider-role
+	// negotiation routes above use.
+	tr := transferHandler{cfg: cfg, store: st}
+	mux.HandleFunc("POST "+VersionPath+"/transfers/request", tr.handleTransferRequest)
+	mux.HandleFunc("GET "+VersionPath+"/transfers/{id}", tr.handleGetTransfer)
+	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/start", tr.handleTransferStart)
+	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/completion", tr.handleTransferCompletion)
+	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/suspension", tr.handleTransferSuspension)
+	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/termination", tr.handleTransferTermination)
 
 	return mux
 }

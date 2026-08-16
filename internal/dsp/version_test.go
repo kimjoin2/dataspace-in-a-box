@@ -70,15 +70,15 @@ func TestVersionDocumentPinsTCKAcceptedValues(t *testing.T) {
 }
 
 func TestUnknownPathIsNotFound(t *testing.T) {
-	// Transfer process is the next protocol in TCK order and is not
-	// implemented (contract negotiation, mounted in Task 5, no longer
-	// qualifies), so its path is still the honest example of an unrouted one.
-	req := httptest.NewRequest(http.MethodPost, "/2025-1/transfers/request", nil)
+	// Every protocol this connector serves is now mounted — transfer process
+	// no longer qualifies as the example of an unrouted path — so this uses a
+	// path under the version prefix that no protocol defines at all.
+	req := httptest.NewRequest(http.MethodPost, "/2025-1/nonexistent", nil)
 	rec := httptest.NewRecorder()
 	newRouterForTest(t, testConfig()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404 while transfer process is unimplemented", rec.Code)
+		t.Errorf("status = %d, want 404 for a path no protocol defines", rec.Code)
 	}
 }
 
