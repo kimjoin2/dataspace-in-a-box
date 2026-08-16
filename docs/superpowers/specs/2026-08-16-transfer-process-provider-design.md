@@ -145,10 +145,25 @@ way; the management API is a defensible place to put it, because importing an
 agreement is then an authenticated operator action against a running connector
 rather than a line in a file.
 
-The import endpoint is the management API's first endpoint beyond `/health`.
-It introduces no new concept — `DECISIONS.md` §11 already settled that the
-management API exists and takes one static bearer token — but it is new
-surface, and it is the reason this milestone touches `internal/mgmt` at all.
+The import endpoint is the management API's first endpoint beyond `/health`,
+and it is the reason this milestone touches `internal/mgmt` at all.
+
+It is worth being exact about what that costs, because the obvious reading is
+wrong. `DECISIONS.md` §11 settled that the management API takes one static
+bearer token — but only as a decision. **No authentication is implemented:**
+`internal/mgmt` today is `NewRouter()` with no arguments serving `/health`
+alone, and `config.Config` has no token field. So Phase A does not "add an
+endpoint to an authenticated API"; it stands that API's auth model up for the
+first time — a config field and its validation, a bearer check, a router that
+now takes config and store, and the wiring in `cmd/dsbox`.
+
+That was weighed against a CLI subcommand writing to the store directly, which
+needs no auth, no HTTP surface, and no config field. The management API was
+chosen anyway, on the grounds that §11 already committed to it and an operator
+importing an agreement is a real need rather than a harness convenience. The
+trade is accepted with its own guard rail: `POST /agreements` records an
+agreement and nothing else. This is not the start of a general management CRUD
+surface, and a later milestone that wants one argues for it on its own merits.
 
 ### TCK fixtures
 
@@ -209,6 +224,15 @@ nothing here.
 
 Serving uses the standard library only (`os.Open` plus `http.ServeContent`),
 which brings range requests along for free and adds no dependency.
+
+The DSP listener's `WriteTimeout` is 30 seconds, which would cut off any
+download slower than that mid-stream. `cmd/dsbox/main.go` already carries a
+comment predicting exactly this, written during an earlier milestone. Phase B
+has to resolve it — most likely by dropping `WriteTimeout` on that server and
+bounding request duration another way, since a per-request deadline cannot be
+set from a shared server timeout. Whatever is chosen, it is a change to a
+security-relevant default and belongs in `DECISIONS.md` with its reasoning,
+not a silent edit.
 
 ### A terminated transfer stops mid-stream
 
