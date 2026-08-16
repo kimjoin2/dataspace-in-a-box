@@ -83,6 +83,14 @@ func (h agreementHandler) importAgreement(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		// A duplicate is the one failure a caller can act on. Everything else
 		// is this connector's problem, and its detail stays in the log.
+		//
+		// The re-query below is safe against a false 409, not because access
+		// to the store is serialized (SetMaxOpenConns(1) does not make the
+		// insert and this read atomic — another request can interleave
+		// between them), but because agreements are immutable: there is no
+		// delete path anywhere in this connector, so a row this query finds
+		// cannot have vanished between the failed insert and now. If an
+		// agreement delete path is ever added, this inference stops holding.
 		if _, found, getErr := h.store.GetAgreement(body.AgreementID); getErr == nil && found {
 			http.Error(w, "an agreement with that id already exists", http.StatusConflict)
 			return

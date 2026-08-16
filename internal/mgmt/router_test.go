@@ -65,7 +65,7 @@ func TestPostAgreementsRecordsIt(t *testing.T) {
 	h, st := newTestRouter(t)
 	body := strings.NewReader(`{"agreementId":"urn:uuid:a-1","datasetId":"urn:dataset:a"}`)
 	req := httptest.NewRequest(http.MethodPost, "/agreements", body)
-	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -100,11 +100,17 @@ func TestPostAgreementsWithWrongTokenIs401(t *testing.T) {
 	h, _ := newTestRouter(t)
 	body := strings.NewReader(`{"agreementId":"urn:uuid:a-1","datasetId":"urn:dataset:a"}`)
 	req := httptest.NewRequest(http.MethodPost, "/agreements", body)
-	req.Header.Set("Authorization", "Bearer 000000000000wrong")
+	// One character off testToken, not an unrelated literal, so the
+	// relationship to the real token stays visible if testToken ever changes.
+	wrongToken := testToken[:len(testToken)-1] + "0"
+	req.Header.Set("Authorization", "Bearer "+wrongToken)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("POST /agreements with a wrong token = %d, want 401", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("401 body = %q, want empty — a rejection must not say why it was rejected", rec.Body.String())
 	}
 }
 
@@ -129,7 +135,7 @@ func TestPostAgreementsMissingFieldIs400(t *testing.T) {
 	h, _ := newTestRouter(t)
 	body := strings.NewReader(`{"agreementId":"urn:uuid:a-1"}`)
 	req := httptest.NewRequest(http.MethodPost, "/agreements", body)
-	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -142,7 +148,7 @@ func TestPostAgreementsDuplicateIs409(t *testing.T) {
 	post := func() int {
 		body := strings.NewReader(`{"agreementId":"urn:uuid:a-1","datasetId":"urn:dataset:a"}`)
 		req := httptest.NewRequest(http.MethodPost, "/agreements", body)
-		req.Header.Set("Authorization", "Bearer 0123456789abcdef")
+		req.Header.Set("Authorization", "Bearer "+testToken)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec.Code

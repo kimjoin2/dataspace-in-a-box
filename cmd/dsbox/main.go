@@ -44,6 +44,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load configuration %q: %w", *configPath, err)
 	}
+	if cfg.MgmtToken == "" {
+		slog.Warn("no mgmt_token configured; the management API will reject every authenticated request")
+	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return fmt.Errorf("create data_dir %q: %w", cfg.DataDir, err)
