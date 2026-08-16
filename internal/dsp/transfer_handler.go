@@ -51,7 +51,7 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, TransferRequestMessageType) {
+	if !checkEnvelope(w, TransferErrorType, msg.Context, msg.Type, TransferRequestMessageType) {
 		return
 	}
 	if msg.ConsumerPID == "" {
@@ -94,11 +94,23 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 
 	// The provider pid is this connector's own identifier for the transfer.
 	// It goes out in the acknowledgment below and comes back as the {id} of
-	// every subsequent request about this transfer, so it has to be a single
-	// routable path segment — which is what newMessageID produces.
+	// every subsequent request about this transfer.
+	//
+	// store.NewUUID directly, not newMessageID, which is the same choice
+	// handleContractRequest makes for the same reason: newMessageID discards
+	// the generation error and degrades to "", which is a cosmetic omission
+	// for a message @id and a corruption here — an empty pid would become the
+	// stored primary key and the identifier the counterparty addresses, and
+	// the next transfer would collide on it.
+	providerPID, err := store.NewUUID()
+	if err != nil {
+		slog.Error("generate provider pid", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	now := time.Now()
 	t := store.TransferProcess{
-		ProviderPID:     newMessageID(),
+		ProviderPID:     providerPID,
 		ConsumerPID:     msg.ConsumerPID,
 		AgreementID:     msg.AgreementID,
 		State:           TransferRequested,
@@ -221,7 +233,7 @@ func (h transferHandler) applyTransition(w http.ResponseWriter, r *http.Request,
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, wantType) {
+	if !checkEnvelope(w, TransferErrorType, msg.Context, msg.Type, wantType) {
 		return
 	}
 	if !legalFrom(t.State) {

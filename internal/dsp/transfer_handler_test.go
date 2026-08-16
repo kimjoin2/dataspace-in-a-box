@@ -123,6 +123,12 @@ func TestTransferRequestWithKnownAgreementIsAccepted(t *testing.T) {
 	if doc["state"] != TransferRequested {
 		t.Errorf("state = %v, want %s", doc["state"], TransferRequested)
 	}
+	// The value, not just the presence: the schema requires consumerPid to be
+	// the one the request carried, and a handler that echoed its own provider
+	// pid into it would satisfy a presence check.
+	if doc["consumerPid"] != "urn:uuid:tc-1" {
+		t.Errorf("consumerPid = %v, want the requested urn:uuid:tc-1", doc["consumerPid"])
+	}
 	providerPID, _ := doc["providerPid"].(string)
 	got, ok, err := st.GetTransfer(providerPID)
 	if err != nil {
@@ -185,6 +191,24 @@ func TestTransferRequestBadEnvelopeIs400(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: got %d, want 400", name, rec.Code)
 		}
+		assertTransferErrorBody(t, name, rec)
+	}
+}
+
+// assertTransferErrorBody pins the @type of a rejection document. Every node
+// this connector emits carries a @type, and a rejection that names the wrong
+// protocol is worse than an unlabelled one: nothing reads a transfer error
+// body today, so only a test can catch a shared helper stamping
+// ContractNegotiationError onto a transfer endpoint's rejection.
+func assertTransferErrorBody(t *testing.T, name string, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Errorf("%s: rejection body is not JSON: %v", name, err)
+		return
+	}
+	if doc["@type"] != TransferErrorType {
+		t.Errorf("%s: rejection @type = %v, want %s", name, doc["@type"], TransferErrorType)
 	}
 }
 
@@ -269,6 +293,9 @@ func TestTransferTransitionsOverHTTP(t *testing.T) {
 		if rec.Code != s.wantCode {
 			t.Errorf("%s from %s: got %d, want %d", s.endpoint, s.from, rec.Code, s.wantCode)
 		}
+		if s.wantCode == http.StatusBadRequest {
+			assertTransferErrorBody(t, s.endpoint+" from "+s.from, rec)
+		}
 		got, _, err := st.GetTransfer(tp.ProviderPID)
 		if err != nil {
 			t.Fatalf("GetTransfer: %v", err)
@@ -352,6 +379,14 @@ func TestTransferRequestPushesStartMessage(t *testing.T) {
 	msg := <-gotBody
 	if msg["@type"] != TransferStartMessageType {
 		t.Errorf("pushed @type = %v, want %s", msg["@type"], TransferStartMessageType)
+	}
+	// The consumerPid in the body is the only thing that correlates this push:
+	// the counterparty's callback endpoint registers handlers against a path
+	// pattern but never passes the path to them, so it looks the transfer up
+	// by this field. The path assertion above is cosmetic by comparison — see
+	// the wire contract's section 1.3.
+	if msg["consumerPid"] != "urn:uuid:tc-1" {
+		t.Errorf("pushed consumerPid = %v, want urn:uuid:tc-1", msg["consumerPid"])
 	}
 	if _, present := msg["dataAddress"]; present {
 		t.Error("Phase A must not emit a dataAddress")

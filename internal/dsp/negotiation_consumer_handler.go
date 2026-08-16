@@ -133,7 +133,7 @@ func (h negotiationHandler) handleOffers(w http.ResponseWriter, r *http.Request)
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, ContractOfferMessageType) {
+	if !checkEnvelope(w, ContractNegotiationErrorType, msg.Context, msg.Type, ContractOfferMessageType) {
 		return
 	}
 	if !offerLegalFrom(n.State) {
@@ -243,7 +243,7 @@ func (h negotiationHandler) handleAgreement(w http.ResponseWriter, r *http.Reque
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, ContractAgreementMessageType) {
+	if !checkEnvelope(w, ContractNegotiationErrorType, msg.Context, msg.Type, ContractAgreementMessageType) {
 		return
 	}
 	if !agreementLegalFrom(n.State) {
@@ -309,7 +309,7 @@ func (h negotiationHandler) handleConsumerFinalizedEvent(w http.ResponseWriter, 
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, ContractNegotiationEventMessageType) {
+	if !checkEnvelope(w, ContractNegotiationErrorType, msg.Context, msg.Type, ContractNegotiationEventMessageType) {
 		return
 	}
 	if msg.EventType != eventTypeFinalized {
@@ -338,7 +338,7 @@ func (h negotiationHandler) handleConsumerTermination(w http.ResponseWriter, r *
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, ContractNegotiationTerminationMessageType) {
+	if !checkEnvelope(w, ContractNegotiationErrorType, msg.Context, msg.Type, ContractNegotiationTerminationMessageType) {
 		return
 	}
 	if n.State == StateFinalized || n.State == StateTerminated {

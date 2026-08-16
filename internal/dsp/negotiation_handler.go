@@ -66,7 +66,7 @@ func (h negotiationHandler) handleContractRequest(w http.ResponseWriter, r *http
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, ContractRequestMessageType) {
+	if !checkEnvelope(w, ContractNegotiationErrorType, msg.Context, msg.Type, ContractRequestMessageType) {
 		return
 	}
 	if msg.ConsumerPID == "" {
@@ -134,7 +134,7 @@ func (h negotiationHandler) handleReRequest(w http.ResponseWriter, r *http.Reque
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, ContractRequestMessageType) {
+	if !checkEnvelope(w, ContractNegotiationErrorType, msg.Context, msg.Type, ContractRequestMessageType) {
 		return
 	}
 	if n.State != StateOffered {
@@ -208,7 +208,7 @@ func (h negotiationHandler) handleProviderAcceptedEvent(w http.ResponseWriter, r
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, ContractNegotiationEventMessageType) {
+	if !checkEnvelope(w, ContractNegotiationErrorType, msg.Context, msg.Type, ContractNegotiationEventMessageType) {
 		return
 	}
 	if msg.EventType != eventTypeAccepted {
@@ -251,7 +251,7 @@ func (h negotiationHandler) handleVerification(w http.ResponseWriter, r *http.Re
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, ContractAgreementVerificationMessageType) {
+	if !checkEnvelope(w, ContractNegotiationErrorType, msg.Context, msg.Type, ContractAgreementVerificationMessageType) {
 		return
 	}
 	if n.State != StateAgreed {
@@ -306,7 +306,7 @@ func (h negotiationHandler) handleProviderTermination(w http.ResponseWriter, r *
 			"the request body is not a JSON object in the DSP compact form")
 		return
 	}
-	if !checkEnvelope(w, msg.Context, msg.Type, ContractNegotiationTerminationMessageType) {
+	if !checkEnvelope(w, ContractNegotiationErrorType, msg.Context, msg.Type, ContractNegotiationTerminationMessageType) {
 		return
 	}
 	if n.State == StateFinalized || n.State == StateTerminated {
@@ -383,16 +383,23 @@ type envelope struct {
 }
 
 // checkEnvelope validates that envelope, writing the error response and
-// returning false if it does not hold. Every negotiation handler runs this
-// on the body it decoded: a direct field check, not a schema library, per
-// CLAUDE.md's JSON-LD convention and DECISIONS.md section 22.5.
-func checkEnvelope(w http.ResponseWriter, context []string, gotType, wantType string) bool {
+// returning false if it does not hold. Every negotiation and transfer handler
+// runs this on the body it decoded: a direct field check, not a schema
+// library, per CLAUDE.md's JSON-LD convention and DECISIONS.md section 22.5.
+//
+// dspType names the protocol whose error document to emit —
+// ContractNegotiationErrorType or TransferErrorType. It is a parameter rather
+// than a constant for the same reason writeError takes one: every node this
+// connector emits carries a @type, and a rejection labelled with a protocol
+// that did not produce it is worse than an unlabelled one, because a wrong
+// label survives being read.
+func checkEnvelope(w http.ResponseWriter, dspType string, context []string, gotType, wantType string) bool {
 	if !slices.Contains(context, ContextURL) {
-		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "@context must contain "+ContextURL)
+		writeError(w, dspType, http.StatusBadRequest, "@context must contain "+ContextURL)
 		return false
 	}
 	if gotType != wantType {
-		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest, "@type must be "+wantType)
+		writeError(w, dspType, http.StatusBadRequest, "@type must be "+wantType)
 		return false
 	}
 	return true
