@@ -633,3 +633,113 @@ func TestCreateAgreementDuplicateIsAnError(t *testing.T) {
 		t.Errorf("DatasetID = %q after the rejected duplicate, want urn:dataset:a — the row was overwritten", got.DatasetID)
 	}
 }
+
+func testTransfer() TransferProcess {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	return TransferProcess{
+		ProviderPID:     "urn:uuid:tp-provider-1",
+		ConsumerPID:     "urn:uuid:tp-consumer-1",
+		AgreementID:     "urn:uuid:agreement-1",
+		State:           "REQUESTED",
+		CallbackAddress: "http://consumer.example/2025-1",
+		Format:          "HTTP-PULL",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+}
+
+func TestCreateAndGetTransfer(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	tp := testTransfer()
+	if err := s.CreateTransfer(tp); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+	got, ok, err := s.GetTransfer(tp.ProviderPID)
+	if err != nil {
+		t.Fatalf("GetTransfer: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetTransfer: transfer not found after CreateTransfer")
+	}
+	if got.ConsumerPID != tp.ConsumerPID || got.AgreementID != tp.AgreementID ||
+		got.State != tp.State || got.CallbackAddress != tp.CallbackAddress || got.Format != tp.Format {
+		t.Errorf("GetTransfer = %+v, want %+v", got, tp)
+	}
+}
+
+func TestGetTransferMissingIsNotFound(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	_, ok, err := s.GetTransfer("urn:uuid:nope")
+	if err != nil {
+		t.Fatalf("GetTransfer: %v", err)
+	}
+	if ok {
+		t.Error("GetTransfer: reported a transfer that was never created")
+	}
+}
+
+func TestSetTransferStateAdvances(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	tp := testTransfer()
+	if err := s.CreateTransfer(tp); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+	updated := tp.UpdatedAt.Add(time.Minute)
+	if err := s.SetTransferState(tp.ProviderPID, "REQUESTED", "STARTED", updated); err != nil {
+		t.Fatalf("SetTransferState: %v", err)
+	}
+
+	got, _, err := s.GetTransfer(tp.ProviderPID)
+	if err != nil {
+		t.Fatalf("GetTransfer: %v", err)
+	}
+	if got.State != "STARTED" {
+		t.Errorf("State = %q, want STARTED", got.State)
+	}
+	if !got.UpdatedAt.Equal(updated) {
+		t.Errorf("UpdatedAt = %v, want %v", got.UpdatedAt, updated)
+	}
+}
+
+func TestSetTransferStateWrongFromIsStateChanged(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	tp := testTransfer()
+	if err := s.CreateTransfer(tp); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+	if err := s.SetTransferState(tp.ProviderPID, "STARTED", "COMPLETED", time.Now().UTC()); !errors.Is(err, ErrStateChanged) {
+		t.Errorf("SetTransferState from a state the row does not hold = %v, want ErrStateChanged", err)
+	}
+}
+
+func TestSetTransferStateMissingIsNotFound(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.SetTransferState("urn:uuid:nope", "REQUESTED", "STARTED", time.Now().UTC()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetTransferState on a missing transfer = %v, want ErrNotFound", err)
+	}
+}

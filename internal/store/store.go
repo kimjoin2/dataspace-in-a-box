@@ -86,6 +86,21 @@ const (
 	OriginImported   = "imported"
 )
 
+// TransferProcess is one transfer this connector is running as provider. It
+// mirrors Negotiation: the pid this connector generated is the primary key,
+// and state moves by compare-and-swap so a lost race is distinguishable from
+// a missing row.
+type TransferProcess struct {
+	ProviderPID     string
+	ConsumerPID     string
+	AgreementID     string
+	State           string
+	CallbackAddress string
+	Format          string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS negotiations (
     provider_pid     TEXT PRIMARY KEY,
@@ -118,6 +133,18 @@ CREATE TABLE IF NOT EXISTS agreements (
     consumer_pid TEXT NOT NULL DEFAULT '',
     origin       TEXT NOT NULL,
     created_at   TEXT NOT NULL
+);`
+
+const transferSchema = `
+CREATE TABLE IF NOT EXISTS transfer_processes (
+    provider_pid     TEXT PRIMARY KEY,
+    consumer_pid     TEXT NOT NULL,
+    agreement_id     TEXT NOT NULL,
+    state            TEXT NOT NULL,
+    callback_address TEXT NOT NULL,
+    format           TEXT NOT NULL,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
 );`
 
 const timeFormat = time.RFC3339Nano
@@ -159,6 +186,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(agreementSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create agreement schema in %s: %w", path, err)
+	}
+	if _, err := db.Exec(transferSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create transfer schema in %s: %w", path, err)
 	}
 	if err := migrate(db); err != nil {
 		db.Close()
@@ -460,4 +491,77 @@ func (s *Store) GetAgreement(agreementID string) (Agreement, bool, error) {
 		return Agreement{}, false, fmt.Errorf("parse agreement created_at: %w", err)
 	}
 	return a, true, nil
+}
+
+// CreateTransfer persists a new transfer process.
+func (s *Store) CreateTransfer(t TransferProcess) error {
+	_, err := s.db.Exec(
+		`INSERT INTO transfer_processes (provider_pid, consumer_pid, agreement_id, state, callback_address, format, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ProviderPID, t.ConsumerPID, t.AgreementID, t.State, t.CallbackAddress, t.Format,
+		t.CreatedAt.UTC().Format(timeFormat), t.UpdatedAt.UTC().Format(timeFormat),
+	)
+	if err != nil {
+		return fmt.Errorf("create transfer %s: %w", t.ProviderPID, err)
+	}
+	return nil
+}
+
+// GetTransfer returns the transfer process with the given provider pid.
+func (s *Store) GetTransfer(providerPID string) (TransferProcess, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT provider_pid, consumer_pid, agreement_id, state, callback_address, format, created_at, updated_at
+		 FROM transfer_processes WHERE provider_pid = ?`, providerPID)
+
+	var t TransferProcess
+	var created, updated string
+	err := row.Scan(&t.ProviderPID, &t.ConsumerPID, &t.AgreementID, &t.State, &t.CallbackAddress, &t.Format,
+		&created, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TransferProcess{}, false, nil
+	}
+	if err != nil {
+		return TransferProcess{}, false, fmt.Errorf("get transfer %s: %w", providerPID, err)
+	}
+	if t.CreatedAt, err = time.Parse(timeFormat, created); err != nil {
+		return TransferProcess{}, false, fmt.Errorf("get transfer %s: parse created_at: %w", providerPID, err)
+	}
+	if t.UpdatedAt, err = time.Parse(timeFormat, updated); err != nil {
+		return TransferProcess{}, false, fmt.Errorf("get transfer %s: parse updated_at: %w", providerPID, err)
+	}
+	return t, true, nil
+}
+
+// SetTransferState moves a transfer process from state `from` to state `to`
+// — the same compare-and-swap SetState and SetConsumerState use, for the
+// same reason: a lost race must be distinguishable from a missing row.
+func (s *Store) SetTransferState(providerPID, from, to string, updatedAt time.Time) error {
+	res, err := s.db.Exec(`UPDATE transfer_processes SET state = ?, updated_at = ? WHERE provider_pid = ? AND state = ?`,
+		to, updatedAt.UTC().Format(timeFormat), providerPID, from)
+	if err != nil {
+		return fmt.Errorf("update transfer %s: %w", providerPID, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update transfer %s: %w", providerPID, err)
+	}
+	if rows == 0 {
+		return s.explainNoTransferUpdate(providerPID, "state "+from)
+	}
+	return nil
+}
+
+// explainNoTransferUpdate is explainNoUpdate's transfer-table counterpart —
+// kept separate because explainNoUpdate hard-codes a Get against
+// negotiations and would name the wrong table's state otherwise.
+func (s *Store) explainNoTransferUpdate(providerPID, want string) error {
+	t, ok, err := s.GetTransfer(providerPID)
+	if err != nil {
+		return fmt.Errorf("update transfer %s: %w", providerPID, err)
+	}
+	if !ok {
+		return fmt.Errorf("update transfer %s: %w", providerPID, ErrNotFound)
+	}
+	return fmt.Errorf("update transfer %s: %w: wanted %s, found state %s",
+		providerPID, ErrStateChanged, want, t.State)
 }
