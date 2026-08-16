@@ -20,22 +20,30 @@ it before it does anything. Here is the honest state.
 | Catalog | `CAT` | gated in CI |
 | Contract negotiation | `CN` (provider role) | gated in CI, 14 of 15 (`CN:02-07` is a tracked, named gap — see `docs/follow-ups.md`) |
 | Contract negotiation | `CN_C` (consumer role) | gated in CI, 16 of 16 |
-| Transfer process | `TP`, `TP_C` | not started |
+| Transfer process | `TP` (provider role) | gated in CI, 15 of 15 |
+| Transfer process | `TP_C` (consumer role) | not started |
 
-`MET`, `CAT`, `CN`, and `CN_C` are in the gate's whitelist; the transfer
-process is unimplemented.
+`MET`, `CAT`, `CN`, `CN_C`, and `TP` are in the gate's whitelist; the transfer
+process's consumer role is unimplemented.
 
-Current TCK pass rate: **34 of 65 tests total** (`MET` 1 of 1, `CAT` 3 of 3,
+Current TCK pass rate: **49 of 65 tests total** (`MET` 1 of 1, `CAT` 3 of 3,
 `CN` 14 of 15 — `CN:02-07` fails by design, tracked rather than hidden —
-`CN_C` 16 of 16, `TP`+`TP_C` 0 of 30). Only `MET`+`CAT`+`CN_C`+14 of `CN`'s 15
-are required by the CI gate; the rest currently fail because their protocols
-are unimplemented, or, for `CN:02-07` alone, because no connector-side
-mechanism in this milestone produces the behavior it requires.
+`CN_C` 16 of 16, `TP` 15 of 15, `TP_C` 0 of 15). Only
+`MET`+`CAT`+`CN_C`+`TP`+14 of `CN`'s 15 are required by the CI gate; the rest
+currently fail because their protocols are unimplemented, or, for `CN:02-07`
+alone, because no connector-side mechanism in this milestone produces the
+behavior it requires.
 
-The current milestone serves the contract negotiation protocol in both roles,
-provider and consumer, from a SQLite-backed state machine. A protocol counts
-as done only when its TCK suite is added to the gate's whitelist, so this
-table cannot drift ahead of reality.
+The current milestone serves the transfer process protocol in the provider
+role. It is the **control plane only**: this connector runs a transfer's
+lifecycle — requested, started, suspended, completed, terminated — and moves
+no data at all. That is not a gap the `TP` suite would have caught, because
+the suite does not move data either; no test in it sends, receives, or asserts
+a single byte. A green `TP` is therefore not evidence that this connector can
+transfer data, and nothing here should be read as claiming otherwise.
+
+A protocol counts as done only when its TCK suite is added to the gate's
+whitelist, so this table cannot drift ahead of reality.
 
 There is no release yet, and nothing here is ready to run.
 

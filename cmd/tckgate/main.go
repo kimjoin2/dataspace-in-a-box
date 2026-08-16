@@ -19,7 +19,10 @@ import (
 // enters this map only when its protocol is implemented, and the count is how
 // many tests that suite contains upstream. Requiring an exact count means a run
 // that stops halfway through a suite fails instead of reporting green.
-var expected = map[string]int{"MET": 1, "CAT": 3, "CN": 15, "CN_C": 16}
+// TP is 15, not 16: the suite declares 16 @MandatoryTest methods but tp_02_04
+// also carries JUnit's @Disabled, and a disabled test produces no result. The
+// count here is results, not methods.
+var expected = map[string]int{"MET": 1, "CAT": 3, "CN": 15, "CN_C": 16, "TP": 15}
 
 // exempt names individual gated test IDs that are known to fail and are
 // tracked rather than required — see docs/follow-ups.md for each entry's

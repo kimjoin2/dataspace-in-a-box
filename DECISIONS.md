@@ -927,3 +927,225 @@ error taught: the `anyOf` names both `permission` and `prohibition` because
 the whole branch failed, not because both are required, and `minItems: 1`
 means emitting an empty `prohibition` to "satisfy" it would turn a valid
 message invalid.
+
+## 25. Transfer process (provider role), Phase A
+
+**Decision.** Eight decisions taken while implementing the transfer process
+protocol's provider role. Phase A is the control plane only: this connector
+runs a transfer's lifecycle and moves no bytes. That scope line is
+load-bearing rather than cosmetic, because the `TP` suite does not move bytes
+either — no test in it sends, receives, or asserts one — so a green `TP`
+cannot be cited as evidence that data transfer works. The data plane is Phase
+B, planned separately, and it will raise no number in the gate.
+
+Nothing in §23 or §24 is reversed. §23.7's retry schedule and §23.8's
+dispatch-on-a-goroutine rule are reused unchanged, and §23.12's
+push-then-store ordering is what the autonomous driver in 25.7 walks.
+
+**25.1 A `TransferRequestMessage` naming an agreement this connector has no
+record of is rejected with `400`.** The alternative — accept it and record the
+gap — is the shape §24.6 took in the previous milestone and had to be
+reversed, and the stakes here are higher than a policy constraint: accepting
+an unknown `agreementId` means a counterparty can start a transfer by citing a
+contract that was never made. That is `CLAUDE.md`'s "never accept a constraint
+that is not enforced" applied to the contract itself. `400` and not `404`, per
+§23.2's rule and for its reason: the counterparty's own client throws on a
+`404` even where it expects an error, so a `404` would abort the exchange
+rather than be read as the refusal it is.
+
+The agreement is matched by id alone. Also requiring the request's
+`consumerPid` to match would reject every imported agreement, since an
+imported agreement deliberately carries no consumer pid — the negotiation that
+produced it did not happen here — and imported agreements are exactly the case
+the import path exists to serve.
+
+*Trade-off accepted.* The TCK sends a random UUID as `agreementId` unless a
+fixture pins one, so this decision is what forces the harness to seed
+agreements before the suite runs (25.8) — the validation is the reason the
+harness is more complicated than it would otherwise be. A connector that
+skipped the check would need no seeding at all. It would also start transfers
+under contracts that do not exist.
+
+**25.2 An agreement is a row in `agreements`, with exactly two writers, and
+not a list in the config file.** The two writers are negotiation — reaching
+`AGREED` writes the row, because that is the moment this connector issues the
+agreement document — and import through the management API, which records an
+agreement concluded elsewhere with `origin = 'imported'`. An earlier draft put
+externally-concluded agreements in configuration instead, and the way that was
+wrong is worth keeping: **an agreement is runtime state, not a static
+declaration of what this connector advertises.** Putting it in the config file
+creates a second source of truth for one concept and makes "edit a YAML file,
+restart" the way contracts come into being. The tell was that the design
+needed a warning attached to that list — *writing an id here creates a
+contract* — and a design that needs a warning is usually the wrong design.
+
+That boundary is the general rule, and it is stated here so a later milestone
+does not have to re-derive it: **runtime state goes in the database, static
+declarations of what this connector offers go in configuration.** §22.1 put
+advertised datasets in configuration by the same rule read from the other
+side. Inferring an agreement instead — scanning `negotiations` for a matching
+provider pid — was rejected for a third reason: it leaves an
+externally-concluded agreement unrepresentable, having no negotiation row to
+be found in.
+
+*Trade-off accepted.* Importing an agreement now needs a running connector, an
+authenticated HTTP call, and therefore the whole of 25.3 — where a config list
+would have needed a struct and a loop. The weight is real either way; this
+version puts it where an operator action belongs instead of in a file that
+nothing authenticates.
+
+**25.3 The management API's authentication was stood up in this milestone, and
+`POST /agreements` records an agreement and nothing more.** §11 settled that
+the management API takes one static bearer token — but only as a decision. No
+authentication existed: `internal/mgmt` was `NewRouter()` with no arguments
+serving `/health` alone, and `config.Config` had no token field. So this
+milestone did not add an endpoint to an authenticated API; it built that API's
+auth model for the first time — a config field with its own validation, a
+constant-time bearer check, a router that now takes config and store, and the
+wiring in `cmd/dsbox`.
+
+The alternative weighed was a CLI subcommand writing to the store directly,
+which needs no auth, no HTTP surface, and no config field. The management API
+was chosen because §11 had already committed to it and an operator importing
+an agreement is a real need rather than a harness convenience.
+
+*Trade-off accepted.* A write path into this connector that is not a DSP
+message now exists, and its blast radius is bounded by a rule rather than by
+the code: **this is not the start of a general management CRUD surface.** A
+later milestone that wants one argues for it on its own merits. The concrete
+guard is that `POST /agreements` takes two strings and writes one immutable
+row — there is no update path and no delete path anywhere in this connector,
+which is also what makes the duplicate-detection re-query in
+`importAgreement` sound, and what that function's comment says will stop
+holding if a delete path is ever added.
+
+**25.4 An absent `mgmt_token` makes the management API refuse every
+authenticated request, rather than allow them.** The check is written so that
+an empty configured token fails before the comparison rather than by falling
+through it. A missing credential must never read as "no auth required": the
+management listener binds to localhost by default (§12), and if absent meant
+open, then changing `mgmt_addr` — one line, in the direction an operator moves
+when they want remote access — would silently turn an unauthenticated write
+endpoint onto the network. `/health` stays unauthenticated either way, because
+it carries no information and a readiness probe should not need a credential.
+
+*Trade-off accepted.* A connector started with no token has a management API
+that answers `401` to everything, which will read as a bug the first time
+someone hits it. That is paid for with a startup warning rather than by
+relaxing the rule. The `mgmt_token` minimum length is a second, smaller
+instance of the same posture: a placeholder value fails at load rather than in
+production.
+
+**25.5 The transfer states are their own constants, separate from the
+negotiation states even where the strings are identical.** `REQUESTED` means
+different things in the two protocols, and `TransferRequested` and the
+negotiation's requested state are not interchangeable even though both are the
+string `"REQUESTED"`. Sharing one set would let a wrong-protocol comparison
+compile silently and pass every test that happened to use a state name the two
+protocols agree on.
+
+*Trade-off accepted.* Two constant blocks holding overlapping strings, which
+looks like duplication to anyone reading them side by side and will invite a
+tidy-up. It is not duplication: they are two vocabularies that happen to share
+spellings.
+
+**25.6 Phase A emits no `dataAddress` on its `TransferStartMessage`.** Not
+merely "does not need to" — emitting one is strictly worse. The field is
+optional at every layer that could demand it (schema, predicate, and
+null-handling, all confirmed against the pinned TCK), and no provider-role
+test asserts anything about it. Sending one instead activates
+`data-address-schema.json`, which then requires `@type: "DataAddress"` and an
+`endpointType` read in `@id` form — two new ways to fail for zero assertion
+benefit. It would also be a claim: a `dataAddress` says where the data is, and
+in Phase A there is no data.
+
+*Trade-off accepted.* Whoever gives this connector a real HTTP-PULL data plane
+has to put the field back and satisfy that schema shape at the same time, and
+will not have a working example in the repository to copy. The
+`TransferStartMessage` type carries a comment saying exactly that, so the cost
+is a paragraph to read rather than a discovery to make.
+
+**25.7 The connector drives its own transitions after accepting a transfer,
+along a sequence configured per agreement — and the implementation plan missed
+this entirely.** This is the largest thing this milestone got wrong on the
+first pass, and it is recorded as a correction rather than quietly absorbed,
+because the way it was wrong is more instructive than the fix.
+
+The plan assumed the provider pushes one `TransferStartMessage` and thereafter
+only reacts to what the counterparty sends. Reading the `TP` suite out of the
+pinned runtime falsified that. In the `TP:01-xx` tests the TCK sends this
+connector exactly one message — the `TransferRequestMessage` — and afterwards
+only polls `GET /transfers/{id}`. There is no trigger, no control call, no
+out-of-band nudge. `TP:01-04` requires the provider to start, suspend,
+restart, and complete a transfer of its own accord, with nothing inbound
+between the request and the end of the test.
+
+Two consequences, and the second is the one that is easy to miss:
+
+1. The connector must be able to emit a provider-initiated suspension,
+   completion, or termination on a transfer of its own.
+2. **Starting must itself be conditional.** Four provider tests carry no
+   "provider started" step at all — `TP:01-05`, `TP:02-05`, `TP:03-01`,
+   `TP:03-02` — and poll for `REQUESTED`. An unconditional start does not
+   merely fail to help there; it breaks them. `TP:03-01` and `TP:03-02` assert
+   `REQUESTED` twice, the first time immediately after the request.
+
+The only test-varying field on the wire is `agreementId`, so that is what
+selects the behavior — the same shape §24.3's `consumer_policies` already
+uses, where `dataset_id` selects a policy. `config.TransferPolicy` is a list
+keyed by `agreement_id`, each carrying the sequence of states this connector
+walks on its own. An agreement with no entry gets `[STARTED]`; an entry with
+an empty sequence means accept and stay in `REQUESTED`, which is a different
+thing from having no entry and is the only way to say it. Each step pushes its
+message through `pushCallback` and then advances the stored state — §23.12's
+ordering, unchanged, for the reason §23.12 gives: in DSP the provider does not
+become `STARTED` and then say so, it becomes `STARTED` by delivering the start
+message.
+
+The steps are spaced by `transferStepDelay`, 200 ms. That is not a robustness
+nicety either: the counterparty registers its handler for step N+1 only after
+step N has arrived and released its latch, so two messages pushed back to back
+can hit a path with no handler yet, which its callback endpoint answers `404`.
+§23.7's retry schedule is the second line of defence, not the first.
+
+*Trade-off accepted.* A configured script is a stand-in for judgement this
+connector does not have. A real provider suspends or completes a transfer for
+operational reasons — the data ran out, the window closed, an operator
+intervened — and v1 has none of those inputs, exactly as v1's consumer role
+has no reason of its own to reject an offer and takes that from
+`consumer_policies` instead. The honest framing is the same in both places:
+this is the connector's *configured* autonomous behavior, and the
+configuration is where a real reason would eventually plug in. The narrower
+cost is that `transfer_policies` reads like a test fixture in
+`config.example.yaml`, because in this milestone that is mostly what it is.
+
+**25.8 The TCK harness imports its fixture agreements through the management
+API, in `run.sh`, and fails the run loudly if any import does not answer
+`201`.** 25.1 makes seeding unavoidable; putting it in the harness script, in
+the open, keeps it a visible part of the setup rather than a config convention
+somebody has to infer. It runs against the already-published management port,
+after the existing `/health` readiness loop.
+
+The loud failure is the point. A connector that rejects an unknown agreement
+and a connector that was never given the agreement both answer `400`, so a
+silent seeding failure would be indistinguishable from a protocol bug for the
+whole run.
+
+The first real run settled the two values the plan marked unconfirmed, and
+both turned out as predicted. The `@ConfigParam` key is
+`<TEST METHOD NAME UPPERCASED>_<FIELD NAME UPPERCASED>`, per test method with
+no class-level fallback: all fifteen `TP` transfer requests arrived carrying a
+configured agreement id and none a random UUID, which is conclusive because an
+unread key falls back silently to a random UUID and no random UUID is ever
+seeded. The same count settled the gate. `urn:uuid:tck-tp-default` is
+configured for eight test methods and arrived exactly seven times — the
+missing eighth is `TP_02_04`, which carries JUnit's `@Disabled` and never ran.
+The suite declares 16 `@MandatoryTest` methods and produces 15 results, and
+the gate counts results, so `"TP": 15`.
+
+*Trade-off accepted.* The fixture is spread across three files that must agree
+— `config.properties` names an agreement per test, `run.sh` seeds it, and
+`dsbox.yaml` keys its autonomous sequence on it — and nothing checks that they
+agree except the run itself. Each file says so in a comment. The alternative,
+generating all three from one source, would put a code generator into a test
+harness to save seven lines.

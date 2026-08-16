@@ -12,6 +12,11 @@ dsp_addr: 0.0.0.0:8080
 # This is a test-only relaxation of the localhost default.
 mgmt_addr: 0.0.0.0:8081
 
+# The TCK harness imports its fixture agreements through the management API
+# before the suite runs (see run.sh). Any value at least 16 characters works;
+# this one is not a secret and never leaves the compose network.
+mgmt_token: tck-harness-token-0
+
 # Negotiation state lives here. The harness container gets a fresh one on
 # every run: no compose volume is mounted for it, so it dies with the
 # container. /home/nonroot is the one path in the distroless nonroot base
@@ -36,6 +41,12 @@ datasets:
   # validity_until — the expired-offer paths (CN_02_01, CN_02_05, CN_02_06).
   - id: urn:dataset:cn-expired
     validity_until: 2020-01-01T00:00:00Z
+  # TP: the dataset every imported transfer agreement covers. The transfer
+  # suites never ask for it by name — they cite an agreement, and run.sh's
+  # seeding names this dataset on each one — but an agreement covering a
+  # dataset this connector does not advertise would be a fixture that could
+  # not have arisen from a real negotiation.
+  - id: urn:dataset:tck-transfer
 
 # CN_C: the consumer role's own autonomous reaction, keyed by the dataset_id
 # this connector itself requests (see config.properties alongside this file and
@@ -52,3 +63,30 @@ consumer_policies:
     on_agreement: reject
   - dataset_id: urn:dataset:cn-c-passive-offer
     on_offer: passive
+
+# TP: what this connector does on its own after accepting a transfer request,
+# keyed by the agreement it was requested under. The TCK sends one message and
+# then only polls, so the agreement id is the only thing that can select a
+# behavior — see the design spec's "Autonomous provider behavior".
+#
+# An agreement with no entry here gets [STARTED], which is what TP:02-01..04
+# and TP:03-03..06 expect, so urn:uuid:tck-tp-default needs no entry. An
+# explicit empty sequence means accept and stay in REQUESTED, which TP:02-05
+# and TP:03-01/02 assert and which an unconditional start would break.
+#
+# Every agreement id named here, and urn:uuid:tck-tp-default, must also be
+# seeded by run.sh: this connector rejects a transfer citing an agreement it
+# has no record of.
+transfer_policies:
+  - agreement_id: urn:uuid:tck-tp-01-01
+    sequence: [STARTED, TERMINATED]
+  - agreement_id: urn:uuid:tck-tp-01-02
+    sequence: [STARTED, COMPLETED]
+  - agreement_id: urn:uuid:tck-tp-01-03
+    sequence: [STARTED, SUSPENDED, TERMINATED]
+  - agreement_id: urn:uuid:tck-tp-01-04
+    sequence: [STARTED, SUSPENDED, STARTED, COMPLETED]
+  - agreement_id: urn:uuid:tck-tp-01-05
+    sequence: [TERMINATED]
+  - agreement_id: urn:uuid:tck-tp-nostart
+    sequence: []

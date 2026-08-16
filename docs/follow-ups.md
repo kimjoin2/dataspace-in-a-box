@@ -161,3 +161,30 @@ a different target than the one requested and this connector would verify it.
 Harmless today only because nothing downstream reads the agreement. Transfer
 process is exactly where an agreement stops being inert, so this closes there
 or not at all. Same family as §24.6: do not adopt terms you did not ask for.
+
+## From the transfer process (provider, Phase A) milestone (2026-08)
+
+**That entry above is still open.** Phase A reads an agreement only to answer
+"does a row with this id exist", so a transfer still cannot notice that the
+agreement it cites covers a dataset nobody asked for. It becomes reachable in
+Phase B, where `agreements.dataset_id` decides which bytes get served.
+
+**`POST /agreements` accepts any non-empty `datasetId`, including one this
+connector does not advertise.** The TCK fixture seeds
+`urn:dataset:tck-transfer` and `test/tck/dsbox.yaml` advertises it, but the
+import would have succeeded either way — nothing cross-checks the id against
+`config.Datasets`. Harmless in Phase A, since nothing reads `dataset_id` yet.
+Phase B serves bytes by resolving that id to a configured dataset, so it has
+to decide there whether an unknown dataset is a `400` at import time or a
+failure at pull time. Importing a contract for something this connector cannot
+serve is the same defect family as §25.1, one level down.
+
+**The 200 ms `transferStepDelay` has a margin nobody has measured.** The first
+real `TP` run needed zero retries — all eight `callback endpoint rejected
+push` lines in the connector log were negotiation pushes hitting the
+pre-existing §23.7 registration race, and not one was a transfer push. So the
+pause is comfortably sufficient on this machine and completely unbounded
+anywhere else: a single observation of "never needed the retry" says nothing
+about how much slack there was. The way to find out is to shorten it
+deliberately until pushes start being refused, which is worth doing the next
+time there is a reason to run the TCK repeatedly.

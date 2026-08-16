@@ -8,8 +8,16 @@ dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$dir/../.." && pwd)
 compose="docker compose -f $dir/compose.yaml"
 output="$root/tck-output.txt"
+# The connector's own log, captured before teardown. It is the only place the
+# values the TCK actually put on the wire can be read back, since the TCK's
+# output records assertions rather than message bodies. That is what tells a
+# real protocol fault apart from a fixture the TCK never read: an unset
+# @ConfigParam falls back to a random UUID silently, and the two produce
+# identical failures everywhere except in this file.
+connector_log="$root/tck-connector.txt"
 
 cleanup() {
+	$compose logs --no-color dsbox >"$connector_log" 2>&1 || true
 	$compose down --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -31,9 +39,45 @@ until curl -sf http://127.0.0.1:8081/health >/dev/null 2>&1; do
 done
 echo ' ready'
 
+# The TP suite asks this connector to transfer under an agreement id the TCK
+# supplies from config.properties. Those agreements were concluded outside
+# this connector as far as it is concerned, so they are imported through the
+# management API — the same path a real operator would use. This connector
+# rejects a transfer citing an agreement it has no record of, which is the
+# point of the check and the reason this step exists.
+#
+# It exits on the first failure rather than reporting at the end: a connector
+# that rejects an unknown agreement and a connector that was never given the
+# agreement both answer 400, so a silent seeding failure would be
+# indistinguishable from a protocol bug for the whole run.
+seed_agreement() {
+	code=$(curl -s -o /dev/null -w '%{http_code}' \
+		-X POST http://127.0.0.1:8081/agreements \
+		-H 'Authorization: Bearer tck-harness-token-0' \
+		-H 'Content-Type: application/json' \
+		-d "{\"agreementId\":\"$1\",\"datasetId\":\"urn:dataset:tck-transfer\"}")
+	if [ "$code" != "201" ]; then
+		echo "seeding agreement $1 failed with HTTP $code" >&2
+		exit 1
+	fi
+}
+
+# Seven ids, matching config.properties' TP_*_AGREEMENTID values and
+# dsbox.yaml's transfer_policies. Adding a test that cites a new agreement
+# means adding it in all three places.
+seed_agreement urn:uuid:tck-tp-01-01
+seed_agreement urn:uuid:tck-tp-01-02
+seed_agreement urn:uuid:tck-tp-01-03
+seed_agreement urn:uuid:tck-tp-01-04
+seed_agreement urn:uuid:tck-tp-01-05
+seed_agreement urn:uuid:tck-tp-default
+seed_agreement urn:uuid:tck-tp-nostart
+echo 'seeded 7 transfer agreements'
+
 # --use-aliases: `compose run` does not register the service's own name as a
 # network alias by default (only `up` does), so without this flag the
 # connector's callback pushes to http://tck:8083 fail DNS resolution with
 # "no such host" the moment any test (first hit: CN:02-01) needs one.
 $compose run --rm --use-aliases tck >"$output" 2>&1 || true
 echo "TCK output written to $output"
+echo "connector log will be written to $connector_log"

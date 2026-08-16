@@ -11,8 +11,10 @@
 # OS
 .DS_Store
 
-# Captured TCK output; regenerate with `make tck`
+# Captured TCK output and the connector log from the same run; regenerate
+# with `make tck`
 /tck-output.txt
+/tck-connector.txt
 
 # Linked worktrees for in-progress branches. A worktree here is a full second
 # checkout, so leaving it untracked means one `git add -A` on the main checkout

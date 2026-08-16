@@ -30,9 +30,15 @@ jobs:
           go-version: "1.26"
       - name: Run the DSP TCK
         run: make tck
+      # The connector log goes up alongside the TCK output because it is the
+      # only record of what was actually on the wire — the TCK's own output
+      # reports assertions, not message bodies. A TCK failure that reproduces
+      # only in CI is exactly the case that needs both.
       - name: Upload TCK output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tck-output
-          path: tck-output.txt
+          path: |
+            tck-output.txt
+            tck-connector.txt

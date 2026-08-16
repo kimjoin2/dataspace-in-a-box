@@ -161,6 +161,16 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// The agreement id is logged because it is the only field of an accepted
+	// transfer request that came from the counterparty's own configuration
+	// rather than from this connector, and it is what selects the autonomous
+	// sequence below. Against the TCK it is also the only way to see that the
+	// harness fixture was read at all: a test whose agreement id is left
+	// unconfigured falls back to a random UUID silently, which is
+	// indistinguishable from a protocol fault everywhere except here.
+	slog.Info("accepted transfer request", "provider_pid", t.ProviderPID,
+		"consumer_pid", t.ConsumerPID, "agreement_id", t.AgreementID)
+
 	writeJSON(w, http.StatusCreated, buildTransferProcessDoc(t))
 
 	go h.driveTransfer(t)
