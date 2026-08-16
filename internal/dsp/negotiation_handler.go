@@ -447,6 +447,23 @@ func (h negotiationHandler) dispatch(n store.Negotiation, outcome negotiationOut
 		h.pushAndStore(n, StateOffered, offerCallbackPath, buildOfferMessage(n))
 	case outcome.pushAgreement:
 		h.pushAndStore(n, StateAgreed, agreementCallbackPath, buildAgreementMessage(n, h.cfg.PublicURL, h.cfg.ParticipantID))
+		// The agreement this connector just issued becomes a durable record, so
+		// the transfer protocol can answer "does this agreement exist" without
+		// scanning negotiations. The id is the one buildAgreementMessage puts on
+		// the wire: this negotiation's provider pid.
+		err := h.store.CreateAgreement(store.Agreement{
+			AgreementID: n.ProviderPID,
+			DatasetID:   n.DatasetID,
+			ConsumerPID: n.ConsumerPID,
+			Origin:      store.OriginNegotiated,
+			CreatedAt:   time.Now().UTC(),
+		})
+		if err != nil {
+			// Log and continue. The agreement has already been announced to the
+			// counterparty, so refusing to advance here would leave the two sides
+			// disagreeing about a contract that was in fact made.
+			slog.Error("record agreement", "provider_pid", n.ProviderPID, "error", err)
+		}
 	case outcome.pushTermination:
 		h.pushAndStore(n, StateTerminated, terminationCallbackPath, buildTerminationMessage(n))
 	}

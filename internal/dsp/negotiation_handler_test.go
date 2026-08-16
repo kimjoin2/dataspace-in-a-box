@@ -921,3 +921,42 @@ func TestHandleGetNegotiation_ProviderBranchStillWorks(t *testing.T) {
 		t.Fatalf("status = %d, want 200 — a provider-role negotiation must still resolve after this milestone adds a second table", w.Code)
 	}
 }
+
+// This mirrors TestHandleContractRequest_MatchedValid_PushesAgreement exactly
+// — same helpers, same immediate-AGREED path — and adds the durability
+// assertions. Do not hand-roll a second setup for the same journey.
+func TestNegotiationReachingAgreedRecordsTheAgreement(t *testing.T) {
+	fc := newFakeCallback()
+	defer fc.srv.Close()
+	h, st := newTestHandler(t, negotiationTestConfig("https://provider.example.org", config.Dataset{ID: "urn:dataset:a"}))
+
+	rr := postJSON(t, h.handleContractRequest, "/negotiations/request",
+		requestMessageBody("urn:uuid:consumer-1", "urn:dataset:a"+offerIDSuffix, "urn:dataset:a", fc.srv.URL))
+	var doc NegotiationStateDocument
+	if err := json.Unmarshal(rr.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	fc.wait(t, "/agreement")
+	n := waitForState(t, st, doc.ProviderPID, StateAgreed)
+
+	got, ok, err := st.GetAgreement(n.ProviderPID)
+	if err != nil {
+		t.Fatalf("GetAgreement: %v", err)
+	}
+	if !ok {
+		t.Fatal("a negotiation reached AGREED but recorded no agreement")
+	}
+	if got.AgreementID != n.ProviderPID {
+		t.Errorf("AgreementID = %q, want the negotiation's provider pid %q — buildAgreementMessage puts that value on the wire", got.AgreementID, n.ProviderPID)
+	}
+	if got.DatasetID != n.DatasetID {
+		t.Errorf("DatasetID = %q, want %q", got.DatasetID, n.DatasetID)
+	}
+	if got.ConsumerPID != n.ConsumerPID {
+		t.Errorf("ConsumerPID = %q, want %q", got.ConsumerPID, n.ConsumerPID)
+	}
+	if got.Origin != store.OriginNegotiated {
+		t.Errorf("Origin = %q, want %q", got.Origin, store.OriginNegotiated)
+	}
+}
