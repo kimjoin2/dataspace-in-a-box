@@ -54,3 +54,21 @@ datasets:
 #     on_offer: accept        # accept (default) | passive | reject | counter
 #     on_agreement: verify    # verify (default) | reject
 #     on_idle: wait           # wait (default) | abandon
+
+# Optional. Configures this connector's autonomous behavior as transfer
+# provider, keyed by the agreement a transfer is requested under. The sequence
+# is the states it walks on its own after accepting the request, pushing the
+# matching message to the consumer's callback address at each step.
+#
+# An agreement with no entry here gets [STARTED]: accept, then start. An
+# explicit empty sequence means accept and stay in REQUESTED — a different
+# thing from having no entry, which is why it has to be written out.
+#
+# Valid states: STARTED, SUSPENDED, COMPLETED, TERMINATED. REQUESTED is not
+# one of them: it is the state a transfer starts in, not one it can be driven
+# to. There is no environment override for this list.
+# transfer_policies:
+#   - agreement_id: urn:uuid:example-agreement
+#     sequence: [STARTED, SUSPENDED, STARTED, COMPLETED]
+#   - agreement_id: urn:uuid:another-agreement
+#     sequence: []            # accept the request and stay in REQUESTED

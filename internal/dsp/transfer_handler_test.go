@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,8 +65,8 @@ func seedTransfer(t *testing.T, st *store.Store, state string) store.TransferPro
 }
 
 // waitForTransferState is waitForState's transfer-table counterpart, and
-// exists for the same reason: startTransfer runs on its own goroutine
-// (`go h.startTransfer(t)`) so the handler can return and its own response go
+// exists for the same reason: driveTransfer runs on its own goroutine
+// (`go h.driveTransfer(t)`) so the handler can return and its own response go
 // out on the wire before the push is attempted, which means the state it
 // writes afterward is not there yet when the handler call returns.
 //
@@ -94,9 +95,139 @@ func waitForTransferState(t *testing.T, st *store.Store, providerPID, want strin
 // transferRequestBody is a well-formed TransferRequestMessage. Individual
 // tests override one field to exercise a specific guard.
 func transferRequestBody(agreementID string) string {
+	return transferRequestBodyTo(agreementID, "http://consumer.example/2025-1")
+}
+
+// transferRequestBodyTo is transferRequestBody addressed at a callback the
+// test is actually listening on, for the tests that assert what was pushed.
+func transferRequestBodyTo(agreementID, callbackAddress string) string {
 	return `{"@context":["` + ContextURL + `"],"@type":"` + TransferRequestMessageType + `",` +
 		`"consumerPid":"urn:uuid:tc-1","agreementId":"` + agreementID + `",` +
-		`"format":"HTTP-PULL","callbackAddress":"http://consumer.example/2025-1"}`
+		`"format":"HTTP-PULL","callbackAddress":"` + callbackAddress + `"}`
+}
+
+// postTransferRequest posts body to the request endpoint and returns the
+// provider pid out of the acknowledgment, which is the only handle a test has
+// on the transfer the handler just created.
+func postTransferRequest(t *testing.T, h transferHandler, body string) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, VersionPath+"/transfers/request", strings.NewReader(body))
+	h.handleTransferRequest(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /transfers/request = %d, want 201 (body %q)", rec.Code, rec.Body.String())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("acknowledgment body is not JSON: %v", err)
+	}
+	providerPID, _ := doc["providerPid"].(string)
+	if providerPID == "" {
+		t.Fatalf("acknowledgment carried no providerPid: %q", rec.Body.String())
+	}
+	return providerPID
+}
+
+// transferPolicyConfig is the configuration for one agreement's sequence.
+func transferPolicyConfig(agreementID string, sequence ...string) config.Config {
+	return config.Config{TransferPolicies: []config.TransferPolicy{
+		{AgreementID: agreementID, Sequence: sequence},
+	}}
+}
+
+// transferPush is one push the fake consumer received.
+type transferPush struct {
+	path    string
+	msgType string
+}
+
+// fakeTransferConsumer is a consumer callback endpoint that records every
+// push it receives in arrival order.
+//
+// It records an ordered log rather than negotiation_handler_test.go's
+// fakeCallback, which keys pushes by path and so cannot express order across
+// paths. Order is the property that matters here: the TCK registers the
+// handler for step N+1 only once step N has arrived, so a driver that pushed
+// its steps concurrently would satisfy a per-path assertion and still 404 on
+// the wire.
+type fakeTransferConsumer struct {
+	srv *httptest.Server
+	mu  sync.Mutex
+	got []transferPush
+}
+
+func newFakeTransferConsumer(t *testing.T) *fakeTransferConsumer {
+	t.Helper()
+	fc := &fakeTransferConsumer{}
+	fc.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			// t.Errorf, never t.Fatalf: this runs on the server goroutine,
+			// where Fatalf calls runtime.Goexit on the wrong stack and hangs
+			// the request. See assertEmittedOffer in negotiation_test.go.
+			t.Errorf("decode pushed message: %v", err)
+		}
+		msgType, _ := body["@type"].(string)
+		fc.mu.Lock()
+		fc.got = append(fc.got, transferPush{path: r.URL.Path, msgType: msgType})
+		fc.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(fc.srv.Close)
+	return fc
+}
+
+// waitFor polls until at least n pushes have arrived and returns everything
+// received, or fails the test after two seconds.
+func (fc *fakeTransferConsumer) waitFor(t *testing.T, n int) []transferPush {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		fc.mu.Lock()
+		got := append([]transferPush(nil), fc.got...)
+		fc.mu.Unlock()
+		if len(got) >= n {
+			return got
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("received %v, want at least %d pushes", got, n)
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// receivedNothing fails the test if any push arrives within the window. The
+// assertion is "nothing on any path", not "nothing on this one", because an
+// empty sequence is defined by pushing nothing at all.
+func (fc *fakeTransferConsumer) receivedNothing(t *testing.T, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		fc.mu.Lock()
+		got := append([]transferPush(nil), fc.got...)
+		fc.mu.Unlock()
+		if len(got) > 0 {
+			t.Fatalf("unexpected pushes: %v", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// assertPushSequence pins what arrived, in the order it arrived. Comparing
+// the whole slice rather than checking each message is present is the point:
+// a driver that pushed its steps concurrently, or in the wrong order, has to
+// fail here rather than in a TCK run.
+func assertPushSequence(t *testing.T, got, want []transferPush) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("received %v, want exactly %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("push %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
 }
 
 func TestTransferRequestWithKnownAgreementIsAccepted(t *testing.T) {
@@ -398,4 +529,164 @@ func TestTransferRequestPushesStartMessage(t *testing.T) {
 	}
 	providerPID, _ := ack["providerPid"].(string)
 	waitForTransferState(t, st, providerPID, TransferStarted)
+}
+
+// TestResolveTransferSequenceDefaultsToStarted pins the behavior every test
+// written before this configuration existed depends on: an agreement nobody
+// configured is still started.
+func TestResolveTransferSequenceDefaultsToStarted(t *testing.T) {
+	got := resolveTransferSequence(config.Config{}, "urn:uuid:unconfigured")
+	if len(got) != 1 || got[0] != TransferStarted {
+		t.Errorf("resolveTransferSequence(no entry) = %v, want [%s]", got, TransferStarted)
+	}
+}
+
+func TestResolveTransferSequenceUsesTheMatchingEntry(t *testing.T) {
+	cfg := config.Config{TransferPolicies: []config.TransferPolicy{
+		{AgreementID: "urn:uuid:other", Sequence: []string{TransferTerminated}},
+		{AgreementID: "urn:uuid:agreement-1", Sequence: []string{TransferStarted, TransferSuspended, TransferTerminated}},
+	}}
+	got := resolveTransferSequence(cfg, "urn:uuid:agreement-1")
+	want := []string{TransferStarted, TransferSuspended, TransferTerminated}
+	if len(got) != len(want) {
+		t.Fatalf("resolveTransferSequence = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("resolveTransferSequence = %v, want %v", got, want)
+			break
+		}
+	}
+}
+
+// TestResolveTransferSequenceEmptyEntryIsNotTheDefault is the distinction the
+// whole mechanism rests on: an entry configured with an empty sequence must
+// resolve to nothing, not to the default [STARTED] that having no entry gets.
+func TestResolveTransferSequenceEmptyEntryIsNotTheDefault(t *testing.T) {
+	cfg := config.Config{TransferPolicies: []config.TransferPolicy{
+		{AgreementID: "urn:uuid:agreement-1", Sequence: []string{}},
+	}}
+	if got := resolveTransferSequence(cfg, "urn:uuid:agreement-1"); len(got) != 0 {
+		t.Errorf("resolveTransferSequence(empty entry) = %v, want no steps at all", got)
+	}
+}
+
+// TestTransferSequenceEmptyStaysRequestedAndPushesNothing covers the four TCK
+// provider tests that carry no "provider started" step and poll for
+// REQUESTED. Both halves are asserted: a connector that pushed a start and
+// then failed to record it would leave the state at REQUESTED too, so the
+// state alone proves nothing.
+func TestTransferSequenceEmptyStaysRequestedAndPushesNothing(t *testing.T) {
+	fc := newFakeTransferConsumer(t)
+	cfg := config.Config{TransferPolicies: []config.TransferPolicy{
+		{AgreementID: "urn:uuid:agreement-1", Sequence: []string{}},
+	}}
+	h, st := newTestTransferHandler(t, cfg)
+	seedAgreement(t, st, "urn:uuid:agreement-1")
+
+	providerPID := postTransferRequest(t, h, transferRequestBodyTo("urn:uuid:agreement-1", fc.srv.URL))
+
+	fc.receivedNothing(t, 100*time.Millisecond)
+	got, ok, err := st.GetTransfer(providerPID)
+	if err != nil {
+		t.Fatalf("GetTransfer: %v", err)
+	}
+	if !ok {
+		t.Fatal("the acknowledgment named a providerPid that was never stored")
+	}
+	if got.State != TransferRequested {
+		t.Errorf("stored state = %s, want %s", got.State, TransferRequested)
+	}
+}
+
+// TestTransferSequenceStartThenTerminate is TP:01-01's shape.
+func TestTransferSequenceStartThenTerminate(t *testing.T) {
+	fc := newFakeTransferConsumer(t)
+	h, st := newTestTransferHandler(t,
+		transferPolicyConfig("urn:uuid:agreement-1", TransferStarted, TransferTerminated))
+	seedAgreement(t, st, "urn:uuid:agreement-1")
+
+	providerPID := postTransferRequest(t, h, transferRequestBodyTo("urn:uuid:agreement-1", fc.srv.URL))
+
+	assertPushSequence(t, fc.waitFor(t, 2), []transferPush{
+		{path: "/transfers/urn:uuid:tc-1/start", msgType: TransferStartMessageType},
+		{path: "/transfers/urn:uuid:tc-1/termination", msgType: TransferTerminationMessageType},
+	})
+	waitForTransferState(t, st, providerPID, TransferTerminated)
+}
+
+// TestTransferSequenceStopsWhenTheCounterpartyTakesOver pins what happens
+// when a state write is lost to store.ErrStateChanged. The counterparty
+// terminates the transfer while the first step's push is still in flight, so
+// the write this connector makes afterward no longer holds — and a
+// counterparty that has terminated the transfer has taken it over, so the
+// remaining steps must not be pushed at all.
+func TestTransferSequenceStopsWhenTheCounterpartyTakesOver(t *testing.T) {
+	h, st := newTestTransferHandler(t, transferPolicyConfig("urn:uuid:agreement-1",
+		TransferStarted, TransferSuspended, TransferTerminated))
+	seedAgreement(t, st, "urn:uuid:agreement-1")
+
+	var mu sync.Mutex
+	var pushed []string
+	consumer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode pushed message: %v", err)
+		}
+		msgType, _ := body["@type"].(string)
+		mu.Lock()
+		pushed = append(pushed, msgType)
+		mu.Unlock()
+		// The state write, not the handler: what the inbound termination
+		// endpoint does to the store is exactly this, and calling the handler
+		// from here would need a mutable handler variable captured by this
+		// closure.
+		if msgType == TransferStartMessageType {
+			providerPID, _ := body["providerPid"].(string)
+			if err := st.SetTransferState(providerPID, TransferRequested, TransferTerminated, time.Now()); err != nil {
+				t.Errorf("terminate from the counterparty's side: %v", err)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer consumer.Close()
+
+	providerPID := postTransferRequest(t, h, transferRequestBodyTo("urn:uuid:agreement-1", consumer.URL))
+
+	// Long enough for the two remaining steps to have been pushed, had the
+	// sequence continued: transferStepDelay is a millisecond under test.
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	got := append([]string(nil), pushed...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != TransferStartMessageType {
+		t.Errorf("pushed %v, want only the start message before the sequence stopped", got)
+	}
+	stored, ok, err := st.GetTransfer(providerPID)
+	if err != nil || !ok {
+		t.Fatalf("GetTransfer: %v (found %v)", err, ok)
+	}
+	if stored.State != TransferTerminated {
+		t.Errorf("stored state = %s, want %s — the counterparty's termination must stand",
+			stored.State, TransferTerminated)
+	}
+}
+
+// TestTransferSequenceSuspendResumeComplete is TP:01-04: the longest sequence
+// the TCK asks for, and the one that revisits STARTED.
+func TestTransferSequenceSuspendResumeComplete(t *testing.T) {
+	fc := newFakeTransferConsumer(t)
+	h, st := newTestTransferHandler(t, transferPolicyConfig("urn:uuid:agreement-1",
+		TransferStarted, TransferSuspended, TransferStarted, TransferCompleted))
+	seedAgreement(t, st, "urn:uuid:agreement-1")
+
+	providerPID := postTransferRequest(t, h, transferRequestBodyTo("urn:uuid:agreement-1", fc.srv.URL))
+
+	assertPushSequence(t, fc.waitFor(t, 4), []transferPush{
+		{path: "/transfers/urn:uuid:tc-1/start", msgType: TransferStartMessageType},
+		{path: "/transfers/urn:uuid:tc-1/suspension", msgType: TransferSuspensionMessageType},
+		{path: "/transfers/urn:uuid:tc-1/start", msgType: TransferStartMessageType},
+		{path: "/transfers/urn:uuid:tc-1/completion", msgType: TransferCompletionMessageType},
+	})
+	waitForTransferState(t, st, providerPID, TransferCompleted)
 }

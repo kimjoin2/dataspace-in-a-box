@@ -24,8 +24,15 @@ import (
 // happens after the last HTTP response the test could possibly observe. This
 // single write, on the main goroutine before m.Run, has nothing to race
 // against.
+//
+// transferStepDelay is shortened here for exactly the same reasons. It is
+// read inside driveTransfer's loop, on a goroutine with no handle to join, so
+// a per-test assign-and-restore would race a sequence a previous test
+// started; and the sequence tests would otherwise pay 200ms per step for a
+// pause whose purpose is on the wire, not in the assertion.
 func TestMain(m *testing.M) {
 	callbackRetryBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
+	transferStepDelay = time.Millisecond
 	os.Exit(m.Run())
 }
 

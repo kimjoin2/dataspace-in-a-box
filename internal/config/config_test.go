@@ -391,3 +391,66 @@ func TestMgmtTokenOneCharBelowMinimumIsAnError(t *testing.T) {
 		t.Fatal("Load: expected an error for a token one character below the minimum")
 	}
 }
+
+func TestTransferPoliciesEmptyWhenAbsent(t *testing.T) {
+	cfg, err := Load(minimal(""), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.TransferPolicies) != 0 {
+		t.Errorf("TransferPolicies = %v, want empty when the key is absent", cfg.TransferPolicies)
+	}
+}
+
+func TestTransferPolicyParses(t *testing.T) {
+	cfg, err := Load(minimal("transfer_policies:\n  - agreement_id: urn:uuid:a\n    sequence: [STARTED, SUSPENDED, TERMINATED]\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.TransferPolicies) != 1 {
+		t.Fatalf("TransferPolicies = %v, want one entry", cfg.TransferPolicies)
+	}
+	p := cfg.TransferPolicies[0]
+	if p.AgreementID != "urn:uuid:a" || len(p.Sequence) != 3 || p.Sequence[1] != "SUSPENDED" {
+		t.Errorf("TransferPolicies[0] = %+v, want the parsed fixture", p)
+	}
+}
+
+func TestTransferPolicyEmptySequenceIsValid(t *testing.T) {
+	// An explicit empty sequence is the only way to say "accept the request and
+	// stay in REQUESTED", which four TCK tests assert. It must survive loading
+	// as a present-but-empty entry, distinct from having no entry at all —
+	// which is why this asserts the entry is there *and* that its sequence is
+	// empty, rather than only that loading succeeded.
+	cfg, err := Load(minimal("transfer_policies:\n  - agreement_id: urn:uuid:a\n    sequence: []\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.TransferPolicies) != 1 || len(cfg.TransferPolicies[0].Sequence) != 0 {
+		t.Errorf("TransferPolicies = %+v, want one entry with an empty sequence", cfg.TransferPolicies)
+	}
+}
+
+func TestTransferPolicyRejectsAnUnknownState(t *testing.T) {
+	_, err := Load(minimal("transfer_policies:\n  - agreement_id: urn:uuid:a\n    sequence: [STARTED, NONSENSE]\n"), env(nil))
+	if err == nil {
+		t.Error("Load: expected an error for a sequence naming a state that is not a transfer state")
+	}
+}
+
+func TestTransferPolicyRejectsRequestedInASequence(t *testing.T) {
+	// REQUESTED is the state a transfer starts in, not one it can be driven
+	// to, so a sequence naming it configures a step that could never be
+	// written. Staying in REQUESTED is spelled `sequence: []`.
+	_, err := Load(minimal("transfer_policies:\n  - agreement_id: urn:uuid:a\n    sequence: [REQUESTED]\n"), env(nil))
+	if err == nil {
+		t.Error("Load: expected an error for a sequence naming REQUESTED")
+	}
+}
+
+func TestTransferPolicyRequiresAnAgreementID(t *testing.T) {
+	_, err := Load(minimal("transfer_policies:\n  - sequence: [STARTED]\n"), env(nil))
+	if err == nil {
+		t.Error("Load: expected an error for a policy with no agreement_id")
+	}
+}

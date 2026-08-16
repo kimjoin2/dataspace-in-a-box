@@ -70,8 +70,9 @@ type TransferStartMessage struct {
 }
 
 // TransferSuspensionMessage, TransferTerminationMessage, and
-// TransferCompletionMessage are the inbound messages this connector accepts on
-// a running transfer. The TCK registers no schema validator for these three,
+// TransferCompletionMessage are the messages this connector accepts on a
+// running transfer — and, where a configured sequence says so, emits on one
+// of its own. The TCK registers no schema validator for these three,
 // so their shape is checked only by what its pipeline reads out of them; this
 // connector emits and accepts them to the same standard as the rest.
 type TransferSuspensionMessage struct {
@@ -133,6 +134,39 @@ func buildTransferStartMessage(t store.TransferProcess) TransferStartMessage {
 	return TransferStartMessage{
 		Context:     []string{ContextURL},
 		Type:        TransferStartMessageType,
+		ProviderPID: t.ProviderPID,
+		ConsumerPID: t.ConsumerPID,
+	}
+}
+
+// The three builders below exist because this connector emits these messages
+// as well as accepting them: a configured transfer sequence can suspend,
+// complete, or terminate a transfer of its own accord — see
+// transfer_handler.go's driveTransfer. Both pids go on the wire because the
+// counterparty correlates the push by the consumer pid in the body, not by
+// the path it arrived on (the wire contract's section 1.3).
+func buildTransferSuspensionMessage(t store.TransferProcess) TransferSuspensionMessage {
+	return TransferSuspensionMessage{
+		Context:     []string{ContextURL},
+		Type:        TransferSuspensionMessageType,
+		ProviderPID: t.ProviderPID,
+		ConsumerPID: t.ConsumerPID,
+	}
+}
+
+func buildTransferCompletionMessage(t store.TransferProcess) TransferCompletionMessage {
+	return TransferCompletionMessage{
+		Context:     []string{ContextURL},
+		Type:        TransferCompletionMessageType,
+		ProviderPID: t.ProviderPID,
+		ConsumerPID: t.ConsumerPID,
+	}
+}
+
+func buildTransferTerminationMessage(t store.TransferProcess) TransferTerminationMessage {
+	return TransferTerminationMessage{
+		Context:     []string{ContextURL},
+		Type:        TransferTerminationMessageType,
 		ProviderPID: t.ProviderPID,
 		ConsumerPID: t.ConsumerPID,
 	}

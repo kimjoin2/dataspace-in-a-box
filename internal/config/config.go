@@ -72,6 +72,12 @@ type Config struct {
 	// see the design spec's "Why a policy configuration, not a content
 	// rule".
 	ConsumerPolicies []ConsumerPolicy `yaml:"consumer_policies"`
+
+	// TransferPolicies configures this connector's autonomous behavior as
+	// transfer provider, keyed by the agreement a transfer is requested
+	// under. An agreement with no matching entry starts the transfer and
+	// stops there — see TransferPolicy.
+	TransferPolicies []TransferPolicy `yaml:"transfer_policies"`
 }
 
 // Dataset is one advertised dataset. Only the identifier is configurable: the
@@ -106,6 +112,25 @@ type ConsumerPolicy struct {
 
 	// OnIdle: "wait" (default) or "abandon".
 	OnIdle string `yaml:"on_idle"`
+}
+
+// TransferPolicy configures this connector's autonomous behavior as transfer
+// provider, keyed by the agreement a transfer is requested under. Sequence is
+// the states it walks on its own after accepting the request, pushing the
+// matching message to the consumer's callback address at each step.
+//
+// An agreement with no entry gets [STARTED]: accept, then start. An explicit
+// empty sequence means accept and stay in REQUESTED, which is a different
+// thing from having no entry and is why the field cannot simply be omitted.
+//
+// This is the transfer analogue of ConsumerPolicy, and it exists for the same
+// reason: v1 has none of the operational inputs a real provider would use to
+// decide to suspend or complete a transfer, so the decision comes from
+// configuration instead. See the design spec's "Autonomous provider behavior,
+// keyed by agreement".
+type TransferPolicy struct {
+	AgreementID string   `yaml:"agreement_id"`
+	Sequence    []string `yaml:"sequence"`
 }
 
 const (
@@ -219,6 +244,21 @@ func (c Config) validate() error {
 		}
 		if p.OnIdle != "" && !validOnIdle[p.OnIdle] {
 			return fmt.Errorf("consumer_policies[%d]: on_idle %q is not one of wait, abandon", i, p.OnIdle)
+		}
+	}
+	// The state names are literals rather than the dsp package's constants:
+	// dsp imports config, so importing it back would be a cycle. REQUESTED is
+	// deliberately absent — it is the state a transfer starts in, not one it
+	// can be driven to, and staying there is spelled `sequence: []`.
+	validTransferState := map[string]bool{"STARTED": true, "SUSPENDED": true, "COMPLETED": true, "TERMINATED": true}
+	for i, p := range c.TransferPolicies {
+		if p.AgreementID == "" {
+			return fmt.Errorf("transfer_policies[%d]: agreement_id is required", i)
+		}
+		for j, s := range p.Sequence {
+			if !validTransferState[s] {
+				return fmt.Errorf("transfer_policies[%d]: sequence[%d] %q is not one of STARTED, SUSPENDED, COMPLETED, TERMINATED", i, j, s)
+			}
 		}
 	}
 	if c.DataDir == "" {

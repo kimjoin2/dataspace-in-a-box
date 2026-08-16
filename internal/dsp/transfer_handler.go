@@ -12,14 +12,38 @@ import (
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
 
-// transferStartCallbackPath is appended, formatted with the consumer pid, to
-// a transfer's stored callback address — the transfer protocol's counterpart
-// to negotiation_handler.go's offerCallbackPath and friends. The address it
-// is appended to is used exactly as it arrived: the counterparty's callback
-// endpoint matches the whole request path against a pattern it built from
-// that same string, so normalising it here — adding a prefix, adding or
-// dropping a slash — turns a correct push into a 404.
-const transferStartCallbackPath = "/transfers/%s/start"
+// The callback path suffixes, each appended — formatted with the consumer pid
+// — to a transfer's stored callback address, the transfer protocol's
+// counterpart to negotiation_handler.go's offerCallbackPath and friends. The
+// address they are appended to is used exactly as it arrived: the
+// counterparty's callback endpoint matches the whole request path against a
+// pattern it built from that same string, so normalising it here — adding a
+// prefix, adding or dropping a slash — turns a correct push into a 404.
+const (
+	transferStartCallbackPath       = "/transfers/%s/start"
+	transferSuspensionCallbackPath  = "/transfers/%s/suspension"
+	transferCompletionCallbackPath  = "/transfers/%s/completion"
+	transferTerminationCallbackPath = "/transfers/%s/termination"
+)
+
+// transferStepDelay is how long driveTransfer waits between the steps of a
+// configured sequence. It is not a robustness nicety: the counterparty
+// registers its handler for step N+1 only once step N has arrived and
+// released its latch — its own expectTerminationMessage appends a pipeline
+// stage rather than pre-registering everything — so two messages pushed back
+// to back can hit a path that has no handler yet, which its callback endpoint
+// answers 404. The TCK's own reference actions sleep for the same reason.
+//
+// pushCallback's retry schedule is a second line of defence rather than the
+// first: a 404 from an unregistered path would be retried and might then
+// land, but a design that depends on a retry to be correct is one that fails
+// on a slower machine.
+//
+// A var, not a const, so tests can shorten it — the same swappable-for-tests
+// pattern as negotiation_handler.go's terminateAfterOfferDelay. Tests set it
+// once in TestMain rather than per test, because the goroutine that reads it
+// can outlive the test that started it; see callback_test.go.
+var transferStepDelay = 200 * time.Millisecond
 
 // transferHandler serves the transfer process protocol in the provider role.
 // It lives in its own file because negotiation_handler.go was split at 867
@@ -27,8 +51,8 @@ const transferStartCallbackPath = "/transfers/%s/start"
 // grow it further.
 //
 // cfg is held for the same reason negotiationHandler holds it — the handlers
-// are constructed from configuration in router.go — even though Phase A's
-// provider role reads nothing out of it yet.
+// are constructed from configuration in router.go — and driveTransfer reads
+// the transfer policies out of it.
 type transferHandler struct {
 	cfg   config.Config
 	store *store.Store
@@ -127,18 +151,57 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 
 	writeJSON(w, http.StatusCreated, buildTransferProcessDoc(t))
 
-	go h.startTransfer(t)
+	go h.driveTransfer(t)
 }
 
-// startTransfer pushes the TransferStartMessage that actually begins the
-// transfer, then records STARTED.
+// resolveTransferSequence returns the states this connector walks on its own
+// after accepting a transfer request under this agreement. An agreement with
+// no configured entry starts and stops there; an entry with an empty sequence
+// deliberately does nothing, which is how a transfer stays in REQUESTED.
+func resolveTransferSequence(cfg config.Config, agreementID string) []string {
+	for _, p := range cfg.TransferPolicies {
+		if p.AgreementID == agreementID {
+			return p.Sequence
+		}
+	}
+	return []string{TransferStarted}
+}
+
+// driveTransfer walks the sequence this transfer's agreement resolves to,
+// pushing the message for each state and then recording it. For the default
+// sequence that is one step — push the TransferStartMessage that actually
+// begins the transfer, then record STARTED — and the longer sequences are
+// that same step repeated, not a second way of pushing a message.
+//
+// The connector drives itself here because the counterparty gives it nothing
+// else to react to: after the request it sends no trigger and no control
+// call, only polls GET /transfers/{id}. What the sequence should be is
+// therefore configuration rather than judgement this connector has — see
+// config.TransferPolicy and the design spec's "Autonomous provider behavior,
+// keyed by agreement".
 //
 // It is always invoked with `go`, never inline, for the reason DECISIONS.md
 // §23.8 gives and negotiation_handler.go's dispatch documents at length:
 // net/http buffers a response this small and does not put it on the wire
 // until the handler returns, so an inline push would keep the acknowledgment
-// above sitting in that buffer for the whole retry schedule — while the
+// sitting in that buffer for the whole retry schedule — while the
 // counterparty waits for it before it is ready to receive the push.
+func (h transferHandler) driveTransfer(t store.TransferProcess) {
+	for i, state := range resolveTransferSequence(h.cfg, t.AgreementID) {
+		if i > 0 {
+			time.Sleep(transferStepDelay)
+		}
+		if !h.pushTransferStep(t, state) {
+			return
+		}
+		// The state this step just wrote is the precondition the next step's
+		// write is made against, exactly as the first step's was REQUESTED.
+		t.State = state
+	}
+}
+
+// pushTransferStep pushes the message for one target state and then records
+// that state, reporting whether the sequence may continue.
 //
 // The push goes through pushCallback, so it inherits §23.7's retry schedule.
 // A retried push may be refused by a counterparty whose handler for it was
@@ -150,28 +213,59 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 // Push first, then store, matching pushAndStore's ordering rule (§23.12): in
 // DSP the provider does not become STARTED and then say so, it becomes
 // STARTED by delivering the start message. The state write is conditional on
-// REQUESTED, so a termination that arrived while the push was still retrying
-// wins and this goroutine's write is dropped rather than resurrecting a dead
-// transfer.
+// the state this step began from, so a termination that arrived while the
+// push was still retrying wins and this goroutine's write is dropped rather
+// than resurrecting a dead transfer.
+//
+// A dropped write ends the sequence. A counterparty that moved the transfer
+// on has taken it over, and the remaining steps would push messages for
+// transitions this connector cannot make. Any other storage failure ends it
+// too, for the same reason from the other direction: the state the next step
+// would write against was never recorded.
 //
 // t.CallbackAddress came from an unauthenticated request body, so the
 // constructed URL is validated before anything is sent — see
 // validateCallbackURL's doc comment.
-func (h transferHandler) startTransfer(t store.TransferProcess) {
-	callbackURL := t.CallbackAddress + fmt.Sprintf(transferStartCallbackPath, t.ConsumerPID)
+func (h transferHandler) pushTransferStep(t store.TransferProcess, to string) bool {
+	path, msg, ok := transferStepMessage(t, to)
+	if !ok {
+		// Unreachable through configuration, which validates every state in a
+		// sequence, so this catches a new state added to one side only.
+		slog.Error("no transfer message for state", "provider_pid", t.ProviderPID, "want_state", to)
+		return false
+	}
+	callbackURL := t.CallbackAddress + fmt.Sprintf(path, t.ConsumerPID)
 	if err := validateOutgoingCallback(callbackURL); err != nil {
 		slog.Error("reject callback push", "url", callbackURL, "error", err)
 	} else {
-		pushCallback(callbackURL, buildTransferStartMessage(t))
+		pushCallback(callbackURL, msg)
 	}
-	if err := h.store.SetTransferState(t.ProviderPID, TransferRequested, TransferStarted, time.Now()); err != nil {
+	if err := h.store.SetTransferState(t.ProviderPID, t.State, to, time.Now()); err != nil {
 		if errors.Is(err, store.ErrStateChanged) {
 			slog.Warn("drop stale transfer state update",
-				"provider_pid", t.ProviderPID, "want_state", TransferStarted, "error", err)
-			return
+				"provider_pid", t.ProviderPID, "want_state", to, "error", err)
+			return false
 		}
 		slog.Error("update transfer state", "provider_pid", t.ProviderPID, "error", err)
+		return false
 	}
+	return true
+}
+
+// transferStepMessage returns the callback path and the message that move a
+// transfer into the given state, and whether one exists.
+func transferStepMessage(t store.TransferProcess, to string) (string, any, bool) {
+	switch to {
+	case TransferStarted:
+		return transferStartCallbackPath, buildTransferStartMessage(t), true
+	case TransferSuspended:
+		return transferSuspensionCallbackPath, buildTransferSuspensionMessage(t), true
+	case TransferCompleted:
+		return transferCompletionCallbackPath, buildTransferCompletionMessage(t), true
+	case TransferTerminated:
+		return transferTerminationCallbackPath, buildTransferTerminationMessage(t), true
+	}
+	return "", nil, false
 }
 
 // handleGetTransfer serves GET /transfers/{id}. The counterparty polls this

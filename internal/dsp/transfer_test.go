@@ -94,3 +94,42 @@ func TestBuildTransferStartMessageCarriesTheRequiredFields(t *testing.T) {
 		t.Error("Phase A must not emit a dataAddress: nothing serves it yet, and announcing an endpoint that serves nothing is a claim this connector cannot keep")
 	}
 }
+
+// TestBuildProviderInitiatedTransferMessagesCarryTheRequiredFields covers the
+// three messages a configured transfer sequence emits. They are pinned here
+// as well as through driveTransfer's own tests because those assert the @type
+// that arrived and the path it arrived on — an envelope missing its @context
+// would push, and land, and still be wrong.
+func TestBuildProviderInitiatedTransferMessagesCarryTheRequiredFields(t *testing.T) {
+	tp := store.TransferProcess{
+		ProviderPID: "urn:uuid:p-1", ConsumerPID: "urn:uuid:c-1",
+		State: TransferStarted, CreatedAt: time.Now().UTC(),
+	}
+	cases := map[string]any{
+		TransferSuspensionMessageType:  buildTransferSuspensionMessage(tp),
+		TransferCompletionMessageType:  buildTransferCompletionMessage(tp),
+		TransferTerminationMessageType: buildTransferTerminationMessage(tp),
+	}
+	for wantType, msg := range cases {
+		raw, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", wantType, err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("%s: unmarshal: %v", wantType, err)
+		}
+		for _, k := range []string{"@context", "@type", "providerPid", "consumerPid"} {
+			if _, ok := got[k]; !ok {
+				t.Errorf("%s is missing required property %q", wantType, k)
+			}
+		}
+		if got["@type"] != wantType {
+			t.Errorf("@type = %v, want %s", got["@type"], wantType)
+		}
+		if got["providerPid"] != tp.ProviderPID || got["consumerPid"] != tp.ConsumerPID {
+			t.Errorf("%s carried pids %v/%v, want %s/%s",
+				wantType, got["providerPid"], got["consumerPid"], tp.ProviderPID, tp.ConsumerPID)
+		}
+	}
+}
