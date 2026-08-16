@@ -69,7 +69,7 @@ func run() error {
 	}
 	mgmtSrv := &http.Server{
 		Addr:              cfg.MgmtAddr,
-		Handler:           mgmt.NewRouter(),
+		Handler:           mgmt.NewRouter(cfg, st),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
