@@ -72,6 +72,15 @@ datasets:
 # Valid states: STARTED, SUSPENDED, COMPLETED, TERMINATED. REQUESTED is not
 # one of them: it is the state a transfer starts in, not one it can be driven
 # to. There is no environment override for this list.
+#
+# The walk has to be legal, too, and that part is not checked at load: whether
+# a step is allowed depends on where the previous one left the transfer, which
+# is only known at runtime. [COMPLETED] (completing something never started),
+# [STARTED, STARTED], and [TERMINATED, STARTED] all load without complaint and
+# are then refused at the illegal step, which ends the sequence and logs
+# "refuse illegal configured transfer step". The legal moves are the protocol's
+# own: start from REQUESTED or SUSPENDED; complete or suspend only from
+# STARTED; terminate from anything not already terminal.
 # transfer_policies:
 #   - agreement_id: urn:uuid:example-agreement
 #     sequence: [STARTED, SUSPENDED, STARTED, COMPLETED]

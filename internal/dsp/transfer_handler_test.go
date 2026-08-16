@@ -2,6 +2,7 @@ package dsp
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,6 +91,30 @@ func waitForTransferState(t *testing.T, st *store.Store, providerPID, want strin
 	}
 	t.Fatalf("stored state for %q did not reach %q within the deadline", providerPID, want)
 	return store.TransferProcess{}
+}
+
+// closedLoopbackURL returns a loopback address with nothing listening on it: a
+// listener is opened to claim a free port and closed immediately, so a push to
+// it fails at connect, locally and at once.
+//
+// It exists so a test that must exercise the push-fails path does not reach
+// the network to do it. A hostname like consumer.example costs a real DNS
+// lookup per push attempt, and makes the test's outcome depend on the
+// machine's resolver: callbackHTTPClient.Timeout is 10s per attempt while
+// waitForTransferState's deadline is 2s, so one slow or blackholing resolver
+// turns the test red for a reason that has nothing to do with the code. It
+// also writes an ERROR line per attempt into the output of a passing test.
+func closedLoopbackURL(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("claim a loopback port: %v", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("close the claimed listener: %v", err)
+	}
+	return "http://" + addr
 }
 
 // transferRequestBody is a well-formed TransferRequestMessage. Individual
@@ -238,9 +263,12 @@ func TestTransferRequestWithKnownAgreementIsAccepted(t *testing.T) {
 	h, st := newTestTransferHandler(t, config.Config{})
 	seedAgreement(t, st, "urn:uuid:agreement-1")
 
+	// A closed loopback port, not the unresolvable consumer.example this
+	// test used to push at: what it asserts is the acknowledgment and the
+	// stored transfer, and the push only has to fail — see closedLoopbackURL.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, VersionPath+"/transfers/request",
-		strings.NewReader(transferRequestBody("urn:uuid:agreement-1")))
+		strings.NewReader(transferRequestBodyTo("urn:uuid:agreement-1", closedLoopbackURL(t))))
 	h.handleTransferRequest(rec, req)
 
 	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
@@ -739,6 +767,148 @@ func TestTransferSequenceStopsWhenTheCounterpartyTakesOver(t *testing.T) {
 	if stored.State != TransferTerminated {
 		t.Errorf("stored state = %s, want %s — the counterparty's termination must stand",
 			stored.State, TransferTerminated)
+	}
+}
+
+// TestTransferSequenceRefusesAnIllegalStep covers the three misconfigured
+// sequences that pass config.validate today. Validation checks only that each
+// element names a known state; it cannot check the walk, because whether a
+// step is legal depends on where the previous one left the transfer. So each
+// of these loads cleanly and would, without the check in pushTransferStep,
+// put a message on the wire that this same connector answers 400 to when it
+// arrives from the other direction.
+//
+// Both halves are asserted for every case. The pushes prove the message was
+// never emitted — a connector that pushed and then failed to record would
+// leave the same stored state — and the stored state proves the refusal did
+// not corrupt it. That the sequence *stops* rather than skipping the illegal
+// step is what the two-element cases pin: their second step is refused, and
+// nothing after it runs.
+func TestTransferSequenceRefusesAnIllegalStep(t *testing.T) {
+	const start = "/transfers/urn:uuid:tc-1/start"
+	cases := []struct {
+		name     string
+		sequence []string
+		want     []transferPush
+		state    string
+	}{{
+		name:     "completing from REQUESTED",
+		sequence: []string{TransferCompleted},
+		want:     nil,
+		state:    TransferRequested,
+	}, {
+		name:     "starting twice",
+		sequence: []string{TransferStarted, TransferStarted},
+		want:     []transferPush{{path: start, msgType: TransferStartMessageType}},
+		state:    TransferStarted,
+	}, {
+		name:     "starting a terminated transfer",
+		sequence: []string{TransferTerminated, TransferStarted},
+		want: []transferPush{
+			{path: "/transfers/urn:uuid:tc-1/termination", msgType: TransferTerminationMessageType},
+		},
+		state: TransferTerminated,
+	}}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fc := newFakeTransferConsumer(t)
+			h, st := newTestTransferHandler(t,
+				transferPolicyConfig("urn:uuid:agreement-1", c.sequence...))
+			seedAgreement(t, st, "urn:uuid:agreement-1")
+
+			providerPID := postTransferRequest(t, h,
+				transferRequestBodyTo("urn:uuid:agreement-1", fc.srv.URL))
+
+			// Long enough that the refused step would have arrived had it not
+			// been refused: transferStepDelay is a millisecond under test.
+			time.Sleep(50 * time.Millisecond)
+			assertPushSequence(t, fc.waitFor(t, len(c.want)), c.want)
+
+			stored, ok, err := st.GetTransfer(providerPID)
+			if err != nil || !ok {
+				t.Fatalf("GetTransfer: %v (found %v)", err, ok)
+			}
+			if stored.State != c.state {
+				t.Errorf("stored state = %s, want %s — the refused step must leave it where it was",
+					stored.State, c.state)
+			}
+		})
+	}
+}
+
+// TestTransferSequenceStopsWhenTheCallbackIsRejected pins that a push the
+// outgoing-callback filter refuses ends the sequence instead of advancing
+// through it.
+//
+// This is a deliberate divergence from pushAndStore, which logs the same
+// rejection and advances anyway. There the cost is one wrong state on one
+// negotiation. Here the callback address is one string reused by every step,
+// so a rejection is never a one-step failure: without the stop, the transfer
+// walks its whole configured lifecycle with nothing delivered, and
+// GET /transfers/{id} reports states that were never announced.
+//
+// It builds its handler by hand rather than through newTestTransferHandler,
+// because that helper's whole job is to disable the filter. Leaving the real
+// one in place is what makes this test exercise the real rejection: the
+// consumer is an httptest server, so its address is loopback, which is
+// exactly what validateCallbackURL refuses (§23.6).
+//
+// driveTransfer is called inline rather than through handleTransferRequest,
+// and that is a race fix, not a shortcut. On this path the driver goroutine
+// deliberately does nothing observable — no push, no state write — so it
+// synchronizes with nothing, and its read of the validateOutgoingCallback
+// package var has no happens-before edge to the next test's write of that var
+// in newTestTransferHandler. `go test -race -count=2` reports it, correctly.
+// Every other sequence test escapes this only incidentally, by waiting on a
+// push or a stored state that the goroutine produced. Running the driver on
+// the test's own goroutine removes the unsynchronized read instead of timing
+// around it, and loses nothing: what is under test is driveTransfer, and
+// §23.8's reason for the `go` is about flushing the HTTP response, which this
+// test does not assert.
+func TestTransferSequenceStopsWhenTheCallbackIsRejected(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	fc := newFakeTransferConsumer(t)
+	h := transferHandler{
+		cfg: transferPolicyConfig("urn:uuid:agreement-1",
+			TransferStarted, TransferSuspended, TransferCompleted),
+		store:     st,
+		stepDelay: transferStepDelay,
+	}
+
+	now := time.Now().UTC()
+	tp := store.TransferProcess{
+		ProviderPID:     "urn:uuid:tp-rejected",
+		ConsumerPID:     "urn:uuid:tc-1",
+		AgreementID:     "urn:uuid:agreement-1",
+		State:           TransferRequested,
+		CallbackAddress: fc.srv.URL,
+		Format:          "HTTP-PULL",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := st.CreateTransfer(tp); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+
+	h.driveTransfer(tp)
+
+	// driveTransfer has returned, so anything it was going to push already
+	// arrived: waitFor(0) takes the snapshot without waiting for a deadline.
+	assertPushSequence(t, fc.waitFor(t, 0), nil)
+
+	stored, ok, err := st.GetTransfer(tp.ProviderPID)
+	if err != nil || !ok {
+		t.Fatalf("GetTransfer: %v (found %v)", err, ok)
+	}
+	if stored.State != TransferRequested {
+		t.Errorf("stored state = %s, want %s — a transfer nobody was told about must not advance",
+			stored.State, TransferRequested)
 	}
 }
 

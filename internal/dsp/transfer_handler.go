@@ -249,19 +249,51 @@ func (h transferHandler) driveTransfer(t store.TransferProcess) {
 // constructed URL is validated before anything is sent — see
 // validateCallbackURL's doc comment.
 func (h transferHandler) pushTransferStep(t store.TransferProcess, to string) bool {
-	path, msg, ok := transferStepMessage(t, to)
+	path, msg, legalFrom, ok := transferStepMessage(t, to)
 	if !ok {
 		// Unreachable through configuration, which validates every state in a
 		// sequence, so this catches a new state added to one side only.
 		slog.Error("no transfer message for state", "provider_pid", t.ProviderPID, "want_state", to)
 		return false
 	}
+	// The legality table is enforced against this connector's own configured
+	// sequence, not only against the counterparty in applyTransition.
+	// config.validate checks that each element names a known state and
+	// nothing more — it cannot check the walk, because the walk depends on
+	// where the previous step left the transfer — so `sequence: [COMPLETED]`,
+	// `[STARTED, STARTED]`, and `[TERMINATED, STARTED]` all load cleanly and
+	// would otherwise emit messages this same connector answers 400 to when
+	// they arrive. That asymmetry is what CLAUDE.md's "never accept a
+	// constraint that is not enforced" rules out, read from the side that is
+	// easier to forget: a table enforced in one direction only is advisory.
+	//
+	// The refusal ends the whole sequence rather than skipping to the next
+	// step. A sequence that has gone illegal has no meaningful remainder: the
+	// steps after it were written against a state this transfer is now never
+	// going to be in.
+	if !legalFrom(t.State) {
+		slog.Error("refuse illegal configured transfer step",
+			"provider_pid", t.ProviderPID, "agreement_id", t.AgreementID,
+			"state", t.State, "want_state", to)
+		return false
+	}
 	callbackURL := t.CallbackAddress + fmt.Sprintf(path, t.ConsumerPID)
 	if err := validateOutgoingCallback(callbackURL); err != nil {
+		// Deliberately unlike pushAndStore, which logs the same rejection and
+		// then advances the state anyway. There the cost is bounded — one
+		// negotiation records one state it never announced, and §23.12's
+		// "the provider is authoritative, the consumer can recover via GET"
+		// covers it. Here it compounds: the callback address is the same
+		// string for every step of the sequence, so one rejection means every
+		// remaining push is rejected too, and advancing regardless would walk
+		// the transfer REQUESTED -> STARTED -> ... -> COMPLETED with nothing
+		// delivered, leaving GET /transfers/{id} reporting a lifecycle that
+		// never happened. Phase B compounds it again by making state the
+		// access-control mechanism for the data plane.
 		slog.Error("reject callback push", "url", callbackURL, "error", err)
-	} else {
-		pushCallback(callbackURL, msg)
+		return false
 	}
+	pushCallback(callbackURL, msg)
 	if err := h.store.SetTransferState(t.ProviderPID, t.State, to, time.Now()); err != nil {
 		if errors.Is(err, store.ErrStateChanged) {
 			slog.Warn("drop stale transfer state update",
@@ -275,19 +307,28 @@ func (h transferHandler) pushTransferStep(t store.TransferProcess, to string) bo
 }
 
 // transferStepMessage returns the callback path and the message that move a
-// transfer into the given state, and whether one exists.
-func transferStepMessage(t store.TransferProcess, to string) (string, any, bool) {
+// transfer into the given state, the predicate saying which states that move
+// is legal from, and whether such a step exists at all.
+//
+// The predicate is returned from here rather than looked up separately in
+// pushTransferStep so that a message and its legality rule are chosen by one
+// switch on one value: a fifth state cannot be given an outbound message and
+// left without a rule. It is the same predicate the inbound endpoint for that
+// message hands applyTransition, which is what makes "this connector emits
+// only what it would accept" a single fact rather than two that have to be
+// kept in step.
+func transferStepMessage(t store.TransferProcess, to string) (string, any, func(string) bool, bool) {
 	switch to {
 	case TransferStarted:
-		return transferStartCallbackPath, buildTransferStartMessage(t), true
+		return transferStartCallbackPath, buildTransferStartMessage(t), startLegalFrom, true
 	case TransferSuspended:
-		return transferSuspensionCallbackPath, buildTransferSuspensionMessage(t), true
+		return transferSuspensionCallbackPath, buildTransferSuspensionMessage(t), suspensionLegalFrom, true
 	case TransferCompleted:
-		return transferCompletionCallbackPath, buildTransferCompletionMessage(t), true
+		return transferCompletionCallbackPath, buildTransferCompletionMessage(t), completionLegalFrom, true
 	case TransferTerminated:
-		return transferTerminationCallbackPath, buildTransferTerminationMessage(t), true
+		return transferTerminationCallbackPath, buildTransferTerminationMessage(t), terminationLegalFrom, true
 	}
-	return "", nil, false
+	return "", nil, nil, false
 }
 
 // handleGetTransfer serves GET /transfers/{id}. The counterparty polls this
@@ -394,6 +435,13 @@ func (h transferHandler) lookup(w http.ResponseWriter, r *http.Request) (store.T
 // longer holds — the same 400 that check would have produced had it run a
 // moment later. It is a separate function rather than a shared one because
 // the error document names the protocol that produced it.
+//
+// The 500 below is unreachable through any caller that exists: applyTransition
+// is the only one, it resolves the transfer through lookup first, and nothing
+// in this connector deletes a transfer row — so store.ErrNotFound cannot come
+// back from a SetTransferState made against a row this request just read. It
+// stays as the honest answer for a storage failure, and would become reachable
+// the day a delete path is added.
 func writeTransferStateUpdateError(w http.ResponseWriter, providerPID string, err error) {
 	if errors.Is(err, store.ErrStateChanged) {
 		slog.Warn("transfer changed concurrently", "provider_pid", providerPID, "error", err)

@@ -126,6 +126,13 @@ type ConsumerPolicy struct {
 // cannot distinguish an absent key from an empty list, so an entry written
 // without one is read as empty rather than as "use the default".
 //
+// Validation here checks only that each element names a known state. That the
+// *walk* is legal — a completion needs a started transfer, a terminated one
+// cannot be restarted — is checked at runtime instead, in dsp.pushTransferStep
+// against the same table an inbound message is judged by. It has to be:
+// whether a step is legal depends on where the previous step left the
+// transfer. An illegal step is refused and ends the sequence.
+//
 // This is the transfer analogue of ConsumerPolicy, and it exists for the same
 // reason: v1 has none of the operational inputs a real provider would use to
 // decide to suspend or complete a transfer, so the decision comes from
