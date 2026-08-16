@@ -53,7 +53,15 @@ type TransferProcessDoc struct {
 }
 
 // TransferStartMessage is pushed to the consumer's callback address when this
-// connector starts a transfer. Phase A carries no dataAddress.
+// connector starts a transfer. Phase A carries no dataAddress, and that
+// omission is a wire-correctness requirement here, not a style choice: adding
+// a dataAddress field activates data-address-schema.json, which then demands
+// @type: "DataAddress" and an endpointType read in @id form, for no benefit
+// since no provider-role TCK test asserts anything about it. Whoever gives
+// this connector a real HTTP-PULL data plane and needs to put a dataAddress
+// back on this message must satisfy that schema shape or the TCK will reject
+// the push. See docs/superpowers/specs/2026-08-16-transfer-process-tck-wire-contract.md
+// section 1.7 for the full evidence.
 type TransferStartMessage struct {
 	Context     []string `json:"@context"`
 	Type        string   `json:"@type"`
