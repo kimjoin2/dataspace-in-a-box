@@ -458,13 +458,29 @@ func (h negotiationHandler) dispatch(n store.Negotiation, outcome negotiationOut
 		// below is a residual race, accepted rather than closed here — closing
 		// it needs one transaction spanning the state write and the agreement
 		// insert, which is a larger change than this call site should make.
+		//
+		// AGREED, VERIFIED, and FINALIZED are the only states reachable
+		// through a committed AGREED: handleVerification refuses to move a
+		// negotiation to VERIFIED unless n.State == StateAgreed already, and
+		// FINALIZED is reached only from VERIFIED. So observing any of the
+		// three is proof the SetState(AGREED) above actually landed — even
+		// under Store's single connection (SetMaxOpenConns(1)), where a
+		// concurrent verification can win the connection and carry the
+		// negotiation past AGREED before this Get gets its turn. That is
+		// evidence the transition happened, not a reason to doubt it.
+		// TERMINATED stays excluded because it is genuinely ambiguous: it
+		// means either the AGREED write above never landed, or the
+		// negotiation became AGREED and was terminated afterward — and a
+		// transfer must not proceed against a dead negotiation either way,
+		// so both readings agree on skipping the record.
 		current, ok, err := h.store.Get(n.ProviderPID)
 		if err != nil {
 			slog.Error("re-read negotiation before recording agreement", "provider_pid", n.ProviderPID, "error", err)
 			return
 		}
-		if !ok || current.State != StateAgreed {
-			slog.Warn("negotiation moved past AGREED before the agreement could be recorded",
+		agreementWasIssued := current.State == StateAgreed || current.State == StateVerified || current.State == StateFinalized
+		if !ok || !agreementWasIssued {
+			slog.Warn("negotiation state does not prove its agreement was issued",
 				"provider_pid", n.ProviderPID, "current_state", current.State)
 			return
 		}

@@ -974,3 +974,67 @@ func TestNegotiationReachingAgreedRecordsTheAgreement(t *testing.T) {
 		t.Errorf("Origin = %q, want %q", got.Origin, store.OriginNegotiated)
 	}
 }
+
+// TestDispatch_PushAgreement_RecordsAgreementWhenAlreadyVerified pins the
+// broadened guard directly: dispatch's pushAgreement branch must record the
+// agreement when its post-push re-read observes VERIFIED, not only AGREED,
+// because VERIFIED is reachable only through a committed AGREED.
+//
+// This does not reproduce the live race that motivates the broadened set —
+// store's single connection (SetMaxOpenConns(1)) letting a fast concurrent
+// verification win the connection and carry the negotiation past AGREED
+// before dispatch's own re-read gets its turn. There is no seam in
+// production code to pause dispatch between pushAndStore returning and the
+// re-read, and adding one for this test alone would be a bigger change than
+// this fix round should make. What this test does instead: seed the row to
+// VERIFIED before calling dispatch, so pushAndStore's own conditional
+// SetState(REQUESTED->AGREED) is a no-op — its precondition no longer holds,
+// the same way it is dropped on the live race path — leaving the guard's
+// re-read to evaluate the VERIFIED row that results. That is the exact
+// condition the guard checks, exercised directly rather than raced into.
+func TestDispatch_PushAgreement_RecordsAgreementWhenAlreadyVerified(t *testing.T) {
+	fc := newFakeCallback()
+	defer fc.srv.Close()
+	h, st := newTestHandler(t, negotiationTestConfig("https://provider.example.org", config.Dataset{ID: "urn:dataset:a"}))
+
+	now := time.Now()
+	n := store.Negotiation{
+		ProviderPID: "urn:uuid:provider-already-verified", ConsumerPID: "urn:uuid:consumer-already-verified",
+		State: StateRequested, DatasetID: "urn:dataset:a", OfferID: "urn:dataset:a" + offerIDSuffix,
+		CallbackAddress: fc.srv.URL, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.Create(n); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := st.SetState(n.ProviderPID, StateRequested, StateAgreed, now); err != nil {
+		t.Fatalf("seed AGREED: %v", err)
+	}
+	if err := st.SetState(n.ProviderPID, StateAgreed, StateVerified, now); err != nil {
+		t.Fatalf("seed VERIFIED: %v", err)
+	}
+
+	// dispatch is called directly (not via `go`, as production always does —
+	// see dispatch's doc comment) so this runs synchronously: by the time it
+	// returns, the push and the guard's decision have already happened.
+	h.dispatch(n, outcomeAgree)
+
+	fc.wait(t, "/agreement")
+	got, ok, err := st.GetAgreement(n.ProviderPID)
+	if err != nil {
+		t.Fatalf("GetAgreement: %v", err)
+	}
+	if !ok {
+		t.Fatal("a negotiation observed at VERIFIED — reachable only through a committed AGREED — recorded no agreement")
+	}
+	if got.AgreementID != n.ProviderPID {
+		t.Errorf("AgreementID = %q, want %q", got.AgreementID, n.ProviderPID)
+	}
+
+	current, ok, err := st.Get(n.ProviderPID)
+	if err != nil || !ok {
+		t.Fatalf("Get after dispatch: ok=%v err=%v", ok, err)
+	}
+	if current.State != StateVerified {
+		t.Errorf("state = %q, want VERIFIED left untouched — pushAndStore's own SetState(REQUESTED->AGREED) should have been dropped as stale", current.State)
+	}
+}
