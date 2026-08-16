@@ -381,3 +381,13 @@ func TestMgmtTokenTooShortIsAnError(t *testing.T) {
 		t.Fatal("Load: expected an error for a token below the minimum length")
 	}
 }
+
+func TestMgmtTokenOneCharBelowMinimumIsAnError(t *testing.T) {
+	// 15 characters: the boundary itself. The two 16-character fixtures above
+	// pin the accepting side, so this is what makes "at least 16" exact
+	// rather than "somewhere near 16".
+	_, err := Load(minimal("mgmt_token: 0123456789abcde\n"), env(nil))
+	if err == nil {
+		t.Fatal("Load: expected an error for a token one character below the minimum")
+	}
+}
