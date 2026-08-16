@@ -183,12 +183,14 @@ serve is the same defect family as §25.1, one level down.
 require one.** `startLegalFrom` says a `TransferStartMessage` is legal from
 `REQUESTED`, and `applyTransition` applies that to an *inbound* message
 without asking who sent it — so a counterparty can move this connector's
-transfer from `REQUESTED` to `STARTED` itself. DSP 2025-1's state machine
-assigns the `REQUESTED → STARTED` transition to the provider, which if it
-holds means that inbound message should be refused. A green `TP` says nothing
-either way: 15/15 proves only that no test in the suite falsifies the current
-model, not that any test exercises it. So this is **untested, not falsified**,
-and the fault is in the plan and the design spec rather than in the
+transfer from `REQUESTED` to `STARTED` itself. What raised this is a
+recollection that DSP 2025-1's state machine assigns `REQUESTED → STARTED` to
+the provider — which, if the text says so, makes that inbound message one to
+refuse. That is the suspicion and not a citation: it is written here because
+it is worth checking, not because anyone has checked it. A green `TP` says
+nothing either way: 15/15 proves only that no test in the suite falsifies the
+current model, not that any test exercises it. So this is **untested, not
+falsified**, and the fault is in the plan and the design spec rather than in the
 implementation — the plan's legality table
 (`docs/superpowers/plans/2026-08-16-transfer-process-provider-phase-a.md`,
 "The legality rules, from the spec's state machine") is a from-state × message

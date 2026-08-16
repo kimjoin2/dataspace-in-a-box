@@ -1,10 +1,12 @@
 // Command tckgate decides whether a TCK run passes the compliance gate.
 //
 // Only suites whose protocol is implemented are gated. Adding a suite to the
-// expected map, with its exact test count, is how a protocol is declared
-// done, which keeps the README's claims and the build in agreement. Requiring
-// an exact count means a run that stops partway through a suite fails rather
-// than reporting green.
+// expected map, with the exact number of results it produces, is how a
+// protocol is declared done, which keeps the README's claims and the build in
+// agreement. Requiring an exact count means a run that stops partway through a
+// suite fails rather than reporting green. Results, not tests: a suite can
+// declare more tests than it runs, and expected's own comment records where
+// the two currently diverge.
 package main
 
 import (

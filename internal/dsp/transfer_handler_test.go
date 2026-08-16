@@ -781,9 +781,14 @@ func TestTransferSequenceStopsWhenTheCounterpartyTakesOver(t *testing.T) {
 // Both halves are asserted for every case. The pushes prove the message was
 // never emitted — a connector that pushed and then failed to record would
 // leave the same stored state — and the stored state proves the refusal did
-// not corrupt it. That the sequence *stops* rather than skipping the illegal
-// step is what the two-element cases pin: their second step is refused, and
-// nothing after it runs.
+// not corrupt it.
+//
+// Stopping and skipping are only distinguishable when a legal step follows
+// the illegal one, which is the last case's whole reason for existing: its
+// third step is legal from the state the refused second step left the
+// transfer in, so a driver that skipped rather than stopped would push it.
+// In the first three cases the illegal step is last, and the two behaviors
+// are indistinguishable.
 func TestTransferSequenceRefusesAnIllegalStep(t *testing.T) {
 	const start = "/transfers/urn:uuid:tc-1/start"
 	cases := []struct {
@@ -808,6 +813,14 @@ func TestTransferSequenceRefusesAnIllegalStep(t *testing.T) {
 			{path: "/transfers/urn:uuid:tc-1/termination", msgType: TransferTerminationMessageType},
 		},
 		state: TransferTerminated,
+	}, {
+		// The step after the illegal one is legal from STARTED, where the
+		// refusal leaves the transfer. Only a driver that stops holds this
+		// to one push; one that skipped the bad step would complete.
+		name:     "a legal step behind an illegal one",
+		sequence: []string{TransferStarted, TransferStarted, TransferCompleted},
+		want:     []transferPush{{path: start, msgType: TransferStartMessageType}},
+		state:    TransferStarted,
 	}}
 
 	for _, c := range cases {
