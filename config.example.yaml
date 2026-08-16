@@ -14,6 +14,12 @@ dsp_addr: 0.0.0.0:8080
 # a deliberate act, not an accident.
 mgmt_addr: 127.0.0.1:8081
 
+# The single bearer token the management API accepts. Optional. With no token
+# configured the management API refuses every authenticated request — absent
+# never means "no auth required". Minimum 16 characters.
+# DSBOX_MGMT_TOKEN overrides it.
+mgmt_token: ""
+
 # Where the connector's SQLite database file lives, at {data_dir}/dsbox.db.
 # Required. Created on first start if it does not exist.
 data_dir: ./data

@@ -51,6 +51,14 @@ type Config struct {
 	// localhost by default so a firewall mistake cannot expose it.
 	MgmtAddr string `yaml:"mgmt_addr"`
 
+	// MgmtToken is the single static bearer token the management API accepts
+	// (DECISIONS.md section 11). Optional, and absent means the management
+	// API refuses every authenticated request rather than allowing them: a
+	// missing token must never read as "no auth required", or the localhost
+	// default becomes an open write endpoint the moment mgmt_addr changes.
+	// /health is unauthenticated either way.
+	MgmtToken string `yaml:"mgmt_token"`
+
 	// DataDir is where the connector's SQLite database file lives, at
 	// {DataDir}/dsbox.db. Required: the catalog milestone did not need
 	// storage, but negotiation state is the connector's first runtime state
@@ -105,6 +113,10 @@ const (
 	defaultMgmtAddr = "127.0.0.1:8081"
 )
 
+// minMgmtTokenLen is the shortest management token accepted. It exists to
+// fail an obviously placeholder value at load rather than in production.
+const minMgmtTokenLen = 16
+
 // Load parses the YAML document, applies environment overrides, and validates
 // the result. Environment values take precedence over the file.
 func Load(data []byte, getenv func(string) string) (Config, error) {
@@ -138,6 +150,9 @@ func Load(data []byte, getenv func(string) string) (Config, error) {
 	}
 	if v := getenv("DSBOX_MGMT_ADDR"); v != "" {
 		cfg.MgmtAddr = v
+	}
+	if v := getenv("DSBOX_MGMT_TOKEN"); v != "" {
+		cfg.MgmtToken = v
 	}
 	if v := getenv("DSBOX_DEV_MODE"); v != "" {
 		b, err := strconv.ParseBool(v)
@@ -208,6 +223,9 @@ func (c Config) validate() error {
 	}
 	if c.DataDir == "" {
 		return fmt.Errorf("data_dir is required: it is where the negotiation state database lives")
+	}
+	if c.MgmtToken != "" && len(c.MgmtToken) < minMgmtTokenLen {
+		return fmt.Errorf("mgmt_token must be at least %d characters", minMgmtTokenLen)
 	}
 	return nil
 }

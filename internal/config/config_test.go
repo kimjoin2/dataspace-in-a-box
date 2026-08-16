@@ -344,3 +344,40 @@ func TestConsumerPolicyRejectsInvalidOnIdle(t *testing.T) {
 		t.Fatal("Load: expected an error for an invalid on_idle value")
 	}
 }
+
+func TestMgmtTokenEmptyWhenAbsent(t *testing.T) {
+	cfg, err := Load(minimal(""), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MgmtToken != "" {
+		t.Errorf("MgmtToken = %q, want empty when the key is absent", cfg.MgmtToken)
+	}
+}
+
+func TestMgmtTokenParses(t *testing.T) {
+	cfg, err := Load(minimal("mgmt_token: 0123456789abcdef\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MgmtToken != "0123456789abcdef" {
+		t.Errorf("MgmtToken = %q, want the configured token", cfg.MgmtToken)
+	}
+}
+
+func TestMgmtTokenFromEnvironment(t *testing.T) {
+	cfg, err := Load(minimal(""), env(map[string]string{"DSBOX_MGMT_TOKEN": "fedcba9876543210"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MgmtToken != "fedcba9876543210" {
+		t.Errorf("MgmtToken = %q, want the environment value", cfg.MgmtToken)
+	}
+}
+
+func TestMgmtTokenTooShortIsAnError(t *testing.T) {
+	_, err := Load(minimal("mgmt_token: short\n"), env(nil))
+	if err == nil {
+		t.Fatal("Load: expected an error for a token below the minimum length")
+	}
+}
