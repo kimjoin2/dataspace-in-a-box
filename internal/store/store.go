@@ -63,6 +63,29 @@ type ConsumerNegotiation struct {
 	UpdatedAt       time.Time
 }
 
+// Agreement records that this connector is party to a contract. It is the
+// single source of truth for "does this agreement exist", which the transfer
+// protocol asks on every request. Rows arrive two ways: a negotiation
+// reaching AGREED, and an operator importing an agreement concluded outside
+// this connector.
+type Agreement struct {
+	AgreementID string
+	DatasetID   string
+	// ConsumerPID is the counterparty of a negotiated agreement. An imported
+	// agreement may have none, because the negotiation that produced it did
+	// not happen here.
+	ConsumerPID string
+	Origin      string
+	CreatedAt   time.Time
+}
+
+// How an agreement came to be. Stored rather than inferred: the difference
+// matters when deciding what this connector can attest to.
+const (
+	OriginNegotiated = "negotiated"
+	OriginImported   = "imported"
+)
+
 const schema = `
 CREATE TABLE IF NOT EXISTS negotiations (
     provider_pid     TEXT PRIMARY KEY,
@@ -86,6 +109,15 @@ CREATE TABLE IF NOT EXISTS consumer_negotiations (
     offer_id          TEXT NOT NULL,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
+);`
+
+const agreementSchema = `
+CREATE TABLE IF NOT EXISTS agreements (
+    agreement_id TEXT PRIMARY KEY,
+    dataset_id   TEXT NOT NULL,
+    consumer_pid TEXT NOT NULL DEFAULT '',
+    origin       TEXT NOT NULL,
+    created_at   TEXT NOT NULL
 );`
 
 const timeFormat = time.RFC3339Nano
@@ -123,6 +155,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(consumerSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create consumer schema in %s: %w", path, err)
+	}
+	if _, err := db.Exec(agreementSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create agreement schema in %s: %w", path, err)
 	}
 	if err := migrate(db); err != nil {
 		db.Close()
@@ -385,4 +421,43 @@ func (s *Store) explainNoConsumerUpdate(consumerPID, want string) error {
 	}
 	return fmt.Errorf("update consumer negotiation %s: %w: wanted %s, found state %s",
 		consumerPID, ErrStateChanged, want, n.State)
+}
+
+// CreateAgreement records an agreement. It fails on a duplicate id rather
+// than overwriting: an agreement is immutable once made, and a silent
+// overwrite would let an import rewrite the dataset a negotiated agreement
+// covers.
+func (s *Store) CreateAgreement(a Agreement) error {
+	_, err := s.db.Exec(
+		`INSERT INTO agreements (agreement_id, dataset_id, consumer_pid, origin, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		a.AgreementID, a.DatasetID, a.ConsumerPID, a.Origin,
+		a.CreatedAt.UTC().Format(timeFormat),
+	)
+	if err != nil {
+		return fmt.Errorf("create agreement: %w", err)
+	}
+	return nil
+}
+
+// GetAgreement reports whether an agreement with this id exists, and what it
+// covers.
+func (s *Store) GetAgreement(agreementID string) (Agreement, bool, error) {
+	var a Agreement
+	var createdAt string
+	err := s.db.QueryRow(
+		`SELECT agreement_id, dataset_id, consumer_pid, origin, created_at
+		 FROM agreements WHERE agreement_id = ?`, agreementID,
+	).Scan(&a.AgreementID, &a.DatasetID, &a.ConsumerPID, &a.Origin, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Agreement{}, false, nil
+	}
+	if err != nil {
+		return Agreement{}, false, fmt.Errorf("get agreement: %w", err)
+	}
+	a.CreatedAt, err = time.Parse(timeFormat, createdAt)
+	if err != nil {
+		return Agreement{}, false, fmt.Errorf("parse agreement created_at: %w", err)
+	}
+	return a, true, nil
 }

@@ -555,3 +555,81 @@ func TestOpenPersistsBothTablesAcrossReopen(t *testing.T) {
 		t.Errorf("ConsumerPID = %q, want %q", got.ConsumerPID, n.ConsumerPID)
 	}
 }
+
+func testAgreement() Agreement {
+	return Agreement{
+		AgreementID: "urn:uuid:agreement-1",
+		DatasetID:   "urn:dataset:a",
+		ConsumerPID: "urn:uuid:consumer-1",
+		Origin:      OriginNegotiated,
+		CreatedAt:   time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+func TestCreateAndGetAgreement(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	a := testAgreement()
+	if err := s.CreateAgreement(a); err != nil {
+		t.Fatalf("CreateAgreement: %v", err)
+	}
+
+	got, ok, err := s.GetAgreement(a.AgreementID)
+	if err != nil {
+		t.Fatalf("GetAgreement: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetAgreement: agreement not found after CreateAgreement")
+	}
+	if got.DatasetID != a.DatasetID || got.ConsumerPID != a.ConsumerPID || got.Origin != a.Origin {
+		t.Errorf("GetAgreement = %+v, want %+v", got, a)
+	}
+	if !got.CreatedAt.Equal(a.CreatedAt) {
+		t.Errorf("CreatedAt = %v, want %v", got.CreatedAt, a.CreatedAt)
+	}
+}
+
+func TestGetAgreementMissingIsNotFound(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	_, ok, err := s.GetAgreement("urn:uuid:nope")
+	if err != nil {
+		t.Fatalf("GetAgreement: %v", err)
+	}
+	if ok {
+		t.Error("GetAgreement: reported an agreement that was never created")
+	}
+}
+
+func TestCreateAgreementDuplicateIsAnError(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	a := testAgreement()
+	if err := s.CreateAgreement(a); err != nil {
+		t.Fatalf("CreateAgreement: %v", err)
+	}
+	a.DatasetID = "urn:dataset:b"
+	if err := s.CreateAgreement(a); err == nil {
+		t.Error("CreateAgreement: expected an error re-creating an existing agreement, which would silently rewrite its dataset")
+	}
+
+	got, _, err := s.GetAgreement(a.AgreementID)
+	if err != nil {
+		t.Fatalf("GetAgreement: %v", err)
+	}
+	if got.DatasetID != "urn:dataset:a" {
+		t.Errorf("DatasetID = %q after the rejected duplicate, want urn:dataset:a — the row was overwritten", got.DatasetID)
+	}
+}
