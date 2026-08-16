@@ -36,7 +36,36 @@ afterwards what proved what.
 
 ### Storage
 
-One new table, mirroring `negotiations`:
+Two new tables. The first makes an agreement a first-class record rather than
+something inferred from a negotiation row:
+
+```sql
+CREATE TABLE IF NOT EXISTS agreements (
+    agreement_id TEXT PRIMARY KEY,
+    dataset_id   TEXT NOT NULL,
+    consumer_pid TEXT NOT NULL DEFAULT '',
+    origin       TEXT NOT NULL,          -- 'negotiated' | 'imported'
+    created_at   TEXT NOT NULL
+);
+```
+
+A row is written when a negotiation reaches `AGREED` — the moment this
+connector actually issues an agreement document — with `agreement_id` set to
+the value `buildAgreementMessage` already emits (`n.ProviderPID`). Agreements
+concluded outside this connector are imported (below) and carry
+`origin = 'imported'`.
+
+This is not speculative structure: the transfer protocol has to answer "does
+this agreement exist" on every request, and inferring it by scanning
+`negotiations` for a matching `provider_pid` would leave externally-concluded
+agreements unrepresentable.
+
+Writing that row is a change to the negotiation flow, so Phase A touches the
+provider-role negotiation handler as well as the new transfer code. No backfill
+is needed for negotiations that reached `AGREED` before this table existed:
+there is no release yet, so no such deployment exists.
+
+The second table holds the transfers themselves, mirroring `negotiations`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS transfer_processes (
@@ -96,33 +125,39 @@ took in the previous milestone and had to be reversed. Here the stakes are
 higher than a policy constraint: accepting an unknown `agreementId` means a
 counterparty can start a transfer by citing a contract that was never made.
 
-An agreement is "known" if either holds:
+An agreement is "known" if a row exists in `agreements`. That is the single
+source of truth, and it has exactly two writers:
 
-1. A negotiation exists whose `provider_pid` equals the `agreementId` and whose
-   state is one of `AGREED`, `VERIFIED`, or `FINALIZED` — the three states in
-   which this connector has actually issued an agreement. `REQUESTED`,
-   `OFFERED`, `ACCEPTED`, and `TERMINATED` do not qualify. This needs no new
-   concept: the provider role already emits `Agreement.ID = n.ProviderPID`
-   (`buildAgreementMessage`), so the agreement identifier *is* the
-   negotiation's provider pid.
-2. The `agreementId` appears in a new `agreements:` list in the config file.
+1. **Negotiation.** Reaching `AGREED` writes the row, because that is when this
+   connector issues the agreement document.
+2. **Import.** `POST /agreements` on the management API records an agreement
+   concluded outside this connector, with `origin = 'imported'`.
 
-The second exists because provider pids are generated at runtime, so no
-statically-configured TCK fixture could ever name one. It is not a test
-backdoor: an operator recording contracts concluded outside this connector is a
-real situation, and the config file is already where datasets and policies are
-declared.
+An earlier draft of this design put externally-concluded agreements in a list
+in the config file instead. That was wrong, and the way it was wrong is worth
+recording: an agreement is **runtime state**, not a static declaration of what
+this connector advertises, so putting it in the config file creates a second
+source of truth for the same concept and makes "edit a YAML file, restart" the
+way contracts come into being. The tell was that the design needed a warning
+attached — *writing an id into that list creates a contract* — and a design
+that needs a warning is usually the wrong design. The weight is real either
+way; the management API is a defensible place to put it, because importing an
+agreement is then an authenticated operator action against a running connector
+rather than a line in a file.
 
-It does carry weight that must be documented rather than left implicit:
-**writing an id into that list creates a contract as far as this connector is
-concerned.** That belongs in `DECISIONS.md` and in the config file's own
-comments.
+The import endpoint is the management API's first endpoint beyond `/health`.
+It introduces no new concept — `DECISIONS.md` §11 already settled that the
+management API exists and takes one static bearer token — but it is new
+surface, and it is the reason this milestone touches `internal/mgmt` at all.
 
 ### TCK fixtures
 
 `test/tck/config.properties` pins `agreementId` per test through the TCK's
-`@ConfigParam` mechanism, and `test/tck/dsbox.yaml` lists the same ids under
-`agreements:`.
+`@ConfigParam` mechanism, and `test/tck/run.sh` imports those same ids through
+the management API before starting the suite. The script already waits on
+`/health` before handing over to the TCK, so the seeding step goes there, in
+the open, as a visible part of the harness rather than a config convention
+somebody has to infer.
 
 The exact property key spelling is **unconfirmed**. `agreementId` and `format`
 are declared `@ConfigParam` with no explicit key on
@@ -232,8 +267,11 @@ no number in that table, and a repository whose stated premise is "a compliance
 claim anyone can verify" has to be equally plain about the part nobody can
 verify from a CI artifact.
 
-`DECISIONS.md` gains §25 recording: the agreement-validation decision and the
-weight the `agreements:` config list carries; state-as-access-control; the
+`DECISIONS.md` gains §25 recording: the agreement-validation decision; why
+agreements are a table written at `AGREED` and imported through the management
+API rather than declared in the config file, since that boundary — runtime
+state in the database, static declarations in the config — is the kind of rule
+a later milestone will otherwise re-litigate; state-as-access-control; the
 `source_file` choice; the token model; the mid-stream abort and its bounded
 delay; the `endpointType` finding; and the scope statement that the data plane
 is outside TCK coverage.
@@ -249,3 +287,9 @@ is outside TCK coverage.
    being terminated and its data being refused. Recorded rather than hidden.
 4. **`endpointType` may have no normative value in the spec**, in which case
    interoperability with a real consumer is unproven for that field.
+5. **The management API gains its first real endpoint**, and with it the first
+   write path into this connector that is not a DSP message. The auth model is
+   already settled (`DECISIONS.md` §11), so the risk is not authentication but
+   scope: `POST /agreements` must record an agreement and nothing more. It is
+   not the beginning of a general management CRUD surface, and a later
+   milestone wanting one should argue for it on its own merits.
