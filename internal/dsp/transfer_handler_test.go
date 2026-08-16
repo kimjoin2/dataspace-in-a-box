@@ -29,7 +29,7 @@ func newTestTransferHandler(t *testing.T, cfg config.Config) (transferHandler, *
 	validateOutgoingCallback = func(string) error { return nil }
 	t.Cleanup(func() { validateOutgoingCallback = origValidate })
 
-	return transferHandler{cfg: cfg, store: st}, st
+	return transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay}, st
 }
 
 func seedAgreement(t *testing.T, st *store.Store, id string) {
@@ -135,10 +135,12 @@ func transferPolicyConfig(agreementID string, sequence ...string) config.Config 
 	}}
 }
 
-// transferPush is one push the fake consumer received.
+// transferPush is one push the fake consumer received. at is when it arrived,
+// which is what the spacing test measures; assertPushSequence ignores it.
 type transferPush struct {
 	path    string
 	msgType string
+	at      time.Time
 }
 
 // fakeTransferConsumer is a consumer callback endpoint that records every
@@ -169,7 +171,7 @@ func newFakeTransferConsumer(t *testing.T) *fakeTransferConsumer {
 		}
 		msgType, _ := body["@type"].(string)
 		fc.mu.Lock()
-		fc.got = append(fc.got, transferPush{path: r.URL.Path, msgType: msgType})
+		fc.got = append(fc.got, transferPush{path: r.URL.Path, msgType: msgType, at: time.Now()})
 		fc.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -217,15 +219,17 @@ func (fc *fakeTransferConsumer) receivedNothing(t *testing.T, within time.Durati
 // assertPushSequence pins what arrived, in the order it arrived. Comparing
 // the whole slice rather than checking each message is present is the point:
 // a driver that pushed its steps concurrently, or in the wrong order, has to
-// fail here rather than in a TCK run.
+// fail here rather than in a TCK run. Arrival times are not compared — the
+// spacing between pushes is its own test.
 func assertPushSequence(t *testing.T, got, want []transferPush) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Fatalf("received %v, want exactly %v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("push %d = %+v, want %+v", i, got[i], want[i])
+		if got[i].path != want[i].path || got[i].msgType != want[i].msgType {
+			t.Errorf("push %d = %s on %s, want %s on %s",
+				i, got[i].msgType, got[i].path, want[i].msgType, want[i].path)
 		}
 	}
 }
@@ -571,6 +575,32 @@ func TestResolveTransferSequenceEmptyEntryIsNotTheDefault(t *testing.T) {
 	}
 }
 
+// TestResolveTransferSequenceFromALoadedConfig carries a real YAML document
+// through config.Load into the resolver, rather than composing the two from
+// separate tests. The four TCK tests that poll for REQUESTED depend on the
+// whole path holding: whatever the decoder makes of `sequence: []` — a nil
+// slice or an empty one — the entry must still resolve to no steps, while an
+// agreement absent from that same document still gets the default.
+func TestResolveTransferSequenceFromALoadedConfig(t *testing.T) {
+	cfg, err := config.Load([]byte(
+		"public_url: https://connector.example.org\n"+
+			"participant_id: urn:participant:example\n"+
+			"data_dir: ./data\n"+
+			"transfer_policies:\n"+
+			"  - agreement_id: urn:uuid:agreement-1\n"+
+			"    sequence: []\n"), func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if got := resolveTransferSequence(cfg, "urn:uuid:agreement-1"); len(got) != 0 {
+		t.Errorf("resolveTransferSequence(loaded empty sequence) = %v, want no steps at all", got)
+	}
+	if got := resolveTransferSequence(cfg, "urn:uuid:unconfigured"); len(got) != 1 || got[0] != TransferStarted {
+		t.Errorf("resolveTransferSequence(agreement absent from the same document) = %v, want [%s]",
+			got, TransferStarted)
+	}
+}
+
 // TestTransferSequenceEmptyStaysRequestedAndPushesNothing covers the four TCK
 // provider tests that carry no "provider started" step and poll for
 // REQUESTED. Both halves are asserted: a connector that pushed a start and
@@ -612,6 +642,46 @@ func TestTransferSequenceStartThenTerminate(t *testing.T) {
 		{path: "/transfers/urn:uuid:tc-1/start", msgType: TransferStartMessageType},
 		{path: "/transfers/urn:uuid:tc-1/termination", msgType: TransferTerminationMessageType},
 	})
+	waitForTransferState(t, st, providerPID, TransferTerminated)
+}
+
+// TestTransferSequenceSpacesItsSteps measures the pause between two steps.
+//
+// What it measures is the gap between the two pushes *arriving at the
+// consumer*, against a handler given a 60ms stepDelay of its own — every
+// other test runs at the millisecond TestMain sets, so none of them can tell
+// a spaced driver from an unspaced one.
+//
+// What it catches is the deletion of `if i > 0 { time.Sleep(h.stepDelay) }`,
+// or a refactor that moves the sleep after the last step, or one that pushes
+// the steps concurrently: all three land the second push within microseconds
+// of the first, an order of magnitude below the threshold. That regression is
+// otherwise invisible until a TCK run, where it shows up as a 404 on a
+// handler the counterparty had not registered yet, and the transfer stalls
+// with nothing pointing at the cause.
+//
+// The threshold is deliberately well under the delay: time.Sleep guarantees
+// *at least* its duration, so the real gap is 60ms plus scheduling, and 30ms
+// leaves room for a loaded machine without ever approaching what an unspaced
+// driver produces.
+func TestTransferSequenceSpacesItsSteps(t *testing.T) {
+	const stepDelay = 60 * time.Millisecond
+
+	fc := newFakeTransferConsumer(t)
+	h, st := newTestTransferHandler(t,
+		transferPolicyConfig("urn:uuid:agreement-1", TransferStarted, TransferTerminated))
+	// The handler is a value: this delay belongs to this test's copy alone,
+	// so there is no shared state for another test's driver goroutine to race.
+	h.stepDelay = stepDelay
+	seedAgreement(t, st, "urn:uuid:agreement-1")
+
+	providerPID := postTransferRequest(t, h, transferRequestBodyTo("urn:uuid:agreement-1", fc.srv.URL))
+
+	got := fc.waitFor(t, 2)
+	if gap := got[1].at.Sub(got[0].at); gap < stepDelay/2 {
+		t.Errorf("the two steps arrived %v apart, want at least %v: the counterparty registers the handler for step N+1 only once step N has arrived",
+			gap, stepDelay/2)
+	}
 	waitForTransferState(t, st, providerPID, TransferTerminated)
 }
 

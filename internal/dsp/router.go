@@ -34,7 +34,7 @@ func NewRouter(cfg config.Config, st *store.Store) http.Handler {
 	// {id} on the five addressed transfer routes is this connector's own
 	// generated provider pid, the same convention the provider-role
 	// negotiation routes above use.
-	tr := transferHandler{cfg: cfg, store: st}
+	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay}
 	mux.HandleFunc("POST "+VersionPath+"/transfers/request", tr.handleTransferRequest)
 	mux.HandleFunc("GET "+VersionPath+"/transfers/{id}", tr.handleGetTransfer)
 	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/start", tr.handleTransferStart)

@@ -64,6 +64,11 @@ datasets:
 # explicit empty sequence means accept and stay in REQUESTED — a different
 # thing from having no entry, which is why it has to be written out.
 #
+# An entry always overrides that default, whether or not it carries a sequence
+# key: omitting the key is read as an empty sequence, not as "use the
+# default", because a list cannot distinguish absent from empty. To get the
+# default behavior for an agreement, remove its entry.
+#
 # Valid states: STARTED, SUSPENDED, COMPLETED, TERMINATED. REQUESTED is not
 # one of them: it is the state a transfer starts in, not one it can be driven
 # to. There is no environment override for this list.

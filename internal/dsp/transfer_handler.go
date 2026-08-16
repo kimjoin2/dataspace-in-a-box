@@ -40,9 +40,11 @@ const (
 // on a slower machine.
 //
 // A var, not a const, so tests can shorten it — the same swappable-for-tests
-// pattern as negotiation_handler.go's terminateAfterOfferDelay. Tests set it
-// once in TestMain rather than per test, because the goroutine that reads it
-// can outlive the test that started it; see callback_test.go.
+// pattern as negotiation_handler.go's terminateAfterOfferDelay. It is the
+// default source for transferHandler.stepDelay and is read at construction,
+// never inside the driver's loop: the package var is written once in TestMain
+// (see callback_test.go), and a test that needs a *different* delay sets the
+// field on its own handler value instead.
 var transferStepDelay = 200 * time.Millisecond
 
 // transferHandler serves the transfer process protocol in the provider role.
@@ -53,9 +55,19 @@ var transferStepDelay = 200 * time.Millisecond
 // cfg is held for the same reason negotiationHandler holds it — the handlers
 // are constructed from configuration in router.go — and driveTransfer reads
 // the transfer policies out of it.
+//
+// stepDelay is transferStepDelay, copied in at construction. It is a field
+// rather than a direct read of the var because the handler is a value copied
+// into the driver goroutine: a test can give its own handler a longer delay
+// and measure the gap between pushes, with no shared mutable state to race
+// and no cost to any other test. Without it, the package var is shortened
+// once for the whole suite and nothing can raise it, so a regression that
+// dropped the pause between steps would pass every test and fail only
+// against the real counterparty.
 type transferHandler struct {
-	cfg   config.Config
-	store *store.Store
+	cfg       config.Config
+	store     *store.Store
+	stepDelay time.Duration
 }
 
 // handleTransferRequest serves POST /transfers/request, the only entry point
@@ -189,7 +201,7 @@ func resolveTransferSequence(cfg config.Config, agreementID string) []string {
 func (h transferHandler) driveTransfer(t store.TransferProcess) {
 	for i, state := range resolveTransferSequence(h.cfg, t.AgreementID) {
 		if i > 0 {
-			time.Sleep(transferStepDelay)
+			time.Sleep(h.stepDelay)
 		}
 		if !h.pushTransferStep(t, state) {
 			return

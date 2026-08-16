@@ -119,9 +119,12 @@ type ConsumerPolicy struct {
 // the states it walks on its own after accepting the request, pushing the
 // matching message to the consumer's callback address at each step.
 //
-// An agreement with no entry gets [STARTED]: accept, then start. An explicit
-// empty sequence means accept and stay in REQUESTED, which is a different
-// thing from having no entry and is why the field cannot simply be omitted.
+// An agreement with no entry gets [STARTED]: accept, then start. An entry
+// with an empty sequence means accept and stay in REQUESTED — a different
+// thing from having no entry, and the only way to say it. An entry always
+// overrides the default, whether or not it carries a sequence key: a []string
+// cannot distinguish an absent key from an empty list, so an entry written
+// without one is read as empty rather than as "use the default".
 //
 // This is the transfer analogue of ConsumerPolicy, and it exists for the same
 // reason: v1 has none of the operational inputs a real provider would use to
