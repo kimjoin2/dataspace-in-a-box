@@ -1851,6 +1851,10 @@ Replace the unconditional `go h.startTransfer(t)` with `go h.driveTransfer(t)`, 
 - then advances the stored state with `SetTransferState` from the state it currently holds to the target, exactly as `startTransfer` does today;
 - and **stops the whole sequence** if a state write is lost to `ErrStateChanged` — a counterparty that terminated the transfer mid-sequence has taken it over, and continuing would push messages for a transfer that is no longer in the state they claim.
 
+**Space the steps, and this is not optional.** The TCK registers the handler for step N+1 only *after* step N's message arrives and releases its latch — `expectTerminationMessage` appends a pipeline stage rather than pre-registering everything. Two messages pushed back to back can therefore hit a path that has no handler yet, and `DefaultCallbackEndpoint` answers `404` there. The TCK's own reference actions insert a 200 ms sleep between steps for exactly this reason.
+
+So put a short pause between steps — a package-level `var transferStepDelay = 200 * time.Millisecond`, overridable in tests the way `terminateAfterOfferDelay` already is, so the sequence tests do not each pay it. `pushCallback`'s retry schedule is a second line of defence rather than the first: a `404` from an unregistered path would be retried and might then land, but a design that depends on a retry to be correct is one that fails on a slower machine.
+
 Keep `startTransfer`'s existing shape for the single-step case rather than writing a second idiom: the driver is that function generalised over a list, including its `validateOutgoingCallback` gate and its `ErrStateChanged` handling.
 
 - [ ] **Step 8: Run the driver tests to verify they pass**
@@ -2017,7 +2021,9 @@ In `cmd/tckgate/main.go`:
 var expected = map[string]int{"MET": 1, "CAT": 3, "CN": 15, "CN_C": 16, "TP": 15}
 ```
 
-15, not 16: `TP:02-04` carries JUnit's `@Disabled` upstream, so the suite produces 15 results. That is measured, not assumed — see the requirements survey.
+15, not 16: `TP:02-04` carries JUnit's `@Disabled` upstream, so the suite declares 16 methods and produces 15 results. The gate counts results.
+
+**There is a live disagreement here, and the run settles it.** One investigation counted `@MandatoryTest` per class (5 + 5 + 6 = 16) and recommended setting the gate to 16. Two pieces of evidence say otherwise and are stronger: `javap -v` shows `tp_02_04` annotated `org.junit.jupiter.api.Disabled` directly, and the README's `TP`+`TP_C` total of 30 came from an actual TCK run rather than a method count. A disabled test produces no result. Start at 15; if the run reports 16 results the gate fails loudly on the count and the fix is one character — which is the right way round, since a gate that under-counts would pass while a suite silently stopped early.
 
 - [ ] **Step 6: Run the full Go suite**
 
