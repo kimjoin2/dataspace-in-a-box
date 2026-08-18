@@ -107,11 +107,38 @@ provider role serves them at `/2025-1/transfers/{id}/...`, keyed by
 `providerPid`. The consumer role adds no routes; it adds a second meaning for
 `{id}`.
 
-`ProviderActions` contains no `GET` path. The consumer suite does not observe
-this connector's transfer state by reading it back, unlike the provider suite
-where the GET is real and unforgiving. This is an absence of evidence in one
-class rather than a guarantee, so `GET /transfers/{id}` should still answer
-for consumer-role rows — it costs one lookup and removes the question.
+A fifth endpoint is required, and it is the one this design nearly missed.
+`ProviderActions` contains no `GET` path, which reads at first like the
+consumer suite never observes this connector's state — the opposite of the
+provider suite, where the GET is real and unforgiving. That reading is wrong.
+The GET lives one layer down, in `AbstractHttpTransferProcessClientImpl`:
+
+```
+getTransferProcess(base, id) -> HttpFunctions.getJson("<base>/transfers/<id>")
+```
+
+and the consumer pipeline's `thenVerifyConsumerState` calls it with
+`(getCallbackAddress(), getCorrelationId())` — that is, `GET
+<this connector's callback address>/transfers/<this connector's consumerPid>`
+— then reads `https://w3id.org/dspace/2025/1/state` out of the response and
+compares it to the state the test expects.
+
+It is called **37 times across the three consumer test classes** (12, 5, and
+20). The GET is not a nicety here; it is how nearly every assertion in the
+suite is made. `GET /transfers/{id}` must therefore resolve consumer-role
+rows and return the same JSON-LD `TransferProcess` document the provider role
+already returns, carrying `state` and `providerPid`.
+
+```sh
+javap -p -c -classpath tckx \
+  org.eclipse.dataspacetck.dsp.system.client.tp.http.AbstractHttpTransferProcessClientImpl
+javap -p -c -classpath tckx \
+  org.eclipse.dataspacetck.dsp.system.pipeline.tp.ConsumerTransferProcessPipelineImpl
+```
+
+That the document builder is already correct is not an assumption: the
+provider suite asserts against the same builder through the same GET, and
+passes 15 of 15.
 
 ### The three groups, and what each demands
 
@@ -234,6 +261,16 @@ supposed to pass. `after` is the smallest field that distinguishes them, and
 it is a state this connector observes rather than a delay, so the test does
 not become a race.
 
+One ordering constraint rides along with it. `after: REQUESTED` cannot mean
+"as soon as the row is written", because every message this connector sends
+as consumer is addressed to `<provider_base_url>/transfers/<providerPid>/...`
+and `providerPid` does not exist until the ACK to the initial request
+arrives. So the trigger is the state *after the request has been
+acknowledged*, and a policy whose `after` is `REQUESTED` fires on that ACK,
+not on the row's creation. Firing earlier would build a URL with an empty
+path segment and fail `02-05` in a way that looks like a policy bug rather
+than an ordering one.
+
 ### Deriving all 15 results from the policy
 
 | Test | `after` | `sequence` | What carries it |
@@ -351,6 +388,12 @@ The `after` gate needs a test that would fail without it: configure
 the start rather than before. A test that only asserts "a termination was
 sent" passes with the field removed.
 
+`GET /transfers/{id}` needs a test against a consumer-role row — the suite
+makes 37 assertions through it, so a GET that resolved only provider rows
+would fail most of the suite while every inbound handler behaved perfectly.
+That failure mode is worth pinning directly rather than discovering through
+the TCK.
+
 ## Gate, harness, and documentation
 
 `cmd/tckgate`'s `expected` gains `"TP_C": 15`, taking the required total to
@@ -373,6 +416,7 @@ control-plane claim.
 - `go test -race -count=2 ./...` is clean.
 - A consumer-role negotiation reaching `AGREED` writes a `store.Agreement`
   row, and a transfer can be initiated under it without seeding.
+- `GET /transfers/{id}` resolves a consumer-role row and reports its state.
 
 ## Risks
 
