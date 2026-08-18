@@ -78,6 +78,12 @@ type Config struct {
 	// under. An agreement with no matching entry starts the transfer and
 	// stops there — see TransferPolicy.
 	TransferPolicies []TransferPolicy `yaml:"transfer_policies"`
+
+	// ConsumerTransferPolicies configures this connector's autonomous
+	// behavior as transfer consumer, keyed by the agreement a transfer runs
+	// under. An agreement with no matching entry sends nothing — see
+	// ConsumerTransferPolicy.
+	ConsumerTransferPolicies []ConsumerTransferPolicy `yaml:"consumer_transfer_policies"`
 }
 
 // Dataset is one advertised dataset. Only the identifier is configurable: the
@@ -141,6 +147,32 @@ type ConsumerPolicy struct {
 type TransferPolicy struct {
 	AgreementID string   `yaml:"agreement_id"`
 	Sequence    []string `yaml:"sequence"`
+}
+
+// ConsumerTransferPolicy configures this connector's autonomous behavior as
+// transfer consumer, keyed by the agreement the transfer runs under.
+// Sequence is the states it drives to on its own once the transfer reaches
+// After, pushing the matching message to the provider at each step.
+//
+// An agreement with no entry sends nothing. That default is the opposite of
+// TransferPolicy's [STARTED], and the TCK forces it: eleven of the fifteen
+// TP_C tests require this connector to stay passive after its initial
+// request, and any volunteered message fails them.
+//
+// After exists because legality cannot supply the timing. TP_C:02-01 and
+// TP_C:02-05 both send exactly one TransferTerminationMessage and differ
+// only in when — 02-01 after the provider starts the transfer, 02-05
+// straight from REQUESTED — and termination is legal from both states, so a
+// driver that fired as soon as its step became legal would send 02-01's
+// termination before the provider's start and fail a test meant to pass.
+type ConsumerTransferPolicy struct {
+	AgreementID string `yaml:"agreement_id"`
+
+	// After is the state whose arrival releases Sequence. Empty means
+	// STARTED, filled in at lookup rather than here.
+	After string `yaml:"after"`
+
+	Sequence []string `yaml:"sequence"`
 }
 
 const (
@@ -268,6 +300,25 @@ func (c Config) validate() error {
 		for j, s := range p.Sequence {
 			if !validTransferState[s] {
 				return fmt.Errorf("transfer_policies[%d]: sequence[%d] %q is not one of STARTED, SUSPENDED, COMPLETED, TERMINATED", i, j, s)
+			}
+		}
+	}
+	// After may name REQUESTED, which validTransferState omits because a
+	// transfer cannot be *driven* there. It may not name a terminal state:
+	// every legality predicate refuses a terminal from-state, so a sequence
+	// released from one could never send anything, and loading it cleanly
+	// would accept a constraint that is never enforced.
+	validAfterState := map[string]bool{"REQUESTED": true, "STARTED": true, "SUSPENDED": true}
+	for i, p := range c.ConsumerTransferPolicies {
+		if p.AgreementID == "" {
+			return fmt.Errorf("consumer_transfer_policies[%d]: agreement_id is required", i)
+		}
+		if p.After != "" && !validAfterState[p.After] {
+			return fmt.Errorf("consumer_transfer_policies[%d]: after %q is not one of REQUESTED, STARTED, SUSPENDED", i, p.After)
+		}
+		for j, s := range p.Sequence {
+			if !validTransferState[s] {
+				return fmt.Errorf("consumer_transfer_policies[%d]: sequence[%d] %q is not one of STARTED, SUSPENDED, COMPLETED, TERMINATED", i, j, s)
 			}
 		}
 	}

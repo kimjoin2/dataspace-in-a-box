@@ -454,3 +454,40 @@ func TestTransferPolicyRequiresAnAgreementID(t *testing.T) {
 		t.Error("Load: expected an error for a policy with no agreement_id")
 	}
 }
+
+func TestConsumerTransferPolicyRejectsAnInvalidEntry(t *testing.T) {
+	for name, doc := range map[string]string{
+		"unknown state in sequence": "consumer_transfer_policies:\n  - agreement_id: urn:uuid:a\n    sequence: [BANANA]\n",
+		"unknown after":             "consumer_transfer_policies:\n  - agreement_id: urn:uuid:a\n    after: BANANA\n    sequence: [COMPLETED]\n",
+		// An entry with no agreement_id can never be selected, so it is a
+		// configuration mistake rather than a harmless no-op.
+		"no agreement_id": "consumer_transfer_policies:\n  - sequence: [COMPLETED]\n",
+		// A sequence released from a terminal state can never send anything:
+		// every legality predicate refuses a terminal from-state. Loading it
+		// cleanly would be accepting a constraint that is never enforced.
+		"terminal after": "consumer_transfer_policies:\n  - agreement_id: urn:uuid:a\n    after: TERMINATED\n    sequence: [COMPLETED]\n",
+	} {
+		if _, err := Load(minimal(doc), env(nil)); err == nil {
+			t.Errorf("%s: accepted an invalid policy", name)
+		}
+	}
+}
+
+func TestConsumerTransferPolicyLoads(t *testing.T) {
+	cfg, err := Load(minimal(
+		"consumer_transfer_policies:\n"+
+			"  - agreement_id: urn:uuid:a\n"+
+			"    after: REQUESTED\n"+
+			"    sequence: [TERMINATED]\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ConsumerTransferPolicies) != 1 {
+		t.Fatalf("got %d policies, want 1", len(cfg.ConsumerTransferPolicies))
+	}
+	p := cfg.ConsumerTransferPolicies[0]
+	if p.AgreementID != "urn:uuid:a" || p.After != "REQUESTED" ||
+		len(p.Sequence) != 1 || p.Sequence[0] != "TERMINATED" {
+		t.Errorf("policy = %+v", p)
+	}
+}

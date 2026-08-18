@@ -189,6 +189,27 @@ func resolveTransferSequence(cfg config.Config, agreementID string) []string {
 	return []string{TransferStarted}
 }
 
+// resolveConsumerTransferPolicy returns the trigger state and the sequence
+// configured for an agreement, and the defaults when nothing matches:
+// STARTED, and no steps at all.
+//
+// The default sequence is empty, unlike the provider role's [STARTED].
+// Eleven of the fifteen TP_C tests require this connector to stay silent
+// after its initial request, so "no entry" has to mean "send nothing".
+func resolveConsumerTransferPolicy(cfg config.Config, agreementID string) (string, []string) {
+	for _, p := range cfg.ConsumerTransferPolicies {
+		if p.AgreementID != agreementID {
+			continue
+		}
+		after := p.After
+		if after == "" {
+			after = TransferStarted
+		}
+		return after, p.Sequence
+	}
+	return TransferStarted, nil
+}
+
 // driveTransfer walks the sequence this transfer's agreement resolves to,
 // pushing the message for each state and then recording it. For the default
 // sequence that is one step — push the TransferStartMessage that actually
