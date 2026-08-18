@@ -787,3 +787,111 @@ func TestTransferErrorNamesTheTransfer(t *testing.T) {
 		t.Errorf("SetTransferState error = %q, want it to name the transfer and its pid", got)
 	}
 }
+
+func TestConsumerTransferRoundTrip(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	want := ConsumerTransfer{
+		ConsumerPID:     "urn:uuid:c-1",
+		ProviderBaseURL: "http://provider.example/2025-1",
+		AgreementID:     "urn:uuid:a-1",
+		Format:          "HTTP-PULL",
+		State:           "REQUESTED",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := s.CreateConsumerTransfer(want); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
+	got, ok, err := s.GetConsumerTransfer("urn:uuid:c-1")
+	if err != nil || !ok {
+		t.Fatalf("GetConsumerTransfer: ok=%v err=%v", ok, err)
+	}
+	// ProviderPID is empty until the ACK to the initial request reveals it.
+	if got.ProviderPID != "" {
+		t.Errorf("ProviderPID = %q, want empty", got.ProviderPID)
+	}
+	if got.AgreementID != want.AgreementID || got.Format != want.Format ||
+		got.ProviderBaseURL != want.ProviderBaseURL || got.State != want.State {
+		t.Errorf("round trip mismatch: %+v", got)
+	}
+}
+
+func TestGetConsumerTransferUnknownIsNotAnError(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	_, ok, err := s.GetConsumerTransfer("urn:uuid:nope")
+	if err != nil {
+		t.Fatalf("GetConsumerTransfer: %v", err)
+	}
+	if ok {
+		t.Error("ok = true for an id that was never written")
+	}
+}
+
+// The consumer table needs its own compare-and-swap for the same reason the
+// provider table has one: the driver runs in a goroutine and can outlive a
+// termination that arrived while it was sleeping between steps.
+func TestSetConsumerTransferStateIsCompareAndSwap(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC()
+	if err := s.CreateConsumerTransfer(ConsumerTransfer{
+		ConsumerPID: "urn:uuid:c-2", ProviderBaseURL: "http://p.example/2025-1",
+		AgreementID: "urn:uuid:a-2", Format: "HTTP-PULL", State: "REQUESTED",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
+	if err := s.SetConsumerTransferState("urn:uuid:c-2", "REQUESTED", "STARTED", now); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	err = s.SetConsumerTransferState("urn:uuid:c-2", "REQUESTED", "COMPLETED", now)
+	if !errors.Is(err, ErrStateChanged) {
+		t.Errorf("stale update error = %v, want ErrStateChanged", err)
+	}
+	err = s.SetConsumerTransferState("urn:uuid:missing", "REQUESTED", "STARTED", now)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing row error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSetConsumerTransferProviderPID(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC()
+	if err := s.CreateConsumerTransfer(ConsumerTransfer{
+		ConsumerPID: "urn:uuid:c-3", ProviderBaseURL: "http://p.example/2025-1",
+		AgreementID: "urn:uuid:a-3", Format: "HTTP-PULL", State: "REQUESTED",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
+	if err := s.SetConsumerTransferProviderPID("urn:uuid:c-3", "urn:uuid:p-3", now); err != nil {
+		t.Fatalf("SetConsumerTransferProviderPID: %v", err)
+	}
+	got, _, err := s.GetConsumerTransfer("urn:uuid:c-3")
+	if err != nil {
+		t.Fatalf("GetConsumerTransfer: %v", err)
+	}
+	if got.ProviderPID != "urn:uuid:p-3" {
+		t.Errorf("ProviderPID = %q, want urn:uuid:p-3", got.ProviderPID)
+	}
+}

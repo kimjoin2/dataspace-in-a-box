@@ -154,6 +154,24 @@ CREATE TABLE IF NOT EXISTS transfer_processes (
     updated_at       TEXT NOT NULL
 );`
 
+// consumerTransferSchema holds transfers this connector runs as consumer —
+// the mirror of transfer_processes, which is its provider-role state. Keyed
+// by this connector's own generated consumer pid, because that is the
+// identifier the provider puts in the callback path it POSTs to. A second
+// table rather than a role column on transfer_processes, for the reasons
+// consumer_negotiations already records.
+const consumerTransferSchema = `
+CREATE TABLE IF NOT EXISTS consumer_transfer_processes (
+    consumer_pid      TEXT PRIMARY KEY,
+    provider_pid      TEXT NOT NULL DEFAULT '',
+    provider_base_url TEXT NOT NULL,
+    agreement_id      TEXT NOT NULL,
+    format            TEXT NOT NULL,
+    state             TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);`
+
 const timeFormat = time.RFC3339Nano
 
 // Errors a conditional update can report. Both mean the UPDATE matched no
@@ -206,6 +224,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(transferSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create transfer schema in %s: %w", path, err)
+	}
+	if _, err := db.Exec(consumerTransferSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create consumer transfer schema in %s: %w", path, err)
 	}
 	if err := migrate(db); err != nil {
 		db.Close()
@@ -580,4 +602,126 @@ func (s *Store) explainNoTransferUpdate(providerPID, want string) error {
 	}
 	return fmt.Errorf("update transfer %s: %w: wanted %s, found state %s",
 		providerPID, ErrStateChanged, want, t.State)
+}
+
+// ConsumerTransfer is one transfer process this connector is running as
+// consumer — the mirror of TransferProcess, which is its provider-role
+// state. Keyed by this connector's own generated consumer pid, because that
+// is the identifier the provider puts in the callback path.
+//
+// ProviderPID is empty until the ACK to the initial TransferRequestMessage
+// reveals it. That is also why nothing this connector sends as consumer can
+// be sent before that ACK: every outbound URL contains it.
+//
+// No CallbackAddress field: unlike the provider role, this connector's own
+// callback address is not per-transfer data — it is always
+// config.Config.PublicURL + the version path, computed at startup.
+type ConsumerTransfer struct {
+	ConsumerPID string
+	ProviderPID string
+	// ProviderBaseURL is connectorAddress from the initiate call — the base
+	// every later outbound message is addressed against.
+	ProviderBaseURL string
+	AgreementID     string
+	Format          string
+	State           string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// CreateConsumerTransfer persists a new consumer-role transfer.
+func (s *Store) CreateConsumerTransfer(t ConsumerTransfer) error {
+	_, err := s.db.Exec(
+		`INSERT INTO consumer_transfer_processes (consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ConsumerPID, t.ProviderPID, t.ProviderBaseURL, t.AgreementID, t.Format, t.State,
+		t.CreatedAt.UTC().Format(timeFormat), t.UpdatedAt.UTC().Format(timeFormat),
+	)
+	if err != nil {
+		return fmt.Errorf("create consumer transfer %s: %w", t.ConsumerPID, err)
+	}
+	return nil
+}
+
+// GetConsumerTransfer returns the consumer-role transfer with the given
+// consumer pid.
+func (s *Store) GetConsumerTransfer(consumerPID string) (ConsumerTransfer, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, created_at, updated_at
+		 FROM consumer_transfer_processes WHERE consumer_pid = ?`, consumerPID)
+
+	var t ConsumerTransfer
+	var created, updated string
+	err := row.Scan(&t.ConsumerPID, &t.ProviderPID, &t.ProviderBaseURL, &t.AgreementID, &t.Format, &t.State,
+		&created, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ConsumerTransfer{}, false, nil
+	}
+	if err != nil {
+		return ConsumerTransfer{}, false, fmt.Errorf("get consumer transfer %s: %w", consumerPID, err)
+	}
+	if t.CreatedAt, err = time.Parse(timeFormat, created); err != nil {
+		return ConsumerTransfer{}, false, fmt.Errorf("get consumer transfer %s: parse created_at: %w", consumerPID, err)
+	}
+	if t.UpdatedAt, err = time.Parse(timeFormat, updated); err != nil {
+		return ConsumerTransfer{}, false, fmt.Errorf("get consumer transfer %s: parse updated_at: %w", consumerPID, err)
+	}
+	return t, true, nil
+}
+
+// SetConsumerTransferState moves a consumer-role transfer from state `from`
+// to state `to` — the same compare-and-swap SetTransferState uses for the
+// provider role, for the same reason: the consumer driver also runs in a
+// goroutine and can outlive a termination that arrived while it slept
+// between steps.
+func (s *Store) SetConsumerTransferState(consumerPID, from, to string, updatedAt time.Time) error {
+	res, err := s.db.Exec(
+		`UPDATE consumer_transfer_processes SET state = ?, updated_at = ? WHERE consumer_pid = ? AND state = ?`,
+		to, updatedAt.UTC().Format(timeFormat), consumerPID, from)
+	if err != nil {
+		return fmt.Errorf("update consumer transfer %s: %w", consumerPID, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update consumer transfer %s: %w", consumerPID, err)
+	}
+	if rows == 0 {
+		return s.explainNoConsumerTransferUpdate(consumerPID, from)
+	}
+	return nil
+}
+
+// explainNoConsumerTransferUpdate separates a lost race from a missing row,
+// naming consumer_transfer_processes rather than any other table — the same
+// reason explainNoConsumerUpdate is kept separate from explainNoUpdate.
+func (s *Store) explainNoConsumerTransferUpdate(consumerPID, want string) error {
+	t, ok, err := s.GetConsumerTransfer(consumerPID)
+	if err != nil {
+		return fmt.Errorf("update consumer transfer %s: %w", consumerPID, err)
+	}
+	if !ok {
+		return fmt.Errorf("update consumer transfer %s: %w", consumerPID, ErrNotFound)
+	}
+	return fmt.Errorf("update consumer transfer %s: %w: wanted state %s, found state %s",
+		consumerPID, ErrStateChanged, want, t.State)
+}
+
+// SetConsumerTransferProviderPID records the provider pid the ACK revealed.
+// Unconditional rather than compare-and-swap: it is written exactly once, by
+// the goroutine that made the request, before any other writer can exist.
+func (s *Store) SetConsumerTransferProviderPID(consumerPID, providerPID string, updatedAt time.Time) error {
+	res, err := s.db.Exec(
+		`UPDATE consumer_transfer_processes SET provider_pid = ?, updated_at = ? WHERE consumer_pid = ?`,
+		providerPID, updatedAt.UTC().Format(timeFormat), consumerPID)
+	if err != nil {
+		return fmt.Errorf("update consumer transfer %s: %w", consumerPID, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update consumer transfer %s: %w", consumerPID, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("update consumer transfer %s: %w", consumerPID, ErrNotFound)
+	}
+	return nil
 }
