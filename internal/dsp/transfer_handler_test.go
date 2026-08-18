@@ -950,3 +950,111 @@ func TestTransferSequenceSuspendResumeComplete(t *testing.T) {
 	})
 	waitForTransferState(t, st, providerPID, TransferCompleted)
 }
+
+// seedConsumerTransfer writes a consumer-role transfer in the given state and
+// returns its consumer pid, which is the id its endpoints are addressed by.
+func seedConsumerTransfer(t *testing.T, st *store.Store, state string) string {
+	t.Helper()
+	now := time.Now()
+	id := "urn:uuid:consumer-transfer-" + state
+	if err := st.CreateConsumerTransfer(store.ConsumerTransfer{
+		ConsumerPID:     id,
+		ProviderPID:     "urn:uuid:p",
+		ProviderBaseURL: "http://provider.example/2025-1",
+		AgreementID:     "urn:uuid:a",
+		Format:          "HTTP-PULL",
+		State:           state,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
+	return id
+}
+
+func currentTransferState(t *testing.T, st *store.Store, id string, consumer bool) string {
+	t.Helper()
+	if consumer {
+		c, _, err := st.GetConsumerTransfer(id)
+		if err != nil {
+			t.Fatalf("GetConsumerTransfer: %v", err)
+		}
+		return c.State
+	}
+	p, _, err := st.GetTransfer(id)
+	if err != nil {
+		t.Fatalf("GetTransfer: %v", err)
+	}
+	return p.State
+}
+
+// The pair that pins the whole role split. Identical request, identical
+// starting state, opposite outcomes — because the sender differs. A single
+// legality table cannot produce both rows.
+func TestInboundStartDependsOnTheRowsRole(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		consumer  bool
+		wantCode  int
+		wantState string
+	}{
+		{"as consumer the provider may start it", true, http.StatusOK, TransferStarted},
+		{"as provider the consumer may not", false, http.StatusBadRequest, TransferRequested},
+	} {
+		h, st := newTestTransferHandler(t, config.Config{})
+		var id, consumerPID string
+		if c.consumer {
+			// A consumer row is addressed by this connector's consumer pid,
+			// which is therefore both the path id and the message's
+			// consumerPid.
+			id = seedConsumerTransfer(t, st, TransferRequested)
+			consumerPID = id
+		} else {
+			tp := seedTransfer(t, st, TransferRequested)
+			id, consumerPID = tp.ProviderPID, tp.ConsumerPID
+		}
+
+		body := `{"@context":["` + ContextURL + `"],"@type":"` + TransferStartMessageType + `",` +
+			`"providerPid":"urn:uuid:p","consumerPid":"` + consumerPID + `"}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost,
+			VersionPath+"/transfers/"+id+"/start", strings.NewReader(body))
+		req.SetPathValue("id", id)
+		h.handleTransferStart(rec, req)
+
+		if rec.Code != c.wantCode {
+			t.Errorf("%s: got %d, want %d", c.name, rec.Code, c.wantCode)
+		}
+		if got := currentTransferState(t, st, id, c.consumer); got != c.wantState {
+			t.Errorf("%s: stored state = %s, want %s", c.name, got, c.wantState)
+		}
+	}
+}
+
+// GET is how the consumer suite makes 37 of its assertions. A GET that
+// resolved only provider rows would fail most of TP_C while every inbound
+// handler behaved perfectly, so it is pinned here rather than left to the
+// TCK to discover.
+func TestGetTransferResolvesAConsumerRow(t *testing.T) {
+	h, st := newTestTransferHandler(t, config.Config{})
+	id := seedConsumerTransfer(t, st, TransferStarted)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, VersionPath+"/transfers/"+id, nil)
+	req.SetPathValue("id", id)
+	h.handleGetTransfer(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if doc["state"] != TransferStarted {
+		t.Errorf("state = %v, want %s", doc["state"], TransferStarted)
+	}
+	if doc["consumerPid"] != id {
+		t.Errorf("consumerPid = %v, want %s", doc["consumerPid"], id)
+	}
+}

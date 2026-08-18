@@ -115,24 +115,27 @@ type TransferCompletionMessage struct {
 // SUSPENDED is a resume; DSP 2025-1 assigns both to the provider, whose
 // Transfer Start Message row reads "Sent by: Provider".
 //
-// This is the outbound half of the rule. The inbound half is a different set
-// of states, because the consumer may send the same message only to resume —
-// see inboundStartLegalFrom. The other three transfer messages need no such
+// This set serves two callers, because it describes the transfer rather than
+// a party: one that has not run yet or has been paused. It answers both "may
+// a provider send a start now" and "may a consumer accept one now". Only the
+// narrower set exists because of who is sending, which is why only that one
+// names a role — see providerInboundStartLegalFrom. The other three transfer messages need no such
 // split: the spec's Sent by row for suspension, completion, and termination
 // names both parties, so one predicate serves both directions.
 func startLegalFrom(state string) bool {
 	return state == TransferRequested || state == TransferSuspended
 }
 
-// inboundStartLegalFrom reports whether a TransferStartMessage received from
-// the counterparty is legal from this state. Only from SUSPENDED: "The
-// Consumer can POST a Transfer Start Message to attempt to start a Transfer
-// Process after it has been suspended" (DSP 2025-1,
-// transfer.process.binding.https.md, Transfer Start Endpoint).
+// providerInboundStartLegalFrom reports whether a TransferStartMessage this
+// connector receives *as provider* is legal from this state. Only from
+// SUSPENDED: "The Consumer can POST a Transfer Start Message to attempt to
+// start a Transfer Process after it has been suspended" (DSP 2025-1,
+// transfer.process.binding.https.md, Transfer Start Endpoint). Received as
+// consumer the sender is the provider instead, and startLegalFrom governs.
 //
 // Accepting one from REQUESTED would let a counterparty drive its own
 // transfer to STARTED, which is the state that gates whether data is served.
-func inboundStartLegalFrom(state string) bool {
+func providerInboundStartLegalFrom(state string) bool {
 	return state == TransferSuspended
 }
 

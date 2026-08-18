@@ -363,7 +363,7 @@ func (h transferHandler) handleGetTransfer(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, buildTransferProcessDoc(t))
+	writeJSON(w, http.StatusOK, buildTransferProcessDoc(t.TransferProcess))
 }
 
 // The four endpoints that move a running transfer. Unlike their negotiation
@@ -371,8 +371,11 @@ func (h transferHandler) handleGetTransfer(w http.ResponseWriter, r *http.Reques
 // which message they accept, which states that message is legal from, and
 // which state it lands in — so they share applyTransition rather than
 // repeating it four times.
+//
+// Start is the one whose legality also depends on the row's role, so it
+// passes nil and lets applyTransition ask inboundStartLegalFor.
 func (h transferHandler) handleTransferStart(w http.ResponseWriter, r *http.Request) {
-	h.applyTransition(w, r, TransferStartMessageType, inboundStartLegalFrom, TransferStarted)
+	h.applyTransition(w, r, TransferStartMessageType, nil, TransferStarted)
 }
 
 func (h transferHandler) handleTransferCompletion(w http.ResponseWriter, r *http.Request) {
@@ -397,11 +400,16 @@ func (h transferHandler) handleTransferTermination(w http.ResponseWriter, r *htt
 // the refusal it is. The counterparty asserts that a refused message left the
 // state exactly as it was, which is why legality is decided before
 // SetTransferState rather than after.
+// A nil legalFrom means the rule depends on the row's role, which is true of
+// exactly one message: see inboundStartLegalFor.
 func (h transferHandler) applyTransition(w http.ResponseWriter, r *http.Request,
 	wantType string, legalFrom func(string) bool, to string) {
 	t, ok := h.lookup(w, r)
 	if !ok {
 		return
+	}
+	if legalFrom == nil {
+		legalFrom = inboundStartLegalFor(t)
 	}
 
 	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
@@ -420,33 +428,112 @@ func (h transferHandler) applyTransition(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	if err := h.store.SetTransferState(t.ProviderPID, t.State, to, time.Now()); err != nil {
-		writeTransferStateUpdateError(w, t.ProviderPID, err)
+	if err := h.setTransferState(t, t.State, to, time.Now()); err != nil {
+		writeTransferStateUpdateError(w, t.id(), err)
 		return
 	}
 	t.State = to
-	writeJSON(w, http.StatusOK, buildTransferProcessDoc(t))
+	writeJSON(w, http.StatusOK, buildTransferProcessDoc(t.TransferProcess))
 }
 
-// lookup resolves {id} to a stored transfer, writing the appropriate error
-// response and returning ok=false if it cannot. {id} is this connector's own
-// generated provider pid — the value it returned in the acknowledgment to
-// POST /transfers/request — so an id that is not in the table names a
-// transfer that never existed, and 404 is the honest answer. It is also the
-// only 404 this protocol produces.
-func (h transferHandler) lookup(w http.ResponseWriter, r *http.Request) (store.TransferProcess, bool) {
-	providerPID := r.PathValue("id")
-	t, ok, err := h.store.GetTransfer(providerPID)
+// resolvedTransfer is a transfer found by path id, in whichever role owns
+// it. The embedded TransferProcess is the shape every existing helper
+// already takes — buildTransferProcessDoc, the message builders — so a
+// consumer-role row is projected into it rather than given a parallel set of
+// functions.
+type resolvedTransfer struct {
+	store.TransferProcess
+	// Consumer reports which table the row came from. It decides which
+	// start-legality rule applies and which setter moves the row.
+	Consumer bool
+	// ProviderBaseURL is set for consumer-role rows only: the base every
+	// message this connector sends as consumer is addressed against. The
+	// provider role's equivalent is TransferProcess.CallbackAddress.
+	ProviderBaseURL string
+}
+
+// id is the identifier this transfer's endpoints are addressed by, which is
+// the provider pid in the provider role and this connector's own consumer
+// pid in the consumer role. Error messages and log lines use it so they name
+// the identifier the counterparty actually sent.
+func (r resolvedTransfer) id() string {
+	if r.Consumer {
+		return r.ConsumerPID
+	}
+	return r.ProviderPID
+}
+
+// lookup resolves {id} to a stored transfer in either role, writing the
+// appropriate error response and returning ok=false if it cannot.
+//
+// The consumer table is tried first, which is the order handleEvent,
+// handleTermination, and handleGetNegotiation already established for
+// negotiations. Both id spaces are independently generated UUIDs, so a row
+// can only be in one of them.
+//
+// {id} is a pid this connector generated itself — the provider pid it
+// returned in the acknowledgment to POST /transfers/request, or the consumer
+// pid it minted at POST /transfers/initiate — so an id in neither table
+// names a transfer that never existed, and 404 is the honest answer. It is
+// also the only 404 this protocol produces.
+func (h transferHandler) lookup(w http.ResponseWriter, r *http.Request) (resolvedTransfer, bool) {
+	id := r.PathValue("id")
+
+	c, ok, err := h.store.GetConsumerTransfer(id)
 	if err != nil {
-		slog.Error("get transfer", "provider_pid", providerPID, "error", err)
+		slog.Error("get consumer transfer", "consumer_pid", id, "error", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		return store.TransferProcess{}, false
+		return resolvedTransfer{}, false
+	}
+	if ok {
+		return resolvedTransfer{
+			TransferProcess: store.TransferProcess{
+				ProviderPID: c.ProviderPID,
+				ConsumerPID: c.ConsumerPID,
+				AgreementID: c.AgreementID,
+				State:       c.State,
+				Format:      c.Format,
+				CreatedAt:   c.CreatedAt,
+				UpdatedAt:   c.UpdatedAt,
+			},
+			Consumer:        true,
+			ProviderBaseURL: c.ProviderBaseURL,
+		}, true
+	}
+
+	t, ok, err := h.store.GetTransfer(id)
+	if err != nil {
+		slog.Error("get transfer", "provider_pid", id, "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return resolvedTransfer{}, false
 	}
 	if !ok {
-		writeError(w, TransferErrorType, http.StatusNotFound, "no transfer with id "+providerPID)
-		return store.TransferProcess{}, false
+		writeError(w, TransferErrorType, http.StatusNotFound, "no transfer with id "+id)
+		return resolvedTransfer{}, false
 	}
-	return t, true
+	return resolvedTransfer{TransferProcess: t}, true
+}
+
+// inboundStartLegalFor returns the rule governing a TransferStartMessage
+// this connector receives, which depends on who sent it. DSP 2025-1 gives
+// the message a single permitted sender ("Sent by: Provider") and admits the
+// consumer's copy only as a resume, so a start arriving from REQUESTED is
+// legal when this connector is the consumer and illegal when it is the
+// provider. The other three transfer messages need no such split: the spec
+// names both parties in their Sent by rows.
+func inboundStartLegalFor(r resolvedTransfer) func(string) bool {
+	if r.Consumer {
+		return startLegalFrom
+	}
+	return providerInboundStartLegalFrom
+}
+
+// setTransferState writes through whichever table owns the row.
+func (h transferHandler) setTransferState(r resolvedTransfer, from, to string, at time.Time) error {
+	if r.Consumer {
+		return h.store.SetConsumerTransferState(r.ConsumerPID, from, to, at)
+	}
+	return h.store.SetTransferState(r.ProviderPID, from, to, at)
 }
 
 // writeTransferStateUpdateError is writeStateUpdateError's transfer-protocol
@@ -463,13 +550,13 @@ func (h transferHandler) lookup(w http.ResponseWriter, r *http.Request) (store.T
 // back from a SetTransferState made against a row this request just read. It
 // stays as the honest answer for a storage failure, and would become reachable
 // the day a delete path is added.
-func writeTransferStateUpdateError(w http.ResponseWriter, providerPID string, err error) {
+func writeTransferStateUpdateError(w http.ResponseWriter, id string, err error) {
 	if errors.Is(err, store.ErrStateChanged) {
-		slog.Warn("transfer changed concurrently", "provider_pid", providerPID, "error", err)
+		slog.Warn("transfer changed concurrently", "transfer_id", id, "error", err)
 		writeError(w, TransferErrorType, http.StatusBadRequest,
-			"transfer "+providerPID+" changed while this request was being handled")
+			"transfer "+id+" changed while this request was being handled")
 		return
 	}
-	slog.Error("update transfer state", "provider_pid", providerPID, "error", err)
+	slog.Error("update transfer state", "transfer_id", id, "error", err)
 	w.WriteHeader(http.StatusInternalServerError)
 }
