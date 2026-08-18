@@ -179,19 +179,6 @@ to decide there whether an unknown dataset is a `400` at import time or a
 failure at pull time. Importing a contract for something this connector cannot
 serve is the same defect family as §25.1, one level down.
 
-**`store.Agreement` has no consumer-role writer, and `origin` has no value for
-one.** `negotiation_consumer_handler.go` moves a consumer-role negotiation to
-`AGREED` — this connector accepting a remote provider's agreement — and writes
-no row; the two writers are both provider-side (a provider negotiation
-reaching `AGREED`, and `POST /agreements`). Nothing is broken in Phase A,
-because only the provider transfer path reads the table, and the struct's doc
-comment now says so rather than claiming the table records every contract this
-connector is party to. `TP_C` is where it bites: a consumer-role transfer has
-to cite an agreement it received, and will find the table empty. The decision
-to take there is whether this table gains a third writer plus a consumer-side
-`origin` value, or whether consumer transfers keep a record of their own — the
-same question §24.1 answered for negotiations by adding a second table.
-
 **A terminal step on a timer and a real data plane cannot both be right.**
 `transfer_policies` sequences are driven by `transferStepDelay` alone, so
 `[STARTED, COMPLETED]` completes 200 ms after starting. Harmless in Phase A,

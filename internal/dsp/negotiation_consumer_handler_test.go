@@ -647,3 +647,46 @@ func TestHandleAgreement_ConstraintGuard(t *testing.T) {
 		})
 	}
 }
+
+// A consumer-role negotiation that reaches AGREED must leave behind the
+// agreement it agreed to, or this connector can never transfer under it —
+// POST /transfers/initiate refuses an agreement it has no row for. No TCK
+// test covers this: the TP_C suite cites seeded agreements and never
+// negotiates one. So this unit test is the only evidence, and a green suite
+// says nothing either way.
+func TestHandleAgreement_RecordsTheAgreement(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateAccepted
+	h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(agreementMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleAgreement(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	// agreementMessageJSON puts the provider pid in the agreement's @id.
+	got, ok, err := st.GetAgreement(n.ProviderPID)
+	if err != nil {
+		t.Fatalf("GetAgreement: %v", err)
+	}
+	if !ok {
+		t.Fatal("no agreement row was written")
+	}
+	if got.Origin != store.OriginAgreed {
+		t.Errorf("Origin = %q, want %q", got.Origin, store.OriginAgreed)
+	}
+	if got.DatasetID != n.DatasetID {
+		t.Errorf("DatasetID = %q, want %q", got.DatasetID, n.DatasetID)
+	}
+	if got.ConsumerPID != n.ConsumerPID {
+		t.Errorf("ConsumerPID = %q, want %q", got.ConsumerPID, n.ConsumerPID)
+	}
+}

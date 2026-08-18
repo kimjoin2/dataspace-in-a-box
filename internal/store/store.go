@@ -63,18 +63,17 @@ type ConsumerNegotiation struct {
 	UpdatedAt       time.Time
 }
 
-// Agreement records an agreement this connector issued as provider or an
-// operator imported. Those are its only two writers — a negotiation reaching
-// AGREED in the provider role, and POST /agreements — and Origin names which.
+// Agreement records an agreement this connector is party to, however it came
+// to be. Three writers — a negotiation reaching AGREED in the provider role,
+// a consumer-role negotiation accepting a remote provider's agreement, and
+// POST /agreements — and Origin names which.
 //
-// It is the single source of truth for "does this agreement exist" as the
-// *provider-role* transfer protocol asks it, which is the only path that
-// reads the table today. It is deliberately not a record of every contract
-// this connector is party to: a consumer-role negotiation reaching AGREED —
-// this connector accepting a remote provider's agreement — writes no row
-// here, and Origin has no value that would describe one. See
-// docs/follow-ups.md: the consumer role has to decide whether this table
-// gains a third writer or consumer transfers keep a record of their own.
+// It is the single source of truth for "does this agreement exist" as both
+// roles of the transfer protocol ask it: the provider role refuses a
+// transfer citing an agreement with no row, and POST /transfers/initiate
+// refuses to start one as consumer for the same reason. That symmetry is why
+// the consumer role became the third writer rather than keeping a record of
+// its own — one table, one rule.
 type Agreement struct {
 	AgreementID string
 	DatasetID   string
@@ -91,6 +90,11 @@ type Agreement struct {
 const (
 	OriginNegotiated = "negotiated"
 	OriginImported   = "imported"
+	// OriginAgreed is an agreement this connector accepted as consumer, from
+	// a provider's ContractAgreementMessage. Unlike OriginNegotiated this
+	// connector did not author it, and unlike OriginImported no operator
+	// asserted it out of band.
+	OriginAgreed = "agreed"
 )
 
 // TransferProcess is one transfer this connector is running as provider. It

@@ -252,6 +252,26 @@ func (h negotiationHandler) handleAgreement(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Record what was agreed to before recording that it was agreed. If this
+	// fails the transition must fail too: a negotiation that reports AGREED
+	// while losing the agreement itself is one POST /transfers/initiate will
+	// later refuse to act on, and a contract that cannot be transferred under
+	// is worse than one that visibly failed to conclude.
+	//
+	// No TCK test covers this path — the TP_C suite cites seeded agreements
+	// and never negotiates one — so its only evidence is a unit test.
+	if err := h.store.CreateAgreement(store.Agreement{
+		AgreementID: msg.Agreement.ID,
+		DatasetID:   msg.Agreement.Target,
+		ConsumerPID: n.ConsumerPID,
+		Origin:      store.OriginAgreed,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		slog.Error("record accepted agreement",
+			"consumer_pid", n.ConsumerPID, "agreement_id", msg.Agreement.ID, "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	if err := h.store.SetConsumerState(n.ConsumerPID, n.State, StateAgreed, time.Now()); err != nil {
 		writeStateUpdateError(w, n.ConsumerPID, err)
 		return
