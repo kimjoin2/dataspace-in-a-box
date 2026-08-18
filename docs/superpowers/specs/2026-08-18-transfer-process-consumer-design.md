@@ -292,7 +292,7 @@ model was doing no work.
 ### Storage
 
 ```sql
-CREATE TABLE IF NOT EXISTS consumer_transfers (
+CREATE TABLE IF NOT EXISTS consumer_transfer_processes (
     consumer_pid      TEXT PRIMARY KEY,
     provider_pid      TEXT NOT NULL DEFAULT '',
     provider_base_url TEXT NOT NULL,
@@ -304,7 +304,7 @@ CREATE TABLE IF NOT EXISTS consumer_transfers (
 );
 ```
 
-A second table, not a `role` column on `transfers` — the same judgment
+A second table, not a `role` column on `transfer_processes` — the same judgment
 `consumer_negotiations` already made, for the same reasons. The provider
 table is 15 TCK tests deep, a shared table would give every column a meaning
 that depends on the row's role, and every existing provider-role query would
