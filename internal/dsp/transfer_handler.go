@@ -351,7 +351,7 @@ func (h transferHandler) handleGetTransfer(w http.ResponseWriter, r *http.Reques
 // which state it lands in — so they share applyTransition rather than
 // repeating it four times.
 func (h transferHandler) handleTransferStart(w http.ResponseWriter, r *http.Request) {
-	h.applyTransition(w, r, TransferStartMessageType, startLegalFrom, TransferStarted)
+	h.applyTransition(w, r, TransferStartMessageType, inboundStartLegalFrom, TransferStarted)
 }
 
 func (h transferHandler) handleTransferCompletion(w http.ResponseWriter, r *http.Request) {

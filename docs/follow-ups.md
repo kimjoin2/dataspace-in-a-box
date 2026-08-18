@@ -179,35 +179,6 @@ to decide there whether an unknown dataset is a `400` at import time or a
 failure at pull time. Importing a contract for something this connector cannot
 serve is the same defect family as §25.1, one level down.
 
-**The transfer legality model has no sender dimension, and DSP 2025-1 may
-require one.** `startLegalFrom` says a `TransferStartMessage` is legal from
-`REQUESTED`, and `applyTransition` applies that to an *inbound* message
-without asking who sent it — so a counterparty can move this connector's
-transfer from `REQUESTED` to `STARTED` itself. What raised this is a
-recollection that DSP 2025-1's state machine assigns `REQUESTED → STARTED` to
-the provider — which, if the text says so, makes that inbound message one to
-refuse. That is the suspicion and not a citation: it is written here because
-it is worth checking, not because anyone has checked it. A green `TP` says
-nothing either way: 15/15 proves only that no test in the suite falsifies the
-current model, not that any test exercises it. So this is **untested, not
-falsified**, and the fault is in the plan and the design spec rather than in the
-implementation — the plan's legality table
-(`docs/superpowers/plans/2026-08-16-transfer-process-provider-phase-a.md`,
-"The legality rules, from the spec's state machine") is a from-state × message
-grid with no sender column, and the code implements the table it was given.
-Deliberately not changed here — this project's rule is that the spec and the
-TCK decide, not intuition, and nobody has yet read DSP 2025-1's own text on
-the assignment.
-
-What would settle it: the transfer-process state-machine section of the
-DSP 2025-1 specification, read for whether each transition names a party. If
-it does, `applyTransition` needs the sender as a second dimension (four
-predicates become eight, or each gains a role argument), and the four inbound
-endpoints have to say which role they are serving. **This must be settled
-before Phase B**, where `STARTED` stops being a label and becomes the gate on
-whether bytes are served: a counterparty that can drive its own transfer to
-`STARTED` would then be granting itself access.
-
 **`store.Agreement` has no consumer-role writer, and `origin` has no value for
 one.** `negotiation_consumer_handler.go` moves a consumer-role negotiation to
 `AGREED` — this connector accepting a remote provider's agreement — and writes

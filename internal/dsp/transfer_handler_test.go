@@ -396,9 +396,11 @@ func TestGetTransferReturnsTheDocument(t *testing.T) {
 	}
 }
 
-// TestTransferTransitionsOverHTTP walks the whole legality matrix through the
-// handlers, so the pure functions in transfer.go and the wiring that calls
-// them are pinned together. An illegal transition is 400 and must leave the
+// TestTransferTransitionsOverHTTP walks the whole inbound legality matrix
+// through the handlers, so the pure functions in transfer.go and the wiring
+// that calls them are pinned together. Inbound is the qualifier that matters
+// for start: the same message is legal from different states depending on who
+// sent it, and these handlers only ever serve the counterparty's. An illegal transition is 400 and must leave the
 // stored state untouched — a handler that returns 400 after already writing
 // would pass a status-only assertion.
 func TestTransferTransitionsOverHTTP(t *testing.T) {
@@ -410,7 +412,12 @@ func TestTransferTransitionsOverHTTP(t *testing.T) {
 		wantState string
 	}
 	steps := []step{
-		{"start", TransferStartMessageType, TransferRequested, http.StatusOK, TransferStarted},
+		// The consumer may send a start only to resume: "The Consumer can POST
+		// a Transfer Start Message to attempt to start a Transfer Process after
+		// it has been suspended" (DSP 2025-1, transfer.process.binding.https.md,
+		// Transfer Start Endpoint). REQUESTED -> STARTED is the provider's own
+		// transition, reached by pushing rather than by receiving.
+		{"start", TransferStartMessageType, TransferRequested, http.StatusBadRequest, TransferRequested},
 		{"start", TransferStartMessageType, TransferSuspended, http.StatusOK, TransferStarted},
 		{"start", TransferStartMessageType, TransferStarted, http.StatusBadRequest, TransferStarted},
 		{"start", TransferStartMessageType, TransferCompleted, http.StatusBadRequest, TransferCompleted},

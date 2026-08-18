@@ -102,6 +102,18 @@ Transition legality is a pure function per inbound message, in the shape
 `agreementLegalFrom` already established for negotiation, so every legal and
 illegal pair is pinned by unit tests rather than discovered by the TCK.
 
+> **Correction (2026-08-18).** "A pure function per inbound message" is one
+> function short for `TransferStartMessage`. DSP 2025-1 gives that message a
+> single permitted sender — its Transfer Start Message row reads "Sent by:
+> Provider" — and the HTTPS binding admits the consumer's copy only as a
+> resume: "The Consumer can POST a Transfer Start Message to attempt to start
+> a Transfer Process after it has been suspended". Start therefore needs two
+> predicates, one per direction: outbound legal from `REQUESTED` or
+> `SUSPENDED`, inbound legal from `SUSPENDED` alone. The other three messages
+> keep one predicate each, because the spec names both parties in their Sent
+> by rows. Implemented as `startLegalFrom` and `inboundStartLegalFrom` in
+> `internal/dsp/transfer.go`.
+
 An illegal transition is `400`, never `404` — the same rule the negotiation
 milestones established, for the same reason (`HttpFunctions.postJson` throws
 on `404` even where an error is expected).

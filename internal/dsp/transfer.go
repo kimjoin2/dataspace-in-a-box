@@ -110,10 +110,30 @@ type TransferCompletionMessage struct {
 	ConsumerPID string   `json:"consumerPid"`
 }
 
-// startLegalFrom reports whether a transfer in this state may start. SUSPENDED
-// is included because resuming a suspended transfer is a start.
+// startLegalFrom reports whether this connector, as provider, may send a
+// TransferStartMessage from this state. REQUESTED is the initial start and
+// SUSPENDED is a resume; DSP 2025-1 assigns both to the provider, whose
+// Transfer Start Message row reads "Sent by: Provider".
+//
+// This is the outbound half of the rule. The inbound half is a different set
+// of states, because the consumer may send the same message only to resume —
+// see inboundStartLegalFrom. The other three transfer messages need no such
+// split: the spec's Sent by row for suspension, completion, and termination
+// names both parties, so one predicate serves both directions.
 func startLegalFrom(state string) bool {
 	return state == TransferRequested || state == TransferSuspended
+}
+
+// inboundStartLegalFrom reports whether a TransferStartMessage received from
+// the counterparty is legal from this state. Only from SUSPENDED: "The
+// Consumer can POST a Transfer Start Message to attempt to start a Transfer
+// Process after it has been suspended" (DSP 2025-1,
+// transfer.process.binding.https.md, Transfer Start Endpoint).
+//
+// Accepting one from REQUESTED would let a counterparty drive its own
+// transfer to STARTED, which is the state that gates whether data is served.
+func inboundStartLegalFrom(state string) bool {
+	return state == TransferSuspended
 }
 
 // completionLegalFrom reports whether a transfer in this state may complete.
