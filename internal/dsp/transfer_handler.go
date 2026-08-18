@@ -434,6 +434,21 @@ func (h transferHandler) applyTransition(w http.ResponseWriter, r *http.Request,
 	}
 	t.State = to
 	writeJSON(w, http.StatusOK, buildTransferProcessDoc(t.TransferProcess))
+
+	// After the response, never before: the counterparty's 200 must not wait
+	// on this connector's own outbound calls. Provider-role rows are driven
+	// from handleTransferRequest instead, at the point the transfer is
+	// created.
+	if t.Consumer {
+		h.maybeDriveConsumerTransfer(store.ConsumerTransfer{
+			ConsumerPID:     t.ConsumerPID,
+			ProviderPID:     t.ProviderPID,
+			ProviderBaseURL: t.ProviderBaseURL,
+			AgreementID:     t.AgreementID,
+			Format:          t.Format,
+			State:           to,
+		}, to)
+	}
 }
 
 // resolvedTransfer is a transfer found by path id, in whichever role owns

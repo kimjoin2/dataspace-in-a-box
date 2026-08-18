@@ -2,6 +2,8 @@ package dsp
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -124,4 +126,110 @@ func (h transferHandler) onTransferRequestAcknowledged(t store.ConsumerTransfer,
 		return
 	}
 	t.ProviderPID = providerPID
+	// A policy triggered by REQUESTED fires here rather than when the row was
+	// written: every URL this connector addresses as consumer contains the
+	// provider pid, and it did not exist until this ACK. TP_C:02-05 is the
+	// test that depends on it.
+	h.maybeDriveConsumerTransfer(t, TransferRequested)
+}
+
+// consumerTransferStepMessage returns the path template and the message that
+// move a consumer-role transfer into the given state, plus the predicate
+// saying which states that move is legal from.
+//
+// STARTED is deliberately absent. DSP 2025-1 admits a consumer's start only
+// as a resume, and no TP_C test that produces a result asks for one —
+// TP_C:02-04, the only test that does, is @Disabled upstream. A policy that
+// names STARTED is refused here rather than emitting a message this
+// connector's own provider role would answer 400 to.
+func consumerTransferStepMessage(t store.ConsumerTransfer, to string) (string, any, func(string) bool, bool) {
+	p := store.TransferProcess{ProviderPID: t.ProviderPID, ConsumerPID: t.ConsumerPID}
+	switch to {
+	case TransferSuspended:
+		return consumerTransferSuspensionPath, buildTransferSuspensionMessage(p), suspensionLegalFrom, true
+	case TransferCompleted:
+		return consumerTransferCompletionPath, buildTransferCompletionMessage(p), completionLegalFrom, true
+	case TransferTerminated:
+		return consumerTransferTerminationPath, buildTransferTerminationMessage(p), terminationLegalFrom, true
+	}
+	return "", nil, nil, false
+}
+
+// pushConsumerStep sends one configured step to the provider and records it.
+// It is pushTransferStep's consumer-role counterpart and differs in exactly
+// three ways: the URL base is the provider's rather than the consumer's, the
+// path id is the provider pid rather than the consumer pid, and the write
+// goes through the consumer table. Every refusal below has the same reason
+// pushTransferStep's doc comment gives.
+func (h transferHandler) pushConsumerStep(t store.ConsumerTransfer, to string) bool {
+	path, msg, legalFrom, ok := consumerTransferStepMessage(t, to)
+	if !ok {
+		slog.Error("no consumer transfer message for state",
+			"consumer_pid", t.ConsumerPID, "want_state", to)
+		return false
+	}
+	// The legality table is enforced against this connector's own configured
+	// sequence, not only against the counterparty in applyTransition. A
+	// sequence that has gone illegal has no meaningful remainder: the steps
+	// after it were written against a state this transfer will never be in.
+	if !legalFrom(t.State) {
+		slog.Error("refuse illegal configured consumer transfer step",
+			"consumer_pid", t.ConsumerPID, "agreement_id", t.AgreementID,
+			"state", t.State, "want_state", to)
+		return false
+	}
+	if t.ProviderPID == "" {
+		// Unreachable through either trigger: one fires on the ACK that
+		// supplies the pid, the other on a message that could not have been
+		// routed without it. It stays as the honest guard against a third
+		// trigger being added without that ordering in mind.
+		slog.Error("refuse consumer transfer step before the provider pid is known",
+			"consumer_pid", t.ConsumerPID, "want_state", to)
+		return false
+	}
+	url := t.ProviderBaseURL + fmt.Sprintf(path, t.ProviderPID)
+	if err := validateOutgoingCallback(url); err != nil {
+		slog.Error("reject consumer transfer push", "url", url, "error", err)
+		return false
+	}
+	pushCallback(url, msg)
+	if err := h.store.SetConsumerTransferState(t.ConsumerPID, t.State, to, time.Now()); err != nil {
+		if errors.Is(err, store.ErrStateChanged) {
+			slog.Warn("drop stale consumer transfer state update",
+				"consumer_pid", t.ConsumerPID, "want_state", to, "error", err)
+			return false
+		}
+		slog.Error("update consumer transfer state", "consumer_pid", t.ConsumerPID, "error", err)
+		return false
+	}
+	return true
+}
+
+// driveConsumerTransfer walks the configured sequence, pushing one message
+// per step and stopping at the first refusal. Each step's write is the
+// precondition the next step is checked against, exactly as in the provider
+// role's driver.
+func (h transferHandler) driveConsumerTransfer(t store.ConsumerTransfer) {
+	_, sequence := resolveConsumerTransferPolicy(h.cfg, t.AgreementID)
+	for i, state := range sequence {
+		if i > 0 {
+			time.Sleep(h.stepDelay)
+		}
+		if !h.pushConsumerStep(t, state) {
+			return
+		}
+		t.State = state
+	}
+}
+
+// maybeDriveConsumerTransfer releases the configured sequence if this state
+// is the one the policy waits for. Both triggers funnel through here so the
+// comparison lives in one place.
+func (h transferHandler) maybeDriveConsumerTransfer(t store.ConsumerTransfer, reached string) {
+	after, sequence := resolveConsumerTransferPolicy(h.cfg, t.AgreementID)
+	if len(sequence) == 0 || reached != after {
+		return
+	}
+	t.State = reached
+	go h.driveConsumerTransfer(t)
 }

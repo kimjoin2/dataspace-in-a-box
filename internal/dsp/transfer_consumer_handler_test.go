@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
@@ -143,5 +144,142 @@ func TestTransferRequestMessageShape(t *testing.T) {
 	// dataAddress is only for push transfers, and this connector pulls.
 	if _, ok := got["dataAddress"]; ok {
 		t.Error("dataAddress must be absent for a pull transfer")
+	}
+}
+
+// seedConsumerTransferFor writes a consumer-role transfer under a chosen
+// agreement, pointed at a chosen provider base URL, and returns its consumer
+// pid — the id its endpoints are addressed by.
+func seedConsumerTransferFor(t *testing.T, st *store.Store, state, agreementID, providerBaseURL string) string {
+	t.Helper()
+	now := time.Now()
+	id := "urn:uuid:c-" + agreementID + "-" + state
+	if err := st.CreateConsumerTransfer(store.ConsumerTransfer{
+		ConsumerPID:     id,
+		ProviderPID:     "urn:uuid:p-1",
+		ProviderBaseURL: providerBaseURL,
+		AgreementID:     agreementID,
+		Format:          "HTTP-PULL",
+		State:           state,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
+	return id
+}
+
+// deliverInboundStart posts a TransferStartMessage to the consumer-role
+// transfer with the given id, which is how the provider starts it.
+func deliverInboundStart(t *testing.T, h transferHandler, id string) {
+	t.Helper()
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + TransferStartMessageType + `",` +
+		`"providerPid":"urn:uuid:p-1","consumerPid":"` + id + `"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		VersionPath+"/transfers/"+id+"/start", strings.NewReader(body))
+	req.SetPathValue("id", id)
+	h.handleTransferStart(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inbound start: got %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
+// TP_C:02-01's shape, and the test that justifies the `after` field. A
+// driver that fired as soon as its step became legal would send this
+// termination from REQUESTED — termination is legal there — and the
+// provider's start would then land on a terminated transfer.
+func TestConsumerDriverWaitsForTheTriggerState(t *testing.T) {
+	fc := newFakeTransferConsumer(t)
+	cfg := config.Config{ConsumerTransferPolicies: []config.ConsumerTransferPolicy{
+		{AgreementID: "urn:uuid:a", After: TransferStarted, Sequence: []string{TransferTerminated}},
+	}}
+	h, st := newTestTransferHandler(t, cfg)
+	id := seedConsumerTransferFor(t, st, TransferRequested, "urn:uuid:a", fc.srv.URL)
+	tr, _, err := st.GetConsumerTransfer(id)
+	if err != nil {
+		t.Fatalf("GetConsumerTransfer: %v", err)
+	}
+
+	// Drive the REQUESTED trigger point for real. Reaching it is not enough:
+	// this policy waits for STARTED, so the ACK must release nothing. Seeding
+	// the row and simply not calling this would prove only that an untaken
+	// branch is quiet.
+	h.onTransferRequestAcknowledged(tr, "urn:uuid:p-ack")
+	fc.receivedNothing(t, 50*time.Millisecond)
+
+	deliverInboundStart(t, h, id)
+
+	got := fc.waitFor(t, 1)
+	if len(got) != 1 || got[0].msgType != TransferTerminationMessageType {
+		t.Fatalf("after the start, pushed %v, want one termination", got)
+	}
+}
+
+// TP_C:02-05: the sequence is released by the ACK, not by a provider
+// message, because no provider message ever arrives in that test.
+func TestConsumerDriverFiresFromRequestedAfterTheAck(t *testing.T) {
+	fc := newFakeTransferConsumer(t)
+	cfg := config.Config{ConsumerTransferPolicies: []config.ConsumerTransferPolicy{
+		{AgreementID: "urn:uuid:a", After: TransferRequested, Sequence: []string{TransferTerminated}},
+	}}
+	h, st := newTestTransferHandler(t, cfg)
+	id := seedConsumerTransferFor(t, st, TransferRequested, "urn:uuid:a", fc.srv.URL)
+	tr, _, err := st.GetConsumerTransfer(id)
+	if err != nil {
+		t.Fatalf("GetConsumerTransfer: %v", err)
+	}
+
+	h.onTransferRequestAcknowledged(tr, "urn:uuid:p-ack")
+
+	got := fc.waitFor(t, 1)
+	if len(got) != 1 || got[0].msgType != TransferTerminationMessageType {
+		t.Fatalf("pushed %v, want one termination", got)
+	}
+	// The URL must carry the provider pid the ACK supplied, not the empty
+	// value the row held before it.
+	if !strings.Contains(got[0].path, "urn:uuid:p-ack") {
+		t.Errorf("pushed to %q, which omits the provider pid the ACK supplied", got[0].path)
+	}
+}
+
+// TP_C:02-03: two steps, in order.
+func TestConsumerDriverWalksTheWholeSequence(t *testing.T) {
+	fc := newFakeTransferConsumer(t)
+	cfg := config.Config{ConsumerTransferPolicies: []config.ConsumerTransferPolicy{
+		{AgreementID: "urn:uuid:a", After: TransferStarted,
+			Sequence: []string{TransferSuspended, TransferTerminated}},
+	}}
+	h, st := newTestTransferHandler(t, cfg)
+	id := seedConsumerTransferFor(t, st, TransferRequested, "urn:uuid:a", fc.srv.URL)
+
+	deliverInboundStart(t, h, id)
+
+	got := fc.waitFor(t, 2)
+	if len(got) != 2 ||
+		got[0].msgType != TransferSuspensionMessageType ||
+		got[1].msgType != TransferTerminationMessageType {
+		t.Fatalf("pushed %v, want suspension then termination", got)
+	}
+}
+
+// The same stop-not-skip rule the provider driver enforces, checked from the
+// consumer side. The third step would be legal again from where the refused
+// second step leaves the transfer, so a driver that skipped would push it.
+func TestConsumerDriverStopsAtAnIllegalStep(t *testing.T) {
+	fc := newFakeTransferConsumer(t)
+	cfg := config.Config{ConsumerTransferPolicies: []config.ConsumerTransferPolicy{
+		{AgreementID: "urn:uuid:a", After: TransferStarted,
+			Sequence: []string{TransferTerminated, TransferCompleted, TransferSuspended}},
+	}}
+	h, st := newTestTransferHandler(t, cfg)
+	id := seedConsumerTransferFor(t, st, TransferRequested, "urn:uuid:a", fc.srv.URL)
+
+	deliverInboundStart(t, h, id)
+
+	got := fc.waitFor(t, 1)
+	time.Sleep(50 * time.Millisecond)
+	if len(got) != 1 || got[0].msgType != TransferTerminationMessageType {
+		t.Fatalf("pushed %v, want exactly one termination", got)
 	}
 }
