@@ -38,8 +38,14 @@ type Negotiation struct {
 	// negotiation_handler.go's handleReRequest doc comment for the rule
 	// this field enforces.
 	Rerequested bool
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// CounterpartyID is the participant this row is with, recorded so an
+	// outbound message can be addressed to them. It comes from the
+	// authenticated request that created the row, or from the initiate call
+	// that started it — the only two honest sources. Empty on rows written
+	// before authentication existed.
+	CounterpartyID string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // ConsumerNegotiation is one persisted contract negotiation this connector
@@ -59,8 +65,14 @@ type ConsumerNegotiation struct {
 	State           string
 	DatasetID       string
 	OfferID         string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// CounterpartyID is the participant this row is with, recorded so an
+	// outbound message can be addressed to them. It comes from the
+	// authenticated request that created the row, or from the initiate call
+	// that started it — the only two honest sources. Empty on rows written
+	// before authentication existed.
+	CounterpartyID string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // Agreement records an agreement this connector is party to, however it came
@@ -108,8 +120,14 @@ type TransferProcess struct {
 	State           string
 	CallbackAddress string
 	Format          string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// CounterpartyID is the participant this row is with, recorded so an
+	// outbound message can be addressed to them. It comes from the
+	// authenticated request that created the row, or from the initiate call
+	// that started it — the only two honest sources. Empty on rows written
+	// before authentication existed.
+	CounterpartyID string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 const schema = `
@@ -255,17 +273,42 @@ func Open(path string) (*Store, error) {
 // column, so the check finds it and nothing runs; on an older one the column
 // is added. Idempotent either way.
 func migrate(db *sql.DB) error {
+	if err := addColumnIfMissing(db, "negotiations", "rerequested",
+		`ALTER TABLE negotiations ADD COLUMN rerequested INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	// counterparty_id is who the row is with, recorded so an outbound message
+	// can be addressed to them. Empty on rows created before authentication
+	// existed, which is why the default is '' rather than a failure: those
+	// exchanges predate anyone to address.
+	for _, table := range []string{
+		"negotiations", "consumer_negotiations",
+		"transfer_processes", "consumer_transfer_processes",
+	} {
+		if err := addColumnIfMissing(db, table, "counterparty_id",
+			`ALTER TABLE `+table+` ADD COLUMN counterparty_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addColumnIfMissing is idempotent: SQLite has no ADD COLUMN IF NOT EXISTS,
+// so the column list is checked first. Every migration in this file is a
+// column addition, which is the only schema change SQLite performs cheaply
+// and the only one this connector has needed.
+func addColumnIfMissing(db *sql.DB, table, column, stmt string) error {
 	var n int
 	if err := db.QueryRow(
-		`SELECT COUNT(*) FROM pragma_table_info('negotiations') WHERE name = 'rerequested'`,
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column,
 	).Scan(&n); err != nil {
-		return fmt.Errorf("inspect negotiations columns: %w", err)
+		return fmt.Errorf("inspect %s columns: %w", table, err)
 	}
 	if n > 0 {
 		return nil
 	}
-	if _, err := db.Exec(`ALTER TABLE negotiations ADD COLUMN rerequested INTEGER NOT NULL DEFAULT 0`); err != nil {
-		return fmt.Errorf("add rerequested column: %w", err)
+	if _, err := db.Exec(stmt); err != nil {
+		return fmt.Errorf("add %s.%s column: %w", table, column, err)
 	}
 	return nil
 }
@@ -293,9 +336,9 @@ func NewUUID() (string, error) {
 // Create persists a new negotiation.
 func (s *Store) Create(n Negotiation) error {
 	_, err := s.db.Exec(
-		`INSERT INTO negotiations (provider_pid, consumer_pid, state, dataset_id, offer_id, callback_address, rerequested, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		n.ProviderPID, n.ConsumerPID, n.State, n.DatasetID, n.OfferID, n.CallbackAddress, n.Rerequested,
+		`INSERT INTO negotiations (provider_pid, consumer_pid, state, dataset_id, offer_id, callback_address, rerequested, counterparty_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.ProviderPID, n.ConsumerPID, n.State, n.DatasetID, n.OfferID, n.CallbackAddress, n.Rerequested, n.CounterpartyID,
 		n.CreatedAt.UTC().Format(timeFormat), n.UpdatedAt.UTC().Format(timeFormat),
 	)
 	if err != nil {
@@ -307,13 +350,13 @@ func (s *Store) Create(n Negotiation) error {
 // Get returns the negotiation with the given provider pid.
 func (s *Store) Get(providerPID string) (Negotiation, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT provider_pid, consumer_pid, state, dataset_id, offer_id, callback_address, rerequested, created_at, updated_at
+		`SELECT provider_pid, consumer_pid, state, dataset_id, offer_id, callback_address, rerequested, created_at, updated_at, counterparty_id
 		 FROM negotiations WHERE provider_pid = ?`, providerPID)
 
 	var n Negotiation
 	var created, updated string
 	err := row.Scan(&n.ProviderPID, &n.ConsumerPID, &n.State, &n.DatasetID, &n.OfferID,
-		&n.CallbackAddress, &n.Rerequested, &created, &updated)
+		&n.CallbackAddress, &n.Rerequested, &created, &updated, &n.CounterpartyID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Negotiation{}, false, nil
 	}
@@ -401,9 +444,9 @@ func (s *Store) explainNoUpdate(providerPID, want string) error {
 // CreateConsumer persists a new consumer-role negotiation.
 func (s *Store) CreateConsumer(n ConsumerNegotiation) error {
 	_, err := s.db.Exec(
-		`INSERT INTO consumer_negotiations (consumer_pid, provider_pid, provider_base_url, state, dataset_id, offer_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		n.ConsumerPID, n.ProviderPID, n.ProviderBaseURL, n.State, n.DatasetID, n.OfferID,
+		`INSERT INTO consumer_negotiations (consumer_pid, provider_pid, provider_base_url, state, dataset_id, offer_id, counterparty_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.ConsumerPID, n.ProviderPID, n.ProviderBaseURL, n.State, n.DatasetID, n.OfferID, n.CounterpartyID,
 		n.CreatedAt.UTC().Format(timeFormat), n.UpdatedAt.UTC().Format(timeFormat),
 	)
 	if err != nil {
@@ -415,13 +458,13 @@ func (s *Store) CreateConsumer(n ConsumerNegotiation) error {
 // GetConsumer returns the consumer-role negotiation with the given consumer pid.
 func (s *Store) GetConsumer(consumerPID string) (ConsumerNegotiation, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT consumer_pid, provider_pid, provider_base_url, state, dataset_id, offer_id, created_at, updated_at
+		`SELECT consumer_pid, provider_pid, provider_base_url, state, dataset_id, offer_id, created_at, updated_at, counterparty_id
 		 FROM consumer_negotiations WHERE consumer_pid = ?`, consumerPID)
 
 	var n ConsumerNegotiation
 	var created, updated string
 	err := row.Scan(&n.ConsumerPID, &n.ProviderPID, &n.ProviderBaseURL, &n.State, &n.DatasetID, &n.OfferID,
-		&created, &updated)
+		&created, &updated, &n.CounterpartyID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConsumerNegotiation{}, false, nil
 	}
@@ -538,9 +581,9 @@ func (s *Store) GetAgreement(agreementID string) (Agreement, bool, error) {
 // CreateTransfer persists a new transfer process.
 func (s *Store) CreateTransfer(t TransferProcess) error {
 	_, err := s.db.Exec(
-		`INSERT INTO transfer_processes (provider_pid, consumer_pid, agreement_id, state, callback_address, format, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ProviderPID, t.ConsumerPID, t.AgreementID, t.State, t.CallbackAddress, t.Format,
+		`INSERT INTO transfer_processes (provider_pid, consumer_pid, agreement_id, state, callback_address, format, counterparty_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ProviderPID, t.ConsumerPID, t.AgreementID, t.State, t.CallbackAddress, t.Format, t.CounterpartyID,
 		t.CreatedAt.UTC().Format(timeFormat), t.UpdatedAt.UTC().Format(timeFormat),
 	)
 	if err != nil {
@@ -552,13 +595,13 @@ func (s *Store) CreateTransfer(t TransferProcess) error {
 // GetTransfer returns the transfer process with the given provider pid.
 func (s *Store) GetTransfer(providerPID string) (TransferProcess, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT provider_pid, consumer_pid, agreement_id, state, callback_address, format, created_at, updated_at
+		`SELECT provider_pid, consumer_pid, agreement_id, state, callback_address, format, created_at, updated_at, counterparty_id
 		 FROM transfer_processes WHERE provider_pid = ?`, providerPID)
 
 	var t TransferProcess
 	var created, updated string
 	err := row.Scan(&t.ProviderPID, &t.ConsumerPID, &t.AgreementID, &t.State, &t.CallbackAddress, &t.Format,
-		&created, &updated)
+		&created, &updated, &t.CounterpartyID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TransferProcess{}, false, nil
 	}
@@ -629,16 +672,22 @@ type ConsumerTransfer struct {
 	AgreementID     string
 	Format          string
 	State           string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// CounterpartyID is the participant this row is with, recorded so an
+	// outbound message can be addressed to them. It comes from the
+	// authenticated request that created the row, or from the initiate call
+	// that started it — the only two honest sources. Empty on rows written
+	// before authentication existed.
+	CounterpartyID string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // CreateConsumerTransfer persists a new consumer-role transfer.
 func (s *Store) CreateConsumerTransfer(t ConsumerTransfer) error {
 	_, err := s.db.Exec(
-		`INSERT INTO consumer_transfer_processes (consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ConsumerPID, t.ProviderPID, t.ProviderBaseURL, t.AgreementID, t.Format, t.State,
+		`INSERT INTO consumer_transfer_processes (consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, counterparty_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ConsumerPID, t.ProviderPID, t.ProviderBaseURL, t.AgreementID, t.Format, t.State, t.CounterpartyID,
 		t.CreatedAt.UTC().Format(timeFormat), t.UpdatedAt.UTC().Format(timeFormat),
 	)
 	if err != nil {
@@ -651,13 +700,13 @@ func (s *Store) CreateConsumerTransfer(t ConsumerTransfer) error {
 // consumer pid.
 func (s *Store) GetConsumerTransfer(consumerPID string) (ConsumerTransfer, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, created_at, updated_at
+		`SELECT consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, created_at, updated_at, counterparty_id
 		 FROM consumer_transfer_processes WHERE consumer_pid = ?`, consumerPID)
 
 	var t ConsumerTransfer
 	var created, updated string
 	err := row.Scan(&t.ConsumerPID, &t.ProviderPID, &t.ProviderBaseURL, &t.AgreementID, &t.Format, &t.State,
-		&created, &updated)
+		&created, &updated, &t.CounterpartyID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConsumerTransfer{}, false, nil
 	}

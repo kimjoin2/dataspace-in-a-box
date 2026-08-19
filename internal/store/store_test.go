@@ -895,3 +895,53 @@ func TestSetConsumerTransferProviderPID(t *testing.T) {
 		t.Errorf("ProviderPID = %q, want urn:uuid:p-3", got.ProviderPID)
 	}
 }
+
+// The counterparty is who the row is with, and every table carries it so an
+// outbound message can be addressed. A column added to the SELECT without a
+// matching Scan target compiles cleanly and fails only at runtime, so each
+// table gets a round trip.
+func TestCounterpartyIDRoundTripsOnEveryTable(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	const peer = "urn:participant:peer"
+
+	if err := s.Create(Negotiation{ProviderPID: "p1", ConsumerPID: "c1", State: "REQUESTED",
+		DatasetID: "d", OfferID: "o", CallbackAddress: "http://x", CounterpartyID: peer,
+		CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got, _, err := s.Get("p1"); err != nil || got.CounterpartyID != peer {
+		t.Errorf("negotiations: %q, %v", got.CounterpartyID, err)
+	}
+
+	if err := s.CreateConsumer(ConsumerNegotiation{ConsumerPID: "c2", ProviderBaseURL: "http://p",
+		State: "REQUESTED", DatasetID: "d", OfferID: "o", CounterpartyID: peer,
+		CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+	if got, _, err := s.GetConsumer("c2"); err != nil || got.CounterpartyID != peer {
+		t.Errorf("consumer_negotiations: %q, %v", got.CounterpartyID, err)
+	}
+
+	if err := s.CreateTransfer(TransferProcess{ProviderPID: "p3", ConsumerPID: "c3",
+		AgreementID: "a", State: "REQUESTED", CallbackAddress: "http://x", Format: "HTTP-PULL",
+		CounterpartyID: peer, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+	if got, _, err := s.GetTransfer("p3"); err != nil || got.CounterpartyID != peer {
+		t.Errorf("transfer_processes: %q, %v", got.CounterpartyID, err)
+	}
+
+	if err := s.CreateConsumerTransfer(ConsumerTransfer{ConsumerPID: "c4", ProviderBaseURL: "http://p",
+		AgreementID: "a", Format: "HTTP-PULL", State: "REQUESTED", CounterpartyID: peer,
+		CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
+	if got, _, err := s.GetConsumerTransfer("c4"); err != nil || got.CounterpartyID != peer {
+		t.Errorf("consumer_transfer_processes: %q, %v", got.CounterpartyID, err)
+	}
+}
