@@ -1,0 +1,20 @@
+# The provider: advertises one dataset, and has a file behind it.
+public_url: http://provider:8080
+dev_mode: true
+participant_id: urn:participant:provider
+participant_key: /etc/dsbox/participant.key
+roster: /etc/dsbox/roster.json
+dsp_addr: 0.0.0.0:8080
+mgmt_addr: 0.0.0.0:8081
+mgmt_token: demo-management-token
+# The image runs as nonroot, whose only writable home is here.
+data_dir: /home/nonroot/data
+
+datasets:
+  - id: urn:dataset:sample
+    source_file: /etc/dsbox/data/sample.csv
+
+# No transfer_policies entry, so this agreement gets the default [STARTED]:
+# accept the request and start. That is the configuration that serves data —
+# a sequence naming COMPLETED would end the transfer, and with it the access,
+# before the consumer could fetch anything.

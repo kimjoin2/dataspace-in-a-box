@@ -233,10 +233,21 @@ func resolveConsumerTransferPolicy(cfg config.Config, agreementID string) (strin
 // sitting in that buffer for the whole retry schedule — while the
 // counterparty waits for it before it is ready to receive the push.
 func (h transferHandler) driveTransfer(t store.TransferProcess) {
-	for i, state := range resolveTransferSequence(h.cfg, t.AgreementID) {
-		if i > 0 {
-			time.Sleep(h.stepDelay)
-		}
+	for _, state := range resolveTransferSequence(h.cfg, t.AgreementID) {
+		// Before every step, including the first. The first used to go out
+		// immediately, and under load that lost a real race: on 2026-08-19,
+		// with the demo's image builds competing for the machine, a start
+		// pushed 22 ms after the acknowledgment was answered 409 by a
+		// counterparty that had not finished recording that acknowledgment
+		// yet, and then 404 as it moved on. TP:02-01 failed twice in a row
+		// and passed again once the machine was quiet.
+		//
+		// The acknowledgment is written and sent before this goroutine runs,
+		// but the counterparty's own processing of it is not something this
+		// connector can observe. The same pause that separates later steps is
+		// the cheapest thing that gives it room, and it costs one delay per
+		// transfer.
+		time.Sleep(h.stepDelay)
 		if !h.pushTransferStep(t, state) {
 			return
 		}

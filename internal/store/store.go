@@ -778,3 +778,32 @@ func (s *Store) SetConsumerTransferProviderPID(consumerPID, providerPID string, 
 	}
 	return nil
 }
+
+// ListAgreements returns every agreement, oldest first. Unpaginated: an
+// agreement list large enough to need paging is a problem worth having first.
+func (s *Store) ListAgreements() ([]Agreement, error) {
+	rows, err := s.db.Query(
+		`SELECT agreement_id, dataset_id, consumer_pid, origin, created_at
+		 FROM agreements ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list agreements: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Agreement
+	for rows.Next() {
+		var a Agreement
+		var created string
+		if err := rows.Scan(&a.AgreementID, &a.DatasetID, &a.ConsumerPID, &a.Origin, &created); err != nil {
+			return nil, fmt.Errorf("list agreements: %w", err)
+		}
+		if a.CreatedAt, err = time.Parse(timeFormat, created); err != nil {
+			return nil, fmt.Errorf("list agreements: parse created_at: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list agreements: %w", err)
+	}
+	return out, nil
+}

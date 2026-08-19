@@ -1,0 +1,11 @@
+# The consumer: advertises nothing, and pulls what it negotiates for.
+public_url: http://consumer:8080
+dev_mode: true
+participant_id: urn:participant:consumer
+participant_key: /etc/dsbox/participant.key
+roster: /etc/dsbox/roster.json
+dsp_addr: 0.0.0.0:8080
+mgmt_addr: 0.0.0.0:8081
+mgmt_token: demo-management-token
+# The image runs as nonroot, whose only writable home is here.
+data_dir: /home/nonroot/data

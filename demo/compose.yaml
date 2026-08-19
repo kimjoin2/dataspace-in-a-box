@@ -1,0 +1,38 @@
+# Two connectors with distinct identities and one shared roster. They reach
+# each other by service name on this network, which is why neither needs a
+# published port for the protocol itself — only the management listeners are
+# published, and only so demo.sh can drive them.
+services:
+  provider:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    volumes:
+      - ./provider.yaml:/etc/dsbox/config.yaml:ro
+      - ./generated/provider.key:/etc/dsbox/participant.key:ro
+      - ./generated/roster.json:/etc/dsbox/roster.json:ro
+      - ./generated/sample.csv:/etc/dsbox/data/sample.csv:ro
+    ports:
+      # Both listeners are published so run.sh can drive this connector from
+      # the host. The image is distroless — no shell, no wget — so there is no
+      # driving it from inside.
+      - "127.0.0.1:9180:8080"
+      - "127.0.0.1:9181:8081"
+
+  consumer:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      - provider
+    volumes:
+      - ./consumer.yaml:/etc/dsbox/config.yaml:ro
+      - ./generated/consumer.key:/etc/dsbox/participant.key:ro
+      - ./generated/roster.json:/etc/dsbox/roster.json:ro
+      # The whole data directory, not just downloads: mounting a
+      # subdirectory makes Docker create the parent as root, and the image
+      # runs as nonroot, which then cannot write its own database there.
+      - ./generated/consumer-data:/home/nonroot/data
+    ports:
+      - "127.0.0.1:9280:8080"
+      - "127.0.0.1:9281:8081"

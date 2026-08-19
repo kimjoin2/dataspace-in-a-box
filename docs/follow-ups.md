@@ -179,17 +179,6 @@ to decide there whether an unknown dataset is a `400` at import time or a
 failure at pull time. Importing a contract for something this connector cannot
 serve is the same defect family as §25.1, one level down.
 
-**A terminal step on a timer and a real data plane cannot both be right.**
-`transfer_policies` sequences are driven by `transferStepDelay` alone, so
-`[STARTED, COMPLETED]` completes 200 ms after starting. Harmless in Phase A,
-which moves no bytes. In Phase B `STARTED` is what authorizes a pull, so the
-same configuration would cut access before a consumer could fetch anything.
-Phase B has to either bound autonomous completion by something the data plane
-knows (bytes served, a pull observed, an idle window) or document plainly that
-a terminal step and a real `source_file` are mutually exclusive. Recorded in
-`DECISIONS.md` §25.7's trade-off as well, because it is a consequence of that
-decision rather than a defect in its implementation.
-
 **The agreement guard's residual race is recorded only in a comment.** In
 `negotiation_handler.go`'s `outcome.pushAgreement` branch, the negotiation is
 re-read before the agreement row is inserted, so an agreement is not recorded
@@ -204,12 +193,16 @@ small and the consequence is bounded today (a transfer could be started under
 an agreement whose negotiation died), and it grows in Phase B, where that row
 is what authorizes serving bytes.
 
-**The 200 ms `transferStepDelay` has a margin nobody has measured.** The first
-real `TP` run needed zero retries — all eight `callback endpoint rejected
-push` lines in the connector log were negotiation pushes hitting the
-pre-existing §23.7 registration race, and not one was a transfer push. So the
-pause is comfortably sufficient on this machine and completely unbounded
-anywhere else: a single observation of "never needed the retry" says nothing
-about how much slack there was. The way to find out is to shorten it
-deliberately until pushes start being refused, which is worth doing the next
-time there is a reason to run the TCK repeatedly.
+**The 200 ms `transferStepDelay`'s margin is measured for later steps and
+still unmeasured for the first.** The margin question was answered the hard
+way on 2026-08-19: the *first* push had no pause at all, and under load — the
+demo's image builds competing for the machine — a start pushed 22 ms after the
+acknowledgment drew a `409` from a counterparty that had not finished
+recording that acknowledgment, then `404` as it moved on. `TP:02-01` failed
+twice in a row and passed again on a quiet machine. The first step now takes
+the same pause as the others, which removes that race.
+
+What is still unmeasured is how much slack 200 ms actually has. The way to
+find out is to shorten it deliberately until pushes start being refused. It is
+worth doing, and it is now cheaper than it was: `make demo` and `make tck` can
+be run together to put the machine under exactly the load that exposed this.

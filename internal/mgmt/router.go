@@ -34,6 +34,7 @@ func NewRouter(cfg config.Config, st *store.Store) http.Handler {
 
 	h := agreementHandler{store: st}
 	mux.Handle("POST /agreements", authenticated(cfg.MgmtToken, http.HandlerFunc(h.importAgreement)))
+	mux.Handle("GET /agreements", authenticated(cfg.MgmtToken, http.HandlerFunc(h.listAgreements)))
 
 	return mux
 }
@@ -131,4 +132,44 @@ func (h agreementHandler) importAgreement(w http.ResponseWriter, r *http.Request
 
 	slog.Info("imported agreement", "agreement_id", body.AgreementID, "dataset_id", body.DatasetID)
 	w.WriteHeader(http.StatusCreated)
+}
+
+// listAgreements returns every agreement this connector holds, in the order
+// they were made. It exists because an operator otherwise has no way to see
+// what a negotiation concluded — the negotiation endpoints report a state,
+// not the agreement id a transfer has to cite — and because the demo needs
+// exactly that to get from "we agreed" to "transfer under it".
+//
+// Read-only and unpaginated. An agreement list that outgrows one response is
+// a problem worth having first.
+func (h agreementHandler) listAgreements(w http.ResponseWriter, r *http.Request) {
+	agreements, err := h.store.ListAgreements()
+	if err != nil {
+		slog.Error("list agreements", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	out := make([]agreementView, 0, len(agreements))
+	for _, a := range agreements {
+		out = append(out, agreementView{
+			AgreementID: a.AgreementID,
+			DatasetID:   a.DatasetID,
+			Origin:      a.Origin,
+			CreatedAt:   a.CreatedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{"agreements": out}); err != nil {
+		slog.Error("encode agreements", "error", err)
+	}
+}
+
+// agreementView is the wire shape, kept separate from store.Agreement so the
+// management API does not leak whichever columns storage happens to carry.
+// consumerPid is deliberately absent: it is an internal correlation id.
+type agreementView struct {
+	AgreementID string `json:"agreementId"`
+	DatasetID   string `json:"datasetId"`
+	Origin      string `json:"origin"`
+	CreatedAt   string `json:"createdAt"`
 }

@@ -32,14 +32,20 @@ CI gate. The single failure is `CN:02-07`, which fails not because a protocol
 is missing but because no connector-side mechanism in this milestone produces
 the behavior it requires.
 
-The current milestone serves the transfer process protocol in both roles.
-It is the **control plane only**: this connector runs a transfer's lifecycle —
-requested, started, suspended, completed, terminated — from either side, and
-moves no data at all. That is not a gap the `TP`/`TP_C` suites would have
-caught, because they do not move data either; no test in either sends,
-receives, or asserts a single byte. A green transfer suite is therefore not
-evidence that this connector can transfer data, and nothing here should be
-read as claiming otherwise.
+This connector now moves data. A dataset with a `source_file` is served over
+HTTP-PULL to a counterparty holding a started transfer, and a consumer that
+receives a `dataAddress` fetches it and writes it down. The data endpoint sits
+behind the same participant credential as everything else and adds three
+checks: the transfer must exist, be `STARTED`, and belong to the participant
+asking. A `dataAddress` is an address rather than a capability — possessing
+one grants nothing.
+
+The TCK cannot verify any of that. No test in either transfer suite sends,
+receives, or asserts a byte, so a green suite is not evidence that data moves.
+That evidence is `make demo`, which stands two connectors up with distinct
+identities and a shared roster, has them authenticate, negotiate an agreement,
+run a transfer, and move a real file — then diffs what arrived against what
+was sent and exits non-zero if they differ.
 
 A protocol counts as done only when its TCK suite is added to the gate's
 whitelist, so this table cannot drift ahead of reality.
@@ -58,7 +64,12 @@ exactly as far as the config file beside it is: it must come from local disk,
 never from an untrusted channel. And a captured credential can be replayed
 until it expires, five minutes after it was minted.
 
-There is no release yet, and nothing here is ready to run.
+    make demo   # two connectors, one negotiated agreement, one file moved
+    make tck    # the compliance gate: 64 of 65, 0 outside it
+
+There is no release yet. The transfer's write timeout bounds how large a file
+can finish, and neither range requests nor resumption exist — a failed pull
+refetches from zero.
 
 ## Why this exists
 
