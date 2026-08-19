@@ -67,11 +67,14 @@ func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Reques
 	n := store.ConsumerNegotiation{
 		ConsumerPID:     consumerPID,
 		ProviderBaseURL: body.ConnectorAddress,
-		State:           StateRequested,
-		DatasetID:       body.DatasetID,
-		OfferID:         body.OfferID,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		// providerId is who the operator asked this connector to negotiate
+		// with, and is therefore the audience of everything it will send.
+		CounterpartyID: body.ProviderID,
+		State:          StateRequested,
+		DatasetID:      body.DatasetID,
+		OfferID:        body.OfferID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := h.store.CreateConsumer(n); err != nil {
 		slog.Error("create consumer negotiation", "error", err)
@@ -91,7 +94,7 @@ func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Reques
 // not be a bespoke one-shot send).
 func (h negotiationHandler) startNegotiation(n store.ConsumerNegotiation) {
 	msg := buildConsumerRequestMessage(n.ConsumerPID, n.DatasetID, n.OfferID, h.cfg.PublicURL+VersionPath)
-	providerPID, err := sendInitialRequest(n.ProviderBaseURL, msg)
+	providerPID, err := sendInitialRequest(n.ProviderBaseURL, msg, n.CounterpartyID)
 	if err != nil {
 		slog.Error("send initial request", "consumer_pid", n.ConsumerPID, "error", err)
 		return

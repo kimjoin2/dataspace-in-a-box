@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
@@ -30,12 +31,20 @@ const (
 // this is called, so the registration race pushCallback's retry schedule
 // exists for does not apply here — see the design spec's "The initial
 // request: goroutine dispatch, no retry" section.
-func sendInitialRequest(providerBaseURL string, msg ConsumerRequestMessage) (string, error) {
+func sendInitialRequest(providerBaseURL string, msg ConsumerRequestMessage, aud string) (string, error) {
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return "", fmt.Errorf("marshal initial request: %w", err)
 	}
-	resp, err := callbackHTTPClient.Post(providerBaseURL+consumerRequestPath, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, providerBaseURL+consumerRequestPath, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("build initial request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authorization := mintOutboundCredential(aud); authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := callbackHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("post initial request: %w", err)
 	}
@@ -58,13 +67,13 @@ func sendInitialRequest(providerBaseURL string, msg ConsumerRequestMessage) (str
 // buildConsumerRequestMessage's shape resent.
 func sendCounterRequest(n store.ConsumerNegotiation) bool {
 	url := n.ProviderBaseURL + fmt.Sprintf(consumerCounterRequestPath, n.ProviderPID)
-	return pushCallback(url, buildCounterRequestMessage(n))
+	return pushCallback(url, buildCounterRequestMessage(n), n.CounterpartyID)
 }
 
 // sendAcceptedEvent POSTs an ACCEPTED event for the offer n received.
 func sendAcceptedEvent(n store.ConsumerNegotiation) bool {
 	url := n.ProviderBaseURL + fmt.Sprintf(consumerEventsPath, n.ProviderPID)
-	return pushCallback(url, buildAcceptedEventMessage(n))
+	return pushCallback(url, buildAcceptedEventMessage(n), n.CounterpartyID)
 }
 
 // sendVerification POSTs verification for the agreement n received. Its
@@ -74,11 +83,11 @@ func sendAcceptedEvent(n store.ConsumerNegotiation) bool {
 // true.
 func sendVerification(n store.ConsumerNegotiation) bool {
 	url := n.ProviderBaseURL + fmt.Sprintf(consumerVerificationPath, n.ProviderPID)
-	return pushCallback(url, buildVerificationMessage(n))
+	return pushCallback(url, buildVerificationMessage(n), n.CounterpartyID)
 }
 
 // sendConsumerTermination POSTs a termination for n.
 func sendConsumerTermination(n store.ConsumerNegotiation) bool {
 	url := n.ProviderBaseURL + fmt.Sprintf(consumerTerminationPath, n.ProviderPID)
-	return pushCallback(url, buildConsumerTerminationMessage(n))
+	return pushCallback(url, buildConsumerTerminationMessage(n), n.CounterpartyID)
 }

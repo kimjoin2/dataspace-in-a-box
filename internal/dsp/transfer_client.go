@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
@@ -30,13 +31,20 @@ const (
 // Not retried, for the reason sendInitialRequest gives: a retry against a
 // provider that already accepted the first attempt creates a second
 // transfer, and there is no way to tell that case from a lost request.
-func sendTransferRequest(providerBaseURL string, msg TransferRequestMessage) (string, error) {
+func sendTransferRequest(providerBaseURL string, msg TransferRequestMessage, aud string) (string, error) {
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return "", fmt.Errorf("marshal transfer request: %w", err)
 	}
-	resp, err := callbackHTTPClient.Post(providerBaseURL+consumerTransferRequestPath,
-		"application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, providerBaseURL+consumerTransferRequestPath, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("build transfer request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authorization := mintOutboundCredential(aud); authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := callbackHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("post transfer request: %w", err)
 	}

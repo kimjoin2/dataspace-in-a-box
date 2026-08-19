@@ -31,7 +31,7 @@ func TestSendInitialRequest_Success(t *testing.T) {
 	defer srv.Close()
 
 	msg := buildConsumerRequestMessage("urn:uuid:consumer-1", "urn:dataset:a", "urn:dataset:a#offer", "https://connector.example.org/2025-1")
-	got, err := sendInitialRequest(srv.URL, msg)
+	got, err := sendInitialRequest(srv.URL, msg, testAudience)
 	if err != nil {
 		t.Fatalf("sendInitialRequest: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestSendInitialRequest_ProviderRejectsSynchronously(t *testing.T) {
 	defer srv.Close()
 
 	msg := buildConsumerRequestMessage("urn:uuid:consumer-1", "urn:dataset:a", "urn:dataset:a#offer", "https://connector.example.org/2025-1")
-	if _, err := sendInitialRequest(srv.URL, msg); err == nil {
+	if _, err := sendInitialRequest(srv.URL, msg, testAudience); err == nil {
 		t.Error("sendInitialRequest: expected an error when the provider rejects the request")
 	}
 }

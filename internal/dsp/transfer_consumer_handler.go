@@ -85,11 +85,14 @@ func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.R
 	t := store.ConsumerTransfer{
 		ConsumerPID:     consumerPID,
 		ProviderBaseURL: body.ConnectorAddress,
-		AgreementID:     body.AgreementID,
-		Format:          body.Format,
-		State:           TransferRequested,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		// providerId is who the operator asked this connector to transfer
+		// with, and is therefore the audience of everything it will send.
+		CounterpartyID: body.ProviderID,
+		AgreementID:    body.AgreementID,
+		Format:         body.Format,
+		State:          TransferRequested,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := h.store.CreateConsumerTransfer(t); err != nil {
 		slog.Error("create consumer transfer", "consumer_pid", consumerPID, "error", err)
@@ -107,7 +110,7 @@ func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.R
 // the transfer where it stands rather than retrying.
 func (h transferHandler) requestTransfer(t store.ConsumerTransfer) {
 	callbackAddress := h.cfg.PublicURL + VersionPath
-	providerPID, err := sendTransferRequest(t.ProviderBaseURL, buildTransferRequestMessage(t, callbackAddress))
+	providerPID, err := sendTransferRequest(t.ProviderBaseURL, buildTransferRequestMessage(t, callbackAddress), t.CounterpartyID)
 	if err != nil {
 		slog.Error("send transfer request", "consumer_pid", t.ConsumerPID, "error", err)
 		return
@@ -192,7 +195,7 @@ func (h transferHandler) pushConsumerStep(t store.ConsumerTransfer, to string) b
 		slog.Error("reject consumer transfer push", "url", url, "error", err)
 		return false
 	}
-	pushCallback(url, msg)
+	pushCallback(url, msg, t.CounterpartyID)
 	if err := h.store.SetConsumerTransferState(t.ConsumerPID, t.State, to, time.Now()); err != nil {
 		if errors.Is(err, store.ErrStateChanged) {
 			slog.Warn("drop stale consumer transfer state update",

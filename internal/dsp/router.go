@@ -2,7 +2,9 @@ package dsp
 
 import (
 	"crypto/ed25519"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/auth"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
@@ -54,6 +56,25 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 		return outer
 	}
 
+	// Outbound is armed here rather than in each client, so "authentication
+	// is on" is one decision made in one place. With it off the minter stays
+	// the no-op default and nothing is attached.
+	mintOutboundCredential = func(aud string) string {
+		if aud == "" {
+			// Nothing to address. Sending an unaddressed credential would be
+			// worse than sending none: a token with an empty audience is one
+			// any participant would accept as its own.
+			slog.Warn("outbound message has no counterparty to address; sending it unsigned")
+			return ""
+		}
+		tok, err := auth.Mint(signKey, cfg.ParticipantID, aud, time.Now(), credentialTTL)
+		if err != nil {
+			slog.Error("mint outbound credential", "aud", aud, "error", err)
+			return ""
+		}
+		return "Bearer " + tok
+	}
+
 	// The version endpoint is mounted outside the wrap rather than exempted
 	// inside it. A path comparison in the middleware is a list someone has to
 	// remember to update; a route that is simply not behind the check cannot
@@ -79,3 +100,8 @@ func mountVersionEndpoint(mux *http.ServeMux) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	})
 }
+
+// credentialTTL is how long a credential this connector mints stays valid.
+// Five minutes, from DECISIONS.md section 10. Short enough to bound replay,
+// long enough that a whole TCK run (54 seconds) fits inside one token.
+const credentialTTL = 5 * time.Minute

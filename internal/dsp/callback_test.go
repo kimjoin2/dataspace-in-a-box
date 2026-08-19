@@ -1,10 +1,13 @@
 package dsp
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
+	"github.com/kimjoin2/dataspace-in-a-box/internal/auth"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,7 +51,7 @@ func TestPushCallbackSendsJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	pushCallback(srv.URL, map[string]string{"hello": "world"})
+	pushCallback(srv.URL, map[string]string{"hello": "world"}, testAudience)
 
 	select {
 	case body := <-received:
@@ -65,7 +68,7 @@ func TestPushCallbackSendsJSON(t *testing.T) {
 // exhausting the retries costs milliseconds; what is under test is that it
 // returns quietly, not how long the waits are.
 func TestPushCallbackToUnreachableURLDoesNotPanic(t *testing.T) {
-	pushCallback("http://127.0.0.1:1/unreachable", map[string]string{"hello": "world"})
+	pushCallback("http://127.0.0.1:1/unreachable", map[string]string{"hello": "world"}, testAudience)
 }
 
 // TestValidateCallbackURL is a direct, unfiltered-network table test of the
@@ -140,7 +143,7 @@ func TestPushCallbackReturnsTrueOnSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if !pushCallback(srv.URL, map[string]string{"hello": "world"}) {
+	if !pushCallback(srv.URL, map[string]string{"hello": "world"}, testAudience) {
 		t.Error("pushCallback = false, want true for a server that accepts the push")
 	}
 }
@@ -151,7 +154,76 @@ func TestPushCallbackReturnsFalseAfterExhaustingRetries(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if pushCallback(srv.URL, map[string]string{"hello": "world"}) {
+	if pushCallback(srv.URL, map[string]string{"hello": "world"}, testAudience) {
 		t.Error("pushCallback = true, want false once every attempt is rejected")
+	}
+}
+
+// testAudience is the counterparty these tests pretend to address. The
+// default minter is a no-op, so it only matters where a test arms a real one.
+const testAudience = "urn:participant:peer"
+
+// Every outbound call carries a credential, and it says who it is for. The
+// TCK cannot catch a mistake here — its mock endpoints accept whatever
+// arrives without inspecting the header — so this is the only evidence that
+// the minting side works at all.
+func TestOutboundPushCarriesAMintedCredential(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	restore := mintOutboundCredential
+	mintOutboundCredential = func(aud string) string {
+		tok, err := auth.Mint(priv, "urn:participant:self", aud, time.Now(), time.Minute)
+		if err != nil {
+			t.Errorf("Mint: %v", err)
+			return ""
+		}
+		return "Bearer " + tok
+	}
+	defer func() { mintOutboundCredential = restore }()
+
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if !pushCallback(srv.URL, map[string]string{"@type": "X"}, testAudience) {
+		t.Fatal("push failed")
+	}
+
+	raw, ok := strings.CutPrefix(got, "Bearer ")
+	if !ok {
+		t.Fatalf("Authorization = %q, want a Bearer credential", got)
+	}
+	keys := func(id string) (ed25519.PublicKey, bool) {
+		return pub, id == "urn:participant:self"
+	}
+	iss, err := auth.Verify(raw, keys, testAudience, time.Now())
+	if err != nil {
+		t.Fatalf("the credential this connector sent does not verify: %v", err)
+	}
+	if iss != "urn:participant:self" {
+		t.Errorf("iss = %q", iss)
+	}
+}
+
+// With authentication off nothing is attached, and the counterparty sees the
+// same anonymous request it saw before this milestone.
+func TestOutboundPushIsUnsignedWhenAuthenticationIsOff(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if !pushCallback(srv.URL, map[string]string{"@type": "X"}, testAudience) {
+		t.Fatal("push failed")
+	}
+	if got != "" {
+		t.Errorf("Authorization = %q, want none", got)
 	}
 }

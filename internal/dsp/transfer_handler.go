@@ -146,6 +146,9 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 	}
 	now := time.Now()
 	t := store.TransferProcess{
+		// Same as the negotiation row: the verified issuer of the request
+		// that created this transfer is who it is with.
+		CounterpartyID:  issuerFrom(r),
 		ProviderPID:     providerPID,
 		ConsumerPID:     msg.ConsumerPID,
 		AgreementID:     msg.AgreementID,
@@ -314,7 +317,7 @@ func (h transferHandler) pushTransferStep(t store.TransferProcess, to string) bo
 		slog.Error("reject callback push", "url", callbackURL, "error", err)
 		return false
 	}
-	pushCallback(callbackURL, msg)
+	pushCallback(callbackURL, msg, t.CounterpartyID)
 	if err := h.store.SetTransferState(t.ProviderPID, t.State, to, time.Now()); err != nil {
 		if errors.Is(err, store.ErrStateChanged) {
 			slog.Warn("drop stale transfer state update",
@@ -503,13 +506,14 @@ func (h transferHandler) lookup(w http.ResponseWriter, r *http.Request) (resolve
 	if ok {
 		return resolvedTransfer{
 			TransferProcess: store.TransferProcess{
-				ProviderPID: c.ProviderPID,
-				ConsumerPID: c.ConsumerPID,
-				AgreementID: c.AgreementID,
-				State:       c.State,
-				Format:      c.Format,
-				CreatedAt:   c.CreatedAt,
-				UpdatedAt:   c.UpdatedAt,
+				ProviderPID:    c.ProviderPID,
+				CounterpartyID: c.CounterpartyID,
+				ConsumerPID:    c.ConsumerPID,
+				AgreementID:    c.AgreementID,
+				State:          c.State,
+				Format:         c.Format,
+				CreatedAt:      c.CreatedAt,
+				UpdatedAt:      c.UpdatedAt,
 			},
 			Consumer:        true,
 			ProviderBaseURL: c.ProviderBaseURL,

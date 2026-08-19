@@ -90,6 +90,10 @@ func (h negotiationHandler) handleContractRequest(w http.ResponseWriter, r *http
 	}
 	now := time.Now()
 	n := store.Negotiation{
+		// The row exists because this party made an authenticated request,
+		// which makes the verified issuer the only honest record of who it is
+		// with. Empty when authentication is off.
+		CounterpartyID:  issuerFrom(r),
 		ProviderPID:     providerPID,
 		ConsumerPID:     msg.ConsumerPID,
 		State:           StateRequested,
@@ -576,7 +580,7 @@ func (h negotiationHandler) pushAndStore(n store.Negotiation, state, path string
 	if err := validateOutgoingCallback(callbackURL); err != nil {
 		slog.Error("reject callback push", "url", callbackURL, "error", err)
 	} else {
-		pushCallback(callbackURL, msg)
+		pushCallback(callbackURL, msg, n.CounterpartyID)
 	}
 	if err := h.store.SetState(n.ProviderPID, n.State, state, time.Now()); err != nil {
 		if errors.Is(err, store.ErrStateChanged) {

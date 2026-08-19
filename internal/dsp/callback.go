@@ -81,14 +81,18 @@ var callbackRetryBackoffs = []time.Duration{300 * time.Millisecond, 700 * time.M
 //
 // pushCallback itself does not filter url — callers must run it through
 // validateCallbackURL first (negotiation_handler.go's pushAndStore does).
-func pushCallback(url string, v any) bool {
+func pushCallback(url string, v any, aud string) bool {
 	body, err := json.Marshal(v)
 	if err != nil {
 		slog.Error("marshal callback push", "url", url, "error", err)
 		return false
 	}
 	for attempt := 0; ; attempt++ {
-		if attemptPush(url, body, attempt) {
+		// Minted per attempt, not once per call: a retry schedule that runs
+		// past the credential's five-minute life would otherwise present an
+		// expired token on its last try, which is the hardest kind of
+		// intermittent failure to read from a log.
+		if attemptPush(url, body, attempt, mintOutboundCredential(aud)) {
 			return true
 		}
 		if attempt >= len(callbackRetryBackoffs) {
@@ -99,8 +103,17 @@ func pushCallback(url string, v any) bool {
 }
 
 // attemptPush makes one POST attempt and reports whether it succeeded.
-func attemptPush(url string, body []byte, attempt int) bool {
-	resp, err := callbackHTTPClient.Post(url, "application/json", bytes.NewReader(body))
+func attemptPush(url string, body []byte, attempt int, authorization string) bool {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		slog.Error("build callback push", "url", url, "attempt", attempt, "error", err)
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := callbackHTTPClient.Do(req)
 	if err != nil {
 		slog.Error("push callback", "url", url, "attempt", attempt, "error", err)
 		return false
@@ -180,3 +193,16 @@ func isDisallowedCallbackIP(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
+
+// mintOutboundCredential returns the Authorization header value for a message
+// addressed to aud, or "" when authentication is off — in which case nothing
+// is attached and the counterparty sees the same anonymous request it saw
+// before this milestone.
+//
+// A package variable, set by NewRouter, following the shape
+// validateOutgoingCallback already established here. The trade-off is the
+// same one: two routers in one process would share it. Nothing in this
+// connector runs two, and the alternative — threading a credential through
+// every client function and every handler that calls one — buys nothing
+// until something does.
+var mintOutboundCredential = func(string) string { return "" }
