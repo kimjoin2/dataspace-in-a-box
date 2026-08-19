@@ -13,9 +13,10 @@ CI, so the claim is a build artifact rather than a sales conversation.
 
 The repository has been public since its first commit, so this section has
 always said what was true at the time. What is true now: two connectors can
-authenticate, negotiate an agreement, and move a real file, and `make demo`
-does exactly that end to end. What is not yet true is below the table — the
-gaps are named rather than left to be found.
+authenticate, negotiate an agreement that can carry a real term — a validity
+period — and move a real file that the data plane stops serving once that
+term expires, and `make demo` does exactly that end to end. What is not yet
+true is below the table — the gaps are named rather than left to be found.
 
 | DSP protocol | TCK suite | Status |
 |---|---|---|
@@ -73,12 +74,16 @@ until it expires, five minutes after it was minted.
 There is no release yet, and three gaps are worth knowing before anyone
 mistakes this for finished.
 
-**Contracts cannot carry terms.** The negotiation refuses any offer whose
-permission has a constraint, because this connector evaluates none — the rule
-`CLAUDE.md` states without exception is that a constraint which is not
-enforced is not accepted. Read the other way, that means the only agreement
-reachable today is unrestricted use. Validity periods and usage limits are
-the next milestone, not a present feature.
+**Contracts carry exactly one kind of term.** A dataset's `validity_until`
+now becomes a real ODRL constraint on its offer and agreement — not only a
+negotiation-time gate — and the data plane checks it on every pull, not only
+once at `AGREED`: a transfer that already reached `STARTED` still gets cut
+off once the window closes. `DECISIONS.md` section 14 fixes this at exactly
+two evaluated shapes, unrestricted use and a validity period; any other
+constraint still parses and is rejected, the rule `CLAUDE.md` states without
+exception — a constraint which is not enforced is not accepted. Usage
+purposes, spatial restrictions, and counts are not evaluated and are not a
+present feature.
 
 **The roster is not portable.** `DECISIONS.md` section 9 makes the operator's
 signature over it the trust anchor, and that signature is not implemented, so

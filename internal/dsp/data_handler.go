@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
@@ -27,9 +28,10 @@ type dataHandler struct {
 // bug report — and possessing it grants nothing. Authorization is the three
 // checks below, and a dataAddress is an address rather than a capability.
 //
-// The three refusals are distinguishable on purpose: an operator reading a
-// log should be able to tell "no such transfer" from "not yours" from "there
-// is nothing configured behind this dataset".
+// The refusals are distinguishable on purpose: an operator reading a log
+// should be able to tell "no such transfer" from "not yours" from "the
+// access window closed" from "there is nothing configured behind this
+// dataset".
 func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 	providerPID := r.PathValue("id")
 
@@ -63,11 +65,30 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	source, ok := h.sourceFileFor(t.AgreementID)
+	ds, ok := h.datasetFor(t.AgreementID)
 	if !ok {
 		// The agreement is real and the transfer is real; there is simply
 		// nothing configured behind the dataset. A different answer from 404
 		// and from 403, and the log line is what tells an operator which.
+		slog.Warn("data pull for a dataset this connector does not advertise",
+			"provider_pid", providerPID, "agreement_id", t.AgreementID)
+		writeError(w, TransferErrorType, http.StatusConflict,
+			"no data is configured for this transfer's dataset")
+		return
+	}
+
+	// The one check STARTED alone cannot make: a transfer that reached
+	// STARTED while the offer was still valid keeps that state (nothing
+	// re-checks it — see DECISIONS.md §23.4's account of why AGREED's
+	// re-check is the only one that ever ran), so every pull has to ask
+	// again on its own.
+	if ds.ValidityUntil != nil && !time.Now().Before(*ds.ValidityUntil) {
+		writeError(w, TransferErrorType, http.StatusConflict,
+			"the access window for this transfer's dataset has closed")
+		return
+	}
+
+	if ds.SourceFile == "" {
 		slog.Warn("data pull for a dataset with no source_file",
 			"provider_pid", providerPID, "agreement_id", t.AgreementID)
 		writeError(w, TransferErrorType, http.StatusConflict,
@@ -75,11 +96,11 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	f, err := os.Open(source)
+	f, err := os.Open(ds.SourceFile)
 	if err != nil {
 		// Validated at load, so reaching here means it moved underneath the
 		// connector while running.
-		slog.Error("open source_file", "path", source, "error", err)
+		slog.Error("open source_file", "path", ds.SourceFile, "error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -95,21 +116,24 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sourceFileFor resolves the agreement a transfer runs under to the file its
-// dataset is served from. The agreement carries the dataset id; the dataset
-// carries the path.
-func (h dataHandler) sourceFileFor(agreementID string) (string, bool) {
+// datasetFor resolves the agreement a transfer runs under to the dataset
+// it covers. The agreement carries the dataset id; this connector's own
+// live config carries everything handleData needs from it —
+// SourceFile and ValidityUntil alike — the same "config is an operator
+// declaration, re-read on every request" choice buildCatalog already makes,
+// not a value snapshotted at negotiation time.
+func (h dataHandler) datasetFor(agreementID string) (config.Dataset, bool) {
 	a, ok, err := h.store.GetAgreement(agreementID)
 	if err != nil || !ok {
 		if err != nil {
 			slog.Error("get agreement for data pull", "agreement_id", agreementID, "error", err)
 		}
-		return "", false
+		return config.Dataset{}, false
 	}
 	for _, d := range h.cfg.Datasets {
-		if d.ID == a.DatasetID && d.SourceFile != "" {
-			return d.SourceFile, true
+		if d.ID == a.DatasetID {
+			return d, true
 		}
 	}
-	return "", false
+	return config.Dataset{}, false
 }

@@ -5,6 +5,7 @@
 package dsp
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
@@ -182,13 +183,37 @@ func decideReRequestMatches(currentOfferID, requestedOfferID string) bool {
 	return requestedOfferID == currentOfferID
 }
 
-// carriesConstraint reports whether any rule in permission carries a
-// constraint. It does not look at what the constraint says, because v1
-// evaluates none of them (DECISIONS.md §14): presence alone is the whole
-// question.
-func carriesConstraint(permission []Permission) bool {
+// isValidityPeriodConstraint reports whether cs is exactly the one
+// constraint shape this connector can name: a single element, with
+// leftOperand/operator matching buildPermission's output and rightOperand
+// parsing as RFC 3339. Multiple elements, an unrecognized operand, or a
+// malformed timestamp are all "no" — recognizing the shape is a strict
+// enough test that "parses as JSON" and "this connector understands it" stay
+// two different questions, which is what §14 requires them to be.
+func isValidityPeriodConstraint(cs []json.RawMessage) bool {
+	if len(cs) != 1 {
+		return false
+	}
+	var c Constraint
+	if err := json.Unmarshal(cs[0], &c); err != nil {
+		return false
+	}
+	if c.LeftOperand != leftOperandDateTime || c.Operator != operatorLTEq {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339, c.RightOperand)
+	return err == nil
+}
+
+// hasUnenforceableConstraint reports whether any rule in permission carries
+// a constraint this connector cannot enforce. A rule with no constraint is
+// always fine; a rule whose constraint is exactly the validity-period shape
+// isValidityPeriodConstraint recognizes is also fine — DECISIONS.md §14's
+// second enforceable policy shape. Anything else parses as JSON (§14's
+// "parses successfully") and is still unenforceable.
+func hasUnenforceableConstraint(permission []Permission) bool {
 	for _, p := range permission {
-		if len(p.Constraint) > 0 {
+		if len(p.Constraint) > 0 && !isValidityPeriodConstraint(p.Constraint) {
 			return true
 		}
 	}
@@ -196,20 +221,21 @@ func carriesConstraint(permission []Permission) bool {
 }
 
 // decideOfferReaction returns the on_offer action to take for a received
-// offer. It is the identity function except in one case: an offer that
-// carries a constraint can never be accepted, because this connector
-// enforces no constraint at all, and `CLAUDE.md` states the rule without
-// exception — "never accept a constraint that is not enforced". Such an
-// offer takes the same path as a configured on_offer: reject, which is
-// DECISIONS.md §14's "parses successfully but causes the negotiation to be
-// rejected" exactly.
+// offer. It is the identity function except in one case: an offer carrying
+// a constraint this connector cannot enforce can never be accepted —
+// `CLAUDE.md` states the rule without exception, "never accept a constraint
+// that is not enforced". Such an offer takes the same path as a configured
+// on_offer: reject, which is DECISIONS.md §14's "parses successfully but
+// causes the negotiation to be rejected" exactly. An offer whose only
+// constraint is the recognized validity-period shape is not unenforceable,
+// so accept proceeds normally.
 //
 // The other three actions need no adjustment. counter declines the offer and
 // re-proposes this connector's own ask, passive holds OFFERED without
 // agreeing to anything, and reject already terminates — none of them adopt
 // the counterparty's terms, which is the thing the rule forbids.
-func decideOfferReaction(onOffer string, constrained bool) string {
-	if constrained && onOffer == "accept" {
+func decideOfferReaction(onOffer string, unenforceable bool) string {
+	if unenforceable && onOffer == "accept" {
 		return "reject"
 	}
 	return onOffer
@@ -221,8 +247,8 @@ func decideOfferReaction(onOffer string, constrained bool) string {
 // statement that it accepts those terms. It also closes the direct-agreement
 // path (`CN_C:01-04`), where a provider sends an agreement with no offer
 // ever pushed and decideOfferReaction is therefore never consulted.
-func decideAgreementReaction(onAgreement string, constrained bool) string {
-	if constrained && onAgreement == "verify" {
+func decideAgreementReaction(onAgreement string, unenforceable bool) string {
+	if unenforceable && onAgreement == "verify" {
 		return "reject"
 	}
 	return onAgreement
@@ -251,12 +277,19 @@ type NegotiationOffer struct {
 // offerID/datasetID. Every builder that emits one goes through it, in either
 // role, so there is exactly one place where the shape NegotiationOffer's doc
 // comment describes is actually produced.
-func newNegotiationOffer(offerID, datasetID string) NegotiationOffer {
+//
+// validityUntil is this connector's own opinion of datasetID's validity —
+// non-nil only when datasetID is one of this connector's *own* advertised
+// datasets (the provider role's call site). The two consumer-role call
+// sites echo a remote provider's dataset back to it and always pass nil:
+// this connector's config has no ValidityUntil for a dataset it does not
+// advertise.
+func newNegotiationOffer(offerID, datasetID string, validityUntil *time.Time) NegotiationOffer {
 	return NegotiationOffer{
 		ID:         offerID,
 		Type:       OfferType,
 		Target:     datasetID,
-		Permission: []Permission{{Action: useAction}},
+		Permission: buildPermission(validityUntil),
 	}
 }
 
@@ -371,26 +404,31 @@ func buildNegotiationStateDocument(n store.Negotiation) NegotiationStateDocument
 	}
 }
 
-func buildOfferMessage(n store.Negotiation) OfferMessage {
+// buildOfferMessage builds the offer this connector pushes as provider —
+// the sole call site of newNegotiationOffer that passes a non-nil
+// validityUntil, since n.DatasetID here is always one of this connector's
+// own advertised datasets.
+func buildOfferMessage(cfg config.Config, n store.Negotiation) OfferMessage {
+	ds, _ := findConfiguredDataset(cfg, n.DatasetID)
 	return OfferMessage{
 		Context:     []string{ContextURL},
 		ID:          newMessageID(),
 		Type:        ContractOfferMessageType,
 		ProviderPID: n.ProviderPID,
 		ConsumerPID: n.ConsumerPID,
-		Offer:       newNegotiationOffer(n.DatasetID+offerIDSuffix, n.DatasetID),
+		Offer:       newNegotiationOffer(n.DatasetID+offerIDSuffix, n.DatasetID, ds.ValidityUntil),
 	}
 }
 
 // buildAgreementMessage builds the agreement pushed on the AGREED
-// transition. publicURL is this connector's own address (config.Config's
-// PublicURL) — the design spec's Risks section notes that whether the wire
-// actually requires this field is unconfirmed; it is included on the
-// evidence available and the first real TCK run will say if it was
-// unnecessary. participantID is config.Config's ParticipantID — see
-// Agreement's doc comment for why it becomes the nested agreement's
-// assigner.
-func buildAgreementMessage(n store.Negotiation, publicURL, participantID string) AgreementMessage {
+// transition. cfg resolves two things: PublicURL — the design spec's Risks
+// section notes that whether the wire actually requires this field is
+// unconfirmed; it is included on the evidence available and the first real
+// TCK run will say if it was unnecessary — and ParticipantID, which becomes
+// the nested agreement's assigner (see Agreement's doc comment for why), and
+// n.DatasetID's own ValidityUntil, the same accessor isValid uses.
+func buildAgreementMessage(cfg config.Config, n store.Negotiation) AgreementMessage {
+	ds, _ := findConfiguredDataset(cfg, n.DatasetID)
 	return AgreementMessage{
 		Context:     []string{ContextURL},
 		ID:          newMessageID(),
@@ -401,12 +439,12 @@ func buildAgreementMessage(n store.Negotiation, publicURL, participantID string)
 			ID:         n.ProviderPID,
 			Type:       AgreementType,
 			Target:     n.DatasetID,
-			Permission: []Permission{{Action: useAction}},
-			Assigner:   participantID,
+			Permission: buildPermission(ds.ValidityUntil),
+			Assigner:   cfg.ParticipantID,
 			Assignee:   n.ConsumerPID,
 			Timestamp:  time.Now().UTC().Format(time.RFC3339),
 		},
-		CallbackAddress: publicURL + VersionPath,
+		CallbackAddress: cfg.PublicURL + VersionPath,
 	}
 }
 
@@ -492,7 +530,7 @@ func buildConsumerRequestMessage(consumerPID, datasetID, offerID, callbackAddres
 		Context:         []string{ContextURL},
 		Type:            ContractRequestMessageType,
 		ConsumerPID:     consumerPID,
-		Offer:           newNegotiationOffer(offerID, datasetID),
+		Offer:           newNegotiationOffer(offerID, datasetID, nil),
 		CallbackAddress: callbackAddress,
 	}
 }
@@ -503,7 +541,7 @@ func buildCounterRequestMessage(n store.ConsumerNegotiation) CounterRequestMessa
 		Type:        ContractRequestMessageType,
 		ProviderPID: n.ProviderPID,
 		ConsumerPID: n.ConsumerPID,
-		Offer:       newNegotiationOffer(n.OfferID, n.DatasetID),
+		Offer:       newNegotiationOffer(n.OfferID, n.DatasetID, nil),
 	}
 }
 

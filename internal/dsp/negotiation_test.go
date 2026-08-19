@@ -186,7 +186,7 @@ func TestBuildNegotiationStateDocument(t *testing.T) {
 
 func TestBuildOfferMessage(t *testing.T) {
 	n := testStoredNegotiation()
-	msg := buildOfferMessage(n)
+	msg := buildOfferMessage(config.Config{}, n)
 	if msg.Type != ContractOfferMessageType {
 		t.Errorf("Type = %q, want %q", msg.Type, ContractOfferMessageType)
 	}
@@ -199,7 +199,8 @@ func TestBuildOfferMessage(t *testing.T) {
 
 func TestBuildAgreementMessage(t *testing.T) {
 	n := testStoredNegotiation()
-	msg := buildAgreementMessage(n, "https://provider.example.org", "urn:participant:provider")
+	cfg := config.Config{PublicURL: "https://provider.example.org", ParticipantID: "urn:participant:provider"}
+	msg := buildAgreementMessage(cfg, n)
 	if msg.Type != ContractAgreementMessageType {
 		t.Errorf("Type = %q, want %q", msg.Type, ContractAgreementMessageType)
 	}
@@ -220,6 +221,44 @@ func TestBuildAgreementMessage(t *testing.T) {
 	}
 	if msg.CallbackAddress != "https://provider.example.org"+VersionPath {
 		t.Errorf("CallbackAddress = %q, want the provider's own address", msg.CallbackAddress)
+	}
+}
+
+func TestBuildOfferMessageAttachesTheConfiguredValidityConstraint(t *testing.T) {
+	n := testStoredNegotiation()
+	until := time.Now().Add(time.Hour)
+	cfg := cfgWithDataset(n.DatasetID, &until)
+	msg := buildOfferMessage(cfg, n)
+	if hasUnenforceableConstraint(msg.Offer.Permission) {
+		t.Error("the offer's own recognized constraint reads back as unenforceable")
+	}
+	if len(msg.Offer.Permission) == 0 || len(msg.Offer.Permission[0].Constraint) == 0 {
+		t.Errorf("Offer.Permission = %+v, want the dataset's ValidityUntil attached", msg.Offer.Permission)
+	}
+}
+
+func TestBuildOfferMessageForAnUnconfiguredDatasetStaysUnrestricted(t *testing.T) {
+	// n.DatasetID names no dataset in an empty config — the shape a consumer-
+	// role offer echo also produces, and buildOfferMessage must not invent a
+	// constraint for a dataset this connector has no configuration for.
+	n := testStoredNegotiation()
+	msg := buildOfferMessage(config.Config{}, n)
+	if len(msg.Offer.Permission) == 0 || len(msg.Offer.Permission[0].Constraint) != 0 {
+		t.Errorf("Offer.Permission = %+v, want unrestricted use", msg.Offer.Permission)
+	}
+}
+
+func TestBuildAgreementMessageAttachesTheConfiguredValidityConstraint(t *testing.T) {
+	n := testStoredNegotiation()
+	until := time.Now().Add(time.Hour)
+	cfg := cfgWithDataset(n.DatasetID, &until)
+	cfg.PublicURL, cfg.ParticipantID = "https://provider.example.org", "urn:participant:provider"
+	msg := buildAgreementMessage(cfg, n)
+	if hasUnenforceableConstraint(msg.Agreement.Permission) {
+		t.Error("the agreement's own recognized constraint reads back as unenforceable")
+	}
+	if len(msg.Agreement.Permission) == 0 || len(msg.Agreement.Permission[0].Constraint) == 0 {
+		t.Errorf("Agreement.Permission = %+v, want the dataset's ValidityUntil attached", msg.Agreement.Permission)
 	}
 }
 
@@ -375,8 +414,31 @@ func TestResolvePolicy_UnsetFieldsOnAMatchedEntryStillDefault(t *testing.T) {
 	}
 }
 
-func TestCarriesConstraint(t *testing.T) {
-	constraint := []json.RawMessage{json.RawMessage(`{"leftOperand":"spatial"}`)}
+func TestIsValidityPeriodConstraint(t *testing.T) {
+	recognized := json.RawMessage(`{"leftOperand":"dateTime","operator":"lteq","rightOperand":"2027-01-01T00:00:00Z"}`)
+	cases := []struct {
+		name string
+		cs   []json.RawMessage
+		want bool
+	}{
+		{"the recognized shape", []json.RawMessage{recognized}, true},
+		{"no elements", nil, false},
+		{"two elements, each the recognized shape", []json.RawMessage{recognized, recognized}, false},
+		{"an unrecognized leftOperand", []json.RawMessage{json.RawMessage(`{"leftOperand":"spatial","operator":"eq","rightOperand":"EU"}`)}, false},
+		{"an unrecognized operator", []json.RawMessage{json.RawMessage(`{"leftOperand":"dateTime","operator":"gteq","rightOperand":"2027-01-01T00:00:00Z"}`)}, false},
+		{"a rightOperand that does not parse as RFC 3339", []json.RawMessage{json.RawMessage(`{"leftOperand":"dateTime","operator":"lteq","rightOperand":"not-a-time"}`)}, false},
+		{"malformed JSON", []json.RawMessage{json.RawMessage(`{`)}, false},
+	}
+	for _, c := range cases {
+		if got := isValidityPeriodConstraint(c.cs); got != c.want {
+			t.Errorf("isValidityPeriodConstraint(%s) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestHasUnenforceableConstraint(t *testing.T) {
+	validity := []json.RawMessage{json.RawMessage(`{"leftOperand":"dateTime","operator":"lteq","rightOperand":"2027-01-01T00:00:00Z"}`)}
+	spatial := []json.RawMessage{json.RawMessage(`{"leftOperand":"spatial","operator":"eq","rightOperand":"EU"}`)}
 	cases := []struct {
 		name       string
 		permission []Permission
@@ -386,28 +448,32 @@ func TestCarriesConstraint(t *testing.T) {
 		{"an empty rule list", []Permission{}, false},
 		{"a rule with no constraint", []Permission{{Action: useAction}}, false},
 		{"a rule with an empty constraint list", []Permission{{Action: useAction, Constraint: []json.RawMessage{}}}, false},
-		{"a rule with a constraint", []Permission{{Action: useAction, Constraint: constraint}}, true},
-		{"a constraint on the second rule only", []Permission{{Action: useAction}, {Action: useAction, Constraint: constraint}}, true},
+		{"a rule with the recognized validity-period constraint", []Permission{{Action: useAction, Constraint: validity}}, false},
+		{"a rule with an unrecognized constraint", []Permission{{Action: useAction, Constraint: spatial}}, true},
+		{"an unrecognized constraint on the second rule only", []Permission{{Action: useAction}, {Action: useAction, Constraint: spatial}}, true},
+		{"the recognized constraint on one rule, unrecognized on another", []Permission{{Action: useAction, Constraint: validity}, {Action: useAction, Constraint: spatial}}, true},
 	}
 	for _, c := range cases {
-		if got := carriesConstraint(c.permission); got != c.want {
-			t.Errorf("carriesConstraint(%s) = %v, want %v", c.name, got, c.want)
+		if got := hasUnenforceableConstraint(c.permission); got != c.want {
+			t.Errorf("hasUnenforceableConstraint(%s) = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
 
 func TestDecideOfferReaction(t *testing.T) {
 	cases := []struct {
-		onOffer     string
-		constrained bool
-		want        string
+		onOffer       string
+		unenforceable bool
+		want          string
 	}{
-		// An unconstrained offer is never adjusted, whatever the policy says.
+		// An offer with nothing unenforceable is never adjusted, whatever
+		// the policy says — this includes an offer whose only constraint is
+		// the recognized validity-period shape.
 		{"accept", false, "accept"},
 		{"reject", false, "reject"},
 		{"counter", false, "counter"},
 		{"passive", false, "passive"},
-		// Only accept is unsafe for a constrained offer: it is the one
+		// Only accept is unsafe for an unenforceable offer: it is the one
 		// action that adopts the counterparty's terms.
 		{"accept", true, "reject"},
 		{"reject", true, "reject"},
@@ -415,17 +481,17 @@ func TestDecideOfferReaction(t *testing.T) {
 		{"passive", true, "passive"},
 	}
 	for _, c := range cases {
-		if got := decideOfferReaction(c.onOffer, c.constrained); got != c.want {
-			t.Errorf("decideOfferReaction(%q, %v) = %q, want %q", c.onOffer, c.constrained, got, c.want)
+		if got := decideOfferReaction(c.onOffer, c.unenforceable); got != c.want {
+			t.Errorf("decideOfferReaction(%q, %v) = %q, want %q", c.onOffer, c.unenforceable, got, c.want)
 		}
 	}
 }
 
 func TestDecideAgreementReaction(t *testing.T) {
 	cases := []struct {
-		onAgreement string
-		constrained bool
-		want        string
+		onAgreement   string
+		unenforceable bool
+		want          string
 	}{
 		{"verify", false, "verify"},
 		{"reject", false, "reject"},
@@ -433,8 +499,8 @@ func TestDecideAgreementReaction(t *testing.T) {
 		{"reject", true, "reject"},
 	}
 	for _, c := range cases {
-		if got := decideAgreementReaction(c.onAgreement, c.constrained); got != c.want {
-			t.Errorf("decideAgreementReaction(%q, %v) = %q, want %q", c.onAgreement, c.constrained, got, c.want)
+		if got := decideAgreementReaction(c.onAgreement, c.unenforceable); got != c.want {
+			t.Errorf("decideAgreementReaction(%q, %v) = %q, want %q", c.onAgreement, c.unenforceable, got, c.want)
 		}
 	}
 }

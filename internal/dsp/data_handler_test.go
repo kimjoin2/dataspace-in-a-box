@@ -19,6 +19,12 @@ const servedBytes = "id,value\n1,hello\n"
 // dataFixture wires a provider-role transfer to a dataset with a real file,
 // and returns a handler plus the transfer's provider pid.
 func dataFixture(t *testing.T, state string, counterparty string, withSource bool) (dataHandler, string) {
+	return dataFixtureWithValidity(t, state, counterparty, withSource, nil)
+}
+
+// dataFixtureWithValidity is dataFixture plus a dataset validity window, for
+// the tests that need one.
+func dataFixtureWithValidity(t *testing.T, state string, counterparty string, withSource bool, validityUntil *time.Time) (dataHandler, string) {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -26,7 +32,7 @@ func dataFixture(t *testing.T, state string, counterparty string, withSource boo
 	}
 	t.Cleanup(func() { st.Close() })
 
-	ds := config.Dataset{ID: "urn:dataset:a"}
+	ds := config.Dataset{ID: "urn:dataset:a", ValidityUntil: validityUntil}
 	if withSource {
 		path := filepath.Join(t.TempDir(), "a.csv")
 		if err := os.WriteFile(path, []byte(servedBytes), 0o600); err != nil {
@@ -120,6 +126,35 @@ func TestDataPullChecksOwnershipBeforeState(t *testing.T) {
 	h, id := dataFixture(t, TransferRequested, testPeer, true)
 	if rec := pullAs(t, h, id, testOther); rec.Code != http.StatusForbidden {
 		t.Errorf("got %d, want 403 — state was leaked to a stranger", rec.Code)
+	}
+}
+
+// A STARTED transfer's authorization is not permanent: this pins the one
+// check that was entirely missing before this milestone — nothing else
+// re-checks anything after the state transition. Without it, an agreement
+// whose validity window has closed keeps serving bytes forever once a
+// transfer reaches STARTED.
+func TestDataPullRefusesAfterTheValidityWindowCloses(t *testing.T) {
+	past := time.Now().Add(-time.Hour)
+	h, id := dataFixtureWithValidity(t, TransferStarted, testPeer, true, &past)
+	rec := pullAs(t, h, id, testPeer)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("got %d, want 409 — the access window has closed", rec.Code)
+	}
+	if rec.Body.String() == servedBytes {
+		t.Error("served the file after the validity window closed")
+	}
+}
+
+func TestDataPullServesWithinAnOpenValidityWindow(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	h, id := dataFixtureWithValidity(t, TransferStarted, testPeer, true, &future)
+	rec := pullAs(t, h, id, testPeer)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if got := rec.Body.String(); got != servedBytes {
+		t.Errorf("body = %q, want %q", got, servedBytes)
 	}
 }
 

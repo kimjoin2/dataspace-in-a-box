@@ -1194,3 +1194,90 @@ the gate counts results, so `"TP": 15`.
 agree except the run itself. Each file says so in a comment. The alternative,
 generating all three from one source, would put a code generator into a test
 harness to save seven lines.
+
+## 26. Policy constraints (validity period)
+
+**Decision.** §14 already fixed v1's scope to two policy shapes; this
+milestone is the first to build the second one rather than only reserve it.
+It closes two accounts §23.4 and §24.6 opened and left open on purpose:
+§23.4's validity period was "this connector's own... not an ODRL constraint
+evaluated from an inbound message — no code in `internal/dsp` evaluates
+one", and §24.6's guard was "presence-only, so it cannot one day 'allow the
+validity-period constraint through' without a real evaluator first
+existing". Both statements describe code that no longer exists in this
+form; this section is the pointer forward rather than an edit to either.
+
+**26.1 One helper builds every permission this connector emits for its own
+datasets.** `buildPermission(validityUntil *time.Time) []Permission` — nil
+returns exactly `buildPermission`'s pre-existing output (`Permission{Action:
+useAction}`, no `constraint` key), so every dataset with no
+`validity_until` is byte-identical to every wire shape this project already
+produced. Non-nil attaches one constraint element: bare (unprefixed)
+`leftOperand: "dateTime"`, `operator: "lteq"`, `rightOperand` the RFC 3339
+form of the value — the same "rely on the DSP `@context`'s imported ODRL
+vocabulary" convention `useAction = "use"` already established. Three
+builders that used to write `Permission{Action: useAction}` inline now call
+it: the catalog offer (`buildDataset`), the negotiation offer's provider-role
+call site (`buildOfferMessage`, via `newNegotiationOffer`'s new
+`validityUntil` parameter), and the agreement (`buildAgreementMessage`). The
+two consumer-role call sites that echo a *remote* provider's offer back to
+it (`buildConsumerRequestMessage`, `buildCounterRequestMessage`) always pass
+`nil`: this connector's config has no `ValidityUntil` opinion about a
+dataset it does not advertise.
+
+**26.2 §24.6's presence-only guard becomes a one-shape evaluator, and the
+rest of that section's reasoning is unchanged.** `carriesConstraint`
+(any constraint present → reject) is replaced by `hasUnenforceableConstraint`,
+which is presence-only for everything except the one shape 26.1 builds:
+`isValidityPeriodConstraint` requires exactly one constraint element with a
+matching `leftOperand`/`operator` and a `rightOperand` that parses as RFC
+3339. `decideOfferReaction`/`decideAgreementReaction` keep their exact
+signatures; only what the bool means changes, from "a constraint is
+present" to "an unenforceable constraint is present". §24.6's own limits
+still hold verbatim: this looks only at `permission`, not `prohibition`, and
+the guard is still a rejection, not an interpretation, for anything outside
+the one recognized shape — including a well-formed validity-period-shaped
+constraint whose `rightOperand` fails to parse, which is unenforceable
+exactly as an unrecognized `leftOperand` is.
+
+**26.3 The data plane, not only negotiation, enforces the window — the one
+check that did not exist in any form before this milestone.** Every prior
+check ran once, at negotiation time (§23.4's accept-time check; `isValid`
+generally). Nothing re-checked anything after a transfer reached `STARTED`,
+so a transfer that started while an offer was valid kept serving bytes on
+every future pull regardless of what the dataset's `validity_until` said by
+then. `handleData` now resolves the dataset a transfer's agreement covers —
+`datasetFor`, replacing the narrower `sourceFileFor` so `SourceFile` and
+`ValidityUntil` come from one lookup rather than two — and refuses with
+`409` once `now` is no longer before `ValidityUntil`, in the same status
+family as the sibling "wrong state" and "no `source_file`" checks it sits
+beside: a currently-true precondition failed, not a structural or ownership
+problem.
+
+**26.4 The lookup is live config, not a value captured at negotiation
+time.** `datasetFor` reads `h.cfg.Datasets` on every call, the same "config
+is an operator declaration, re-read on every request" choice `buildCatalog`
+already makes for the catalog document. `store.Agreement` gains no new
+column. The alternative — snapshot `ValidityUntil` onto the agreement at
+negotiation time — would let an agreement outlive a config edit meant to
+revoke it sooner, which is the wrong direction for a security-relevant
+value to be stale in.
+
+*Trade-off accepted.* An operator who *extends* `validity_until` after an
+agreement was struck extends every transfer already running under it, with
+no distinction between "this consumer's specific agreement" and "this
+dataset's current advertised terms" — the agreement's own wire copy of the
+constraint is not what gets checked, the live config is. Revisiting that
+distinction is real future scope, not a defect this milestone leaves
+undocumented.
+
+**26.5 Verified against the TCK specifically for the regression this milestone
+could plausibly cause, not only against the aggregate count.**
+`test/tck/dsbox.yaml`'s `urn:dataset:cn-expired` already carried
+`validity_until` in the past, for `CN:02-01`, `CN:02-05`, `CN:02-06`'s
+expired-offer paths — so 26.1 means those tests are the first ones ever to
+see an Offer this connector pushes carrying a constraint on the wire.
+`docs/milestone-sequence.md`'s finding that "the CN suites negotiate
+unconstrained offers" predates this milestone and does not by itself cover
+it. All three tests were re-run and pass; the gate stays 64 of 65, one
+tracked exemption, unchanged.

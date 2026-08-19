@@ -566,13 +566,19 @@ const (
 	unconstrainedEmptyConstraint = `[{"action":"use","constraint":[]}]`
 	constrainedPermission        = `[{"action":"use","constraint":[{"leftOperand":"spatial","operator":"eq","rightOperand":"EU"}]}]`
 	constrainedSecondRule        = `[{"action":"use"},{"action":"use","constraint":[{"leftOperand":"spatial","operator":"eq","rightOperand":"EU"}]}]`
+	// validityConstrainedPermission is the one shape DECISIONS.md §14
+	// permits enforcing — the same shape buildPermission emits — and is the
+	// positive control the others are negative controls against.
+	validityConstrainedPermission = `[{"action":"use","constraint":[{"leftOperand":"dateTime","operator":"lteq","rightOperand":"2027-01-01T00:00:00Z"}]}]`
 )
 
 // TestHandleOffers_ConstraintGuard pins both directions of the rule
 // CLAUDE.md states without exception — "never accept a constraint that is not
-// enforced". This connector enforces none, so an offer carrying any
-// constraint must take the reject path instead of the configured accept one,
-// while the unconstrained shapes the TCK actually sends must still accept.
+// enforced". This connector enforces exactly one shape (the recognized
+// validity-period constraint), so an offer carrying any other constraint
+// must take the reject path instead of the configured accept one, while the
+// unconstrained shapes the TCK actually sends, and the one recognized
+// constraint shape, must still accept.
 func TestHandleOffers_ConstraintGuard(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -582,8 +588,9 @@ func TestHandleOffers_ConstraintGuard(t *testing.T) {
 		{"no rules at all", `[]`, StateAccepted},
 		{"a rule with no constraint key", unconstrainedPermission, StateAccepted},
 		{"a rule with an empty constraint list", unconstrainedEmptyConstraint, StateAccepted},
-		{"a rule carrying a constraint", constrainedPermission, StateTerminated},
-		{"a constraint on the second rule only", constrainedSecondRule, StateTerminated},
+		{"a rule with the recognized validity-period constraint", validityConstrainedPermission, StateAccepted},
+		{"a rule carrying an unrecognized constraint", constrainedPermission, StateTerminated},
+		{"an unrecognized constraint on the second rule only", constrainedSecondRule, StateTerminated},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -622,7 +629,8 @@ func TestHandleAgreement_ConstraintGuard(t *testing.T) {
 	}{
 		{"a rule with no constraint key", unconstrainedPermission, StateVerified},
 		{"a rule with an empty constraint list", unconstrainedEmptyConstraint, StateVerified},
-		{"a rule carrying a constraint", constrainedPermission, StateTerminated},
+		{"a rule with the recognized validity-period constraint", validityConstrainedPermission, StateVerified},
+		{"a rule carrying an unrecognized constraint", constrainedPermission, StateTerminated},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

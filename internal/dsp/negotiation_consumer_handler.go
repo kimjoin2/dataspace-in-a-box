@@ -155,16 +155,17 @@ func (h negotiationHandler) handleOffers(w http.ResponseWriter, r *http.Request)
 	// The offer's own content does not survive into the stored row, so
 	// whether it carried a constraint is decided here, while the decoded
 	// message is still in hand, and passed to the reaction.
-	go h.reactToOffer(n, carriesConstraint(msg.Offer.Permission))
+	go h.reactToOffer(n, hasUnenforceableConstraint(msg.Offer.Permission))
 }
 
 // reactToOffer applies this connector's on_offer policy once an offer has
-// been durably recorded as OFFERED. constrained reports whether the offer
-// carried a constraint — see decideOfferReaction for what that changes.
-func (h negotiationHandler) reactToOffer(n store.ConsumerNegotiation, constrained bool) {
+// been durably recorded as OFFERED. unenforceable reports whether the offer
+// carried a constraint this connector cannot enforce — see
+// decideOfferReaction for what that changes.
+func (h negotiationHandler) reactToOffer(n store.ConsumerNegotiation, unenforceable bool) {
 	n = h.resolveProviderPID(n)
 	policy := resolvePolicy(h.cfg, n.DatasetID)
-	action := decideOfferReaction(policy.OnOffer, constrained)
+	action := decideOfferReaction(policy.OnOffer, unenforceable)
 	if action != policy.OnOffer {
 		slog.Info("rejecting an offer whose constraints this connector cannot enforce",
 			"consumer_pid", n.ConsumerPID, "dataset_id", n.DatasetID, "configured_on_offer", policy.OnOffer)
@@ -284,19 +285,19 @@ func (h negotiationHandler) handleAgreement(w http.ResponseWriter, r *http.Reque
 	n.State = StateAgreed
 	// Same reasoning as handleOffers: the agreement's terms are not stored,
 	// so the constraint question is answered here.
-	go h.reactToAgreement(n, carriesConstraint(msg.Agreement.Permission))
+	go h.reactToAgreement(n, hasUnenforceableConstraint(msg.Agreement.Permission))
 }
 
 // reactToAgreement applies this connector's on_agreement policy. The verify
 // branch's state write is gated on sendVerification's return value — see
 // the design spec's "03-06 verification-ack rule": this connector must not
-// report VERIFIED unless the provider actually acknowledged it. constrained
-// reports whether the agreement carried a constraint — see
-// decideAgreementReaction.
-func (h negotiationHandler) reactToAgreement(n store.ConsumerNegotiation, constrained bool) {
+// report VERIFIED unless the provider actually acknowledged it.
+// unenforceable reports whether the agreement carried a constraint this
+// connector cannot enforce — see decideAgreementReaction.
+func (h negotiationHandler) reactToAgreement(n store.ConsumerNegotiation, unenforceable bool) {
 	n = h.resolveProviderPID(n)
 	policy := resolvePolicy(h.cfg, n.DatasetID)
-	action := decideAgreementReaction(policy.OnAgreement, constrained)
+	action := decideAgreementReaction(policy.OnAgreement, unenforceable)
 	if action != policy.OnAgreement {
 		slog.Info("rejecting an agreement whose constraints this connector cannot enforce",
 			"consumer_pid", n.ConsumerPID, "dataset_id", n.DatasetID, "configured_on_agreement", policy.OnAgreement)

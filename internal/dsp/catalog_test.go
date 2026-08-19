@@ -3,6 +3,7 @@ package dsp
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 )
@@ -81,7 +82,7 @@ func TestDatasetNodeCarriesTypeOnEveryNode(t *testing.T) {
 	// exist only inside Dataset, format and accessService only inside
 	// Distribution, endpointURL only inside DataService. A missing @type drops
 	// those keys silently during expansion.
-	m := decode(t, buildDataset("https://connector.example.org", "urn:dataset:a"))
+	m := decode(t, buildDataset("https://connector.example.org", config.Dataset{ID: "urn:dataset:a"}))
 
 	if m["@type"] != "Dataset" {
 		t.Errorf("dataset @type = %v, want Dataset", m["@type"])
@@ -101,7 +102,7 @@ func TestDatasetNodeCarriesTypeOnEveryNode(t *testing.T) {
 }
 
 func TestDatasetDerivedIdentifiers(t *testing.T) {
-	m := decode(t, buildDataset("https://connector.example.org", "urn:dataset:a"))
+	m := decode(t, buildDataset("https://connector.example.org", config.Dataset{ID: "urn:dataset:a"}))
 
 	offer := m["hasPolicy"].([]any)[0].(map[string]any)
 	if got, want := offer["@id"], "urn:dataset:a#offer"; got != want {
@@ -155,5 +156,54 @@ func TestFindDatasetReturnsASelfContainedDocument(t *testing.T) {
 func TestFindDatasetReportsAnUnknownIdentifier(t *testing.T) {
 	if _, ok := findDataset(testConfig("urn:dataset:a"), "urn:dataset:missing"); ok {
 		t.Error("findDataset accepted an identifier that is not configured")
+	}
+}
+
+func TestBuildPermissionWithNoValidityIsUnrestrictedUse(t *testing.T) {
+	// Byte-identical to every permission this project emitted before
+	// Constraint existed: no constraint key at all, not an empty array.
+	m := decode(t, buildPermission(nil)[0])
+	if m["action"] != "use" {
+		t.Errorf("action = %v, want use", m["action"])
+	}
+	if _, present := m["constraint"]; present {
+		t.Errorf("constraint = %v, want the key absent for unrestricted use", m["constraint"])
+	}
+}
+
+func TestBuildPermissionWithValidityAttachesTheRecognizedConstraint(t *testing.T) {
+	until := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	m := decode(t, buildPermission(&until)[0])
+	cs, ok := m["constraint"].([]any)
+	if !ok || len(cs) != 1 {
+		t.Fatalf("constraint = %v, want exactly one element", m["constraint"])
+	}
+	c := cs[0].(map[string]any)
+	if c["leftOperand"] != "dateTime" || c["operator"] != "lteq" {
+		t.Errorf("constraint = %v, want leftOperand dateTime and operator lteq", c)
+	}
+	if c["rightOperand"] != "2027-01-01T00:00:00Z" {
+		t.Errorf("rightOperand = %v, want the RFC 3339 form of until", c["rightOperand"])
+	}
+	// isValidityPeriodConstraint is what a counterparty runs against exactly
+	// this shape (negotiation_test.go); this pins that what is built and
+	// what is recognized never drift apart.
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !isValidityPeriodConstraint([]json.RawMessage{raw}) {
+		t.Error("buildPermission's own output is not recognized by isValidityPeriodConstraint")
+	}
+}
+
+func TestBuildDatasetAttachesTheConfiguredValidityConstraint(t *testing.T) {
+	until := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	ds := decode(t, buildDataset("https://connector.example.org", config.Dataset{ID: "urn:dataset:a", ValidityUntil: &until}))
+	offer := ds["hasPolicy"].([]any)[0].(map[string]any)
+	perm := offer["permission"].([]any)[0].(map[string]any)
+	cs, ok := perm["constraint"].([]any)
+	if !ok || len(cs) != 1 {
+		t.Fatalf("permission = %v, want a constraint with exactly one element", perm)
 	}
 }

@@ -452,12 +452,12 @@ func writeStateUpdateError(w http.ResponseWriter, negotiationPID string, err err
 func (h negotiationHandler) dispatch(n store.Negotiation, outcome negotiationOutcome) {
 	switch {
 	case outcome.pushOffer && outcome.pushTermination:
-		h.pushAndStore(n, StateOffered, offerCallbackPath, buildOfferMessage(n))
+		h.pushAndStore(n, StateOffered, offerCallbackPath, buildOfferMessage(h.cfg, n))
 		go h.delayedTerminate(n)
 	case outcome.pushOffer:
-		h.pushAndStore(n, StateOffered, offerCallbackPath, buildOfferMessage(n))
+		h.pushAndStore(n, StateOffered, offerCallbackPath, buildOfferMessage(h.cfg, n))
 	case outcome.pushAgreement:
-		h.pushAndStore(n, StateAgreed, agreementCallbackPath, buildAgreementMessage(n, h.cfg.PublicURL, h.cfg.ParticipantID))
+		h.pushAndStore(n, StateAgreed, agreementCallbackPath, buildAgreementMessage(h.cfg, n))
 
 		// pushAndStore is void and swallows store.ErrStateChanged, so the
 		// transition above may have been dropped in favour of a newer state —

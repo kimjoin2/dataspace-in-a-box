@@ -71,14 +71,19 @@ roster: /etc/dsbox/roster.json
 # Each id must be an absolute IRI and must survive as a single URL path segment,
 # because the dataset endpoint routes on it directly — no /, ?, # or whitespace.
 # A urn: name satisfies both. The connector synthesizes the offer, the
-# distribution, and the data service around each id; there is no policy syntax
-# here yet, because nothing evaluates one until the negotiation milestone.
+# distribution, and the data service around each id. There is no general
+# policy syntax here — DECISIONS.md section 14 evaluates exactly two policy
+# shapes, unrestricted use and validity_until below, and nothing else can be
+# expressed through this file.
 #
 # There is no environment override for this list.
 datasets:
   - id: urn:dataset:sample
-    # Optional. RFC 3339. Absent means the offer never expires. Uncomment to
-    # try the validity-period policy:
+    # Optional. RFC 3339. Absent means the offer never expires. Set, this
+    # becomes a real ODRL constraint on the offer and the agreement — not
+    # only a negotiation-time gate — and the data plane refuses a pull once
+    # the window closes, even for a transfer already STARTED. Uncomment to
+    # try it:
     # validity_until: 2027-01-01T00:00:00Z
 
 # Optional. Configures this connector's autonomous behavior when it is

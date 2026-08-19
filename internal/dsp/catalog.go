@@ -2,6 +2,7 @@ package dsp
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 )
@@ -80,27 +81,62 @@ type Offer struct {
 	Permission []Permission `json:"permission"`
 }
 
-// Permission is one ODRL rule. This connector advertises unrestricted use and
-// nothing else — it never sets Constraint, which is why that field is
-// omitempty and every permission this project emits is byte-identical to
-// before it existed.
+// Permission is one ODRL rule. DECISIONS.md §14 evaluates exactly two policy
+// shapes — unrestricted use, and a validity-period constraint — and requires
+// any other constraint to parse and then have the negotiation rejected.
+// Constraint is omitempty because unrestricted use, the common case, still
+// emits no constraint key at all: buildPermission(nil) is byte-identical to
+// every permission this project emitted before this type existed.
 //
-// Constraint exists for the inbound direction only. DECISIONS.md §14 evaluates
-// exactly two policy shapes, unrestricted use and a validity period, and
-// requires any other constraint to parse and then have the negotiation
-// rejected. The consumer role is where a counterparty's constraint can first
-// reach this connector, so that is where the rule is enforced — see
-// decideOfferReaction and decideAgreementReaction.
-//
-// The elements are deliberately opaque. v1 evaluates no constraint at all, so
-// the only question worth asking is whether one is present; json.RawMessage
-// still requires each to be well-formed JSON, which is precisely §14's "parses
-// successfully but causes the negotiation to be rejected" — parsed, never
-// interpreted. Giving the fields names this connector cannot act on would
-// suggest an evaluator that does not exist.
+// The elements stay opaque on the receiving end: a counterparty's constraint
+// is decoded as json.RawMessage and inspected structurally
+// (hasUnenforceableConstraint), never interpreted beyond recognizing the one
+// shape this connector emits itself. json.RawMessage still requires each
+// element to be well-formed JSON, which is §14's "parses successfully" half;
+// the consumer role decides "and then rejected" — see decideOfferReaction and
+// decideAgreementReaction.
 type Permission struct {
 	Action     string            `json:"action"`
 	Constraint []json.RawMessage `json:"constraint,omitempty"`
+}
+
+// Constraint is the ODRL rule this connector both emits and recognizes: a
+// validity-period bound, expressed with bare (unprefixed) ODRL terms — the
+// same convention useAction already follows, relying on the DSP @context's
+// imported ODRL vocabulary rather than an "odrl:" prefix.
+type Constraint struct {
+	LeftOperand  string `json:"leftOperand"`
+	Operator     string `json:"operator"`
+	RightOperand string `json:"rightOperand"`
+}
+
+const (
+	// leftOperandDateTime and operatorLTEq name the one constraint shape §14
+	// permits building: access is granted through rightOperand, inclusive,
+	// and not after.
+	leftOperandDateTime = "dateTime"
+	operatorLTEq        = "lteq"
+)
+
+// buildPermission returns the ODRL permission this connector grants for a
+// dataset. validityUntil is nil for unrestricted use, the common case;
+// non-nil attaches the one constraint shape §14 permits. Every builder that
+// emits a permission for one of this connector's own datasets goes through
+// this function, so there is exactly one place the shape is produced.
+func buildPermission(validityUntil *time.Time) []Permission {
+	if validityUntil == nil {
+		return []Permission{{Action: useAction}}
+	}
+	// Constraint's fields are all plain strings, so this cannot fail — the
+	// same reasoning newMessageID's doc comment gives for ignoring its own
+	// unfailable error, and the same choice: no fallback path for a failure
+	// mode that does not exist.
+	c, _ := json.Marshal(Constraint{
+		LeftOperand:  leftOperandDateTime,
+		Operator:     operatorLTEq,
+		RightOperand: validityUntil.UTC().Format(time.RFC3339),
+	})
+	return []Permission{{Action: useAction, Constraint: []json.RawMessage{c}}}
 }
 
 // Distribution describes how a dataset can be obtained.
@@ -133,23 +169,25 @@ func buildCatalog(cfg config.Config) Catalog {
 		ParticipantID: cfg.ParticipantID,
 	}
 	for _, d := range cfg.Datasets {
-		cat.Dataset = append(cat.Dataset, buildDataset(cfg.PublicURL, d.ID))
+		cat.Dataset = append(cat.Dataset, buildDataset(cfg.PublicURL, d))
 	}
 	return cat
 }
 
 // buildDataset returns one dataset node, without a context. The offer, the
-// distribution, and the data service are all derived from the identifier and
-// the public URL, so the document is identical across restarts.
-func buildDataset(publicURL, id string) Dataset {
+// distribution, and the data service are all derived from the dataset's
+// configuration and the public URL, so the document is identical across
+// restarts. d.ValidityUntil becomes the offer's permission constraint — see
+// buildPermission.
+func buildDataset(publicURL string, d config.Dataset) Dataset {
 	endpoint := publicURL + VersionPath
 	return Dataset{
-		ID:   id,
+		ID:   d.ID,
 		Type: DatasetType,
 		HasPolicy: []Offer{{
-			ID:         id + offerIDSuffix,
+			ID:         d.ID + offerIDSuffix,
 			Type:       OfferType,
-			Permission: []Permission{{Action: useAction}},
+			Permission: buildPermission(d.ValidityUntil),
 		}},
 		Distribution: []Distribution{{
 			Type:   DistributionType,
@@ -169,7 +207,7 @@ func buildDataset(publicURL, id string) Dataset {
 func findDataset(cfg config.Config, id string) (Dataset, bool) {
 	for _, d := range cfg.Datasets {
 		if d.ID == id {
-			ds := buildDataset(cfg.PublicURL, d.ID)
+			ds := buildDataset(cfg.PublicURL, d)
 			ds.Context = []string{ContextURL}
 			return ds, true
 		}
