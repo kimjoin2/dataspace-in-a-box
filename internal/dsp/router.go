@@ -1,8 +1,10 @@
 package dsp
 
 import (
+	"crypto/ed25519"
 	"net/http"
 
+	"github.com/kimjoin2/dataspace-in-a-box/internal/auth"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
@@ -10,9 +12,8 @@ import (
 // NewRouter returns the handler for the public DSP listener. It takes the
 // configuration because the catalog is served from it, and the store because
 // negotiation state is persisted there.
-func NewRouter(cfg config.Config, st *store.Store) http.Handler {
+func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey ed25519.PrivateKey) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /.well-known/dspace-version", handleVersion)
 
 	cat := catalogHandler{cfg: cfg}
 	mux.HandleFunc("POST "+VersionPath+"/catalog/request", cat.handleCatalogRequest)
@@ -43,5 +44,38 @@ func NewRouter(cfg config.Config, st *store.Store) http.Handler {
 	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/suspension", tr.handleTransferSuspension)
 	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/termination", tr.handleTransferTermination)
 
-	return mux
+	if !cfg.AuthRequired() {
+		// A disabled check is absent, not silently true. Installing a
+		// middleware that always passes would leave a reader unable to tell
+		// the two apart from the router alone.
+		outer := http.NewServeMux()
+		mountVersionEndpoint(outer)
+		outer.Handle("/", mux)
+		return outer
+	}
+
+	// The version endpoint is mounted outside the wrap rather than exempted
+	// inside it. A path comparison in the middleware is a list someone has to
+	// remember to update; a route that is simply not behind the check cannot
+	// drift. It stays open because it is how a counterparty discovers what to
+	// speak before it has any context, and it discloses only a protocol
+	// version.
+	outer := http.NewServeMux()
+	mountVersionEndpoint(outer)
+	outer.Handle("/", requireParticipant(roster, cfg.ParticipantID, mux))
+	return outer
+}
+
+// mountVersionEndpoint puts the version document on a mux, in two patterns.
+// The second is not redundant: the catch-all that routes everything else into
+// the protocol mux would otherwise swallow a non-GET request to this path and
+// answer 404, where the honest answer is 405 — the path exists, the method
+// does not. A method-less pattern is less specific than the GET one, so GET
+// still reaches the handler and everything else lands here.
+func mountVersionEndpoint(mux *http.ServeMux) {
+	mux.HandleFunc("GET /.well-known/dspace-version", handleVersion)
+	mux.HandleFunc("/.well-known/dspace-version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", http.MethodGet)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	})
 }

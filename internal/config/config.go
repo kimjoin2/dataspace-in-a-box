@@ -84,6 +84,35 @@ type Config struct {
 	// under. An agreement with no matching entry sends nothing — see
 	// ConsumerTransferPolicy.
 	ConsumerTransferPolicies []ConsumerTransferPolicy `yaml:"consumer_transfer_policies"`
+
+	// ParticipantKey is the path to this connector's Ed25519 private key, in
+	// PEM. It signs every credential this connector presents to a
+	// counterparty (DECISIONS.md section 10). Required when authentication is
+	// on. Generate one with `dsops keygen`.
+	ParticipantKey string `yaml:"participant_key"`
+
+	// RosterPath is the path to the participant roster — the file that says
+	// whose signatures this connector accepts (DECISIONS.md section 9).
+	// Required when authentication is on.
+	RosterPath string `yaml:"roster"`
+
+	// RequireAuth turns connector-to-connector authentication on. A pointer
+	// so an omitted key is distinguishable from an explicit false; nil means
+	// the default, which is on — see AuthRequired.
+	//
+	// It exists for migration, not convenience: switching a running connector
+	// from anonymous to authenticated is otherwise a flag day for every
+	// counterparty at once. Turning it off is permitted only in dev_mode, so
+	// an operator who has not declared this a development instance cannot
+	// also declare that anyone may talk to it.
+	RequireAuth *bool `yaml:"require_auth"`
+}
+
+// AuthRequired reports whether connector-to-connector authentication is on.
+// Absent means on: a missing key must never read as "no auth required", the
+// same rule MgmtToken already follows.
+func (c Config) AuthRequired() bool {
+	return c.RequireAuth == nil || *c.RequireAuth
 }
 
 // Dataset is one advertised dataset. Only the identifier is configurable: the
@@ -218,6 +247,12 @@ func Load(data []byte, getenv func(string) string) (Config, error) {
 	if v := getenv("DSBOX_MGMT_ADDR"); v != "" {
 		cfg.MgmtAddr = v
 	}
+	if v := getenv("DSBOX_PARTICIPANT_KEY"); v != "" {
+		cfg.ParticipantKey = v
+	}
+	if v := getenv("DSBOX_ROSTER"); v != "" {
+		cfg.RosterPath = v
+	}
 	if v := getenv("DSBOX_MGMT_TOKEN"); v != "" {
 		cfg.MgmtToken = v
 	}
@@ -320,6 +355,18 @@ func (c Config) validate() error {
 			if !validTransferState[s] {
 				return fmt.Errorf("consumer_transfer_policies[%d]: sequence[%d] %q is not one of STARTED, SUSPENDED, COMPLETED, TERMINATED", i, j, s)
 			}
+		}
+	}
+	if !c.AuthRequired() && !c.DevMode {
+		return fmt.Errorf("require_auth: false is only permitted with dev_mode: true — " +
+			"a connector that is not declared a development instance may not accept unauthenticated counterparties")
+	}
+	if c.AuthRequired() {
+		if c.ParticipantKey == "" {
+			return fmt.Errorf("participant_key is required when authentication is on: it signs every credential this connector presents")
+		}
+		if c.RosterPath == "" {
+			return fmt.Errorf("roster is required when authentication is on: it says whose signatures this connector accepts")
 		}
 	}
 	if c.DataDir == "" {

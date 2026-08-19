@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kimjoin2/dataspace-in-a-box/internal/auth"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
@@ -667,7 +668,12 @@ func TestSynchronousResponseDoesNotWaitForTheCallbackPush(t *testing.T) {
 	// handler value is unused: this test goes in through the real router.
 	cfg := negotiationTestConfig("https://provider.example.org", config.Dataset{ID: "urn:dataset:a"})
 	_, st := newTestHandler(t, cfg)
-	srv := httptest.NewServer(NewRouter(cfg, st))
+	// Authentication off for the same reason as newRouterForTest: this test
+	// is about a slow callback holding a response open, not about who may
+	// make the request.
+	cfg.RequireAuth = new(bool)
+	cfg.DevMode = true
+	srv := httptest.NewServer(NewRouter(cfg, st, auth.Roster{}, nil))
 	defer srv.Close()
 
 	// A mismatched offer for a valid dataset: one offer push, no follow-up

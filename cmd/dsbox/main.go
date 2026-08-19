@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kimjoin2/dataspace-in-a-box/internal/auth"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/dsp"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/mgmt"
@@ -48,6 +50,30 @@ func run() error {
 		slog.Warn("no mgmt_token configured; the management API will reject every authenticated request")
 	}
 
+	// Authentication material is read before anything listens. Both failures
+	// below are fatal rather than degraded: a connector that cannot verify a
+	// counterparty, or cannot sign for itself, has nothing useful to offer,
+	// and starting anyway would turn a configuration mistake into a runtime
+	// mystery.
+	var (
+		roster  auth.Roster
+		signKey ed25519.PrivateKey
+	)
+	if cfg.AuthRequired() {
+		if signKey, err = auth.LoadPrivateKey(cfg.ParticipantKey); err != nil {
+			return fmt.Errorf("load participant_key %q: %w", cfg.ParticipantKey, err)
+		}
+		if roster, err = auth.LoadRoster(cfg.RosterPath); err != nil {
+			return err
+		}
+	} else {
+		// One line at startup, not one per request: an operator who chose this
+		// needs to see it in the boot log, and a per-request warning would
+		// bury the rest of the log under it.
+		slog.Warn("connector-to-connector authentication is OFF; every DSP endpoint accepts anonymous requests",
+			"dsp_addr", cfg.DSPAddr)
+	}
+
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return fmt.Errorf("create data_dir %q: %w", cfg.DataDir, err)
 	}
@@ -64,7 +90,7 @@ func run() error {
 	// 30 seconds and would be cut off mid-stream.
 	dspSrv := &http.Server{
 		Addr:              cfg.DSPAddr,
-		Handler:           dsp.NewRouter(cfg, st),
+		Handler:           dsp.NewRouter(cfg, st, roster, signKey),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

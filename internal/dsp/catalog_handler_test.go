@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kimjoin2/dataspace-in-a-box/internal/auth"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
@@ -27,7 +28,13 @@ func newRouterForTest(t *testing.T, cfg config.Config) http.Handler {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return NewRouter(cfg, st)
+	// Authentication off: this file's subject is what the catalog says, and
+	// every route being closed is pinned by auth_middleware_test.go against a
+	// real wrapped router. Leaving it on here would mean minting a token in
+	// every catalog assertion for no added coverage.
+	cfg.RequireAuth = new(bool)
+	cfg.DevMode = true
+	return NewRouter(cfg, st, auth.Roster{}, nil)
 }
 
 func post(t *testing.T, cfg config.Config, body string) *httptest.ResponseRecorder {

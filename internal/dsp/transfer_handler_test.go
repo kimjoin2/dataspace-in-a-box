@@ -621,6 +621,10 @@ func TestResolveTransferSequenceFromALoadedConfig(t *testing.T) {
 		"public_url: https://connector.example.org\n"+
 			"participant_id: urn:participant:example\n"+
 			"data_dir: ./data\n"+
+			// Authentication is on by default, so a loadable document names
+			// the two files it needs. Neither is opened here.
+			"participant_key: /etc/dsbox/participant.key\n"+
+			"roster: /etc/dsbox/roster.json\n"+
 			"transfer_policies:\n"+
 			"  - agreement_id: urn:uuid:agreement-1\n"+
 			"    sequence: []\n"), func(string) string { return "" })

@@ -13,10 +13,21 @@ func env(pairs map[string]string) func(string) string {
 // minimal returns a configuration document that satisfies every required key,
 // with extra appended. Tests that are not about a specific required key use
 // this, so that adding the next required key does not mean editing every test.
-func minimal(extra string) []byte {
+// withoutAuthFiles is the smallest document that is valid apart from the two
+// files authentication needs. Only the tests that are about those files use
+// it directly; everything else goes through minimal.
+func withoutAuthFiles(extra string) []byte {
 	return []byte("public_url: https://connector.example.org\n" +
 		"participant_id: urn:participant:example\n" +
 		"data_dir: ./data\n" + extra)
+}
+
+// minimal is withoutAuthFiles plus the key and roster paths, because
+// require_auth defaults to true and a document lacking them no longer loads.
+// The paths are never opened during config loading — only startup reads them.
+func minimal(extra string) []byte {
+	return withoutAuthFiles("participant_key: /etc/dsbox/participant.key\n" +
+		"roster: /etc/dsbox/roster.json\n" + extra)
 }
 
 func TestLoadAppliesDefaults(t *testing.T) {
@@ -40,28 +51,28 @@ func TestLoadRequiresPublicURL(t *testing.T) {
 }
 
 func TestLoadRejectsPlainHTTPOutsideDevMode(t *testing.T) {
-	_, err := Load([]byte("public_url: http://connector.example.org\nparticipant_id: urn:participant:example\n"), env(nil))
+	_, err := Load([]byte("public_url: http://connector.example.org\nparticipant_id: urn:participant:example\nparticipant_key: /k\nroster: /r\n"), env(nil))
 	if err == nil {
 		t.Fatal("Load: expected an error for http without dev_mode")
 	}
 }
 
 func TestLoadAllowsPlainHTTPInDevMode(t *testing.T) {
-	_, err := Load([]byte("public_url: http://dsbox:8080\ndev_mode: true\nparticipant_id: urn:participant:example\ndata_dir: ./data\n"), env(nil))
+	_, err := Load([]byte("public_url: http://dsbox:8080\ndev_mode: true\nparticipant_id: urn:participant:example\ndata_dir: ./data\nparticipant_key: /k\nroster: /r\n"), env(nil))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 }
 
 func TestLoadRejectsRelativePublicURL(t *testing.T) {
-	_, err := Load([]byte("public_url: /dsp\nparticipant_id: urn:participant:example\n"), env(nil))
+	_, err := Load([]byte("public_url: /dsp\nparticipant_id: urn:participant:example\nparticipant_key: /k\nroster: /r\n"), env(nil))
 	if err == nil {
 		t.Fatal("Load: expected an error for a non-absolute public_url")
 	}
 }
 
 func TestLoadRejectsTrailingSlash(t *testing.T) {
-	_, err := Load([]byte("public_url: https://connector.example.org/\nparticipant_id: urn:participant:example\n"), env(nil))
+	_, err := Load([]byte("public_url: https://connector.example.org/\nparticipant_id: urn:participant:example\nparticipant_key: /k\nroster: /r\n"), env(nil))
 	if err == nil {
 		t.Fatal("Load: expected an error for a trailing slash in public_url")
 	}
@@ -69,7 +80,7 @@ func TestLoadRejectsTrailingSlash(t *testing.T) {
 
 func TestEnvironmentOverridesFile(t *testing.T) {
 	cfg, err := Load(
-		[]byte("public_url: https://from-file.example.org\ndsp_addr: 0.0.0.0:9999\nparticipant_id: urn:participant:example\ndata_dir: ./data\n"),
+		[]byte("public_url: https://from-file.example.org\ndsp_addr: 0.0.0.0:9999\nparticipant_id: urn:participant:example\ndata_dir: ./data\nparticipant_key: /k\nroster: /r\n"),
 		env(map[string]string{
 			"DSBOX_PUBLIC_URL": "https://from-env.example.org",
 			"DSBOX_DSP_ADDR":   "0.0.0.0:7777",
@@ -115,9 +126,11 @@ func TestUnknownKeyIsAnError(t *testing.T) {
 
 func TestEmptyDocumentWithEnvironmentStillLoads(t *testing.T) {
 	cfg, err := Load([]byte(""), env(map[string]string{
-		"DSBOX_PUBLIC_URL":     "https://from-env.example.org",
-		"DSBOX_PARTICIPANT_ID": "urn:participant:from-env",
-		"DSBOX_DATA_DIR":       "./data",
+		"DSBOX_PUBLIC_URL":      "https://from-env.example.org",
+		"DSBOX_PARTICIPANT_ID":  "urn:participant:from-env",
+		"DSBOX_DATA_DIR":        "./data",
+		"DSBOX_PARTICIPANT_KEY": "/k",
+		"DSBOX_ROSTER":          "/r",
 	}))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -134,7 +147,7 @@ func TestEmptyDocumentWithEnvironmentStillLoads(t *testing.T) {
 }
 
 func TestLoadRequiresParticipantID(t *testing.T) {
-	_, err := Load([]byte("public_url: https://connector.example.org\n"), env(nil))
+	_, err := Load([]byte("public_url: https://connector.example.org\nparticipant_key: /k\nroster: /r\n"), env(nil))
 	if err == nil {
 		t.Fatal("Load: expected an error when participant_id is absent")
 	}
@@ -232,7 +245,7 @@ func TestExampleConfigLoads(t *testing.T) {
 }
 
 func TestLoadRequiresDataDir(t *testing.T) {
-	_, err := Load([]byte("public_url: https://connector.example.org\nparticipant_id: urn:participant:example\n"), env(nil))
+	_, err := Load([]byte("public_url: https://connector.example.org\nparticipant_id: urn:participant:example\nparticipant_key: /k\nroster: /r\n"), env(nil))
 	if err == nil {
 		t.Fatal("Load: expected an error when data_dir is absent")
 	}
@@ -240,7 +253,7 @@ func TestLoadRequiresDataDir(t *testing.T) {
 
 func TestDataDirFromEnvironmentOverridesFile(t *testing.T) {
 	cfg, err := Load(
-		[]byte("public_url: https://connector.example.org\nparticipant_id: urn:participant:example\ndata_dir: ./from-file\n"),
+		[]byte("public_url: https://connector.example.org\nparticipant_id: urn:participant:example\ndata_dir: ./from-file\nparticipant_key: /k\nroster: /r\n"),
 		env(map[string]string{"DSBOX_DATA_DIR": "./from-env"}),
 	)
 	if err != nil {
@@ -489,5 +502,39 @@ func TestConsumerTransferPolicyLoads(t *testing.T) {
 	if p.AgreementID != "urn:uuid:a" || p.After != "REQUESTED" ||
 		len(p.Sequence) != 1 || p.Sequence[0] != "TERMINATED" {
 		t.Errorf("policy = %+v", p)
+	}
+}
+
+func TestRequireAuthDefaultsToTrue(t *testing.T) {
+	cfg, err := Load(minimal(""), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AuthRequired() {
+		t.Error("authentication is off by default")
+	}
+}
+
+// Turning authentication off is a development affordance. An operator who has
+// not declared this a development instance may not also declare that anyone
+// may talk to it.
+func TestRequireAuthFalseNeedsDevMode(t *testing.T) {
+	if _, err := Load(minimal("require_auth: false\n"), env(nil)); err == nil {
+		t.Error("require_auth: false loaded without dev_mode")
+	}
+	if _, err := Load(minimal("require_auth: false\ndev_mode: true\n"), env(nil)); err != nil {
+		t.Errorf("require_auth: false with dev_mode: true failed to load: %v", err)
+	}
+}
+
+// With authentication on, the two files it needs are required. Loading
+// without them would produce a connector that cannot verify or sign, and the
+// first symptom would be every request failing at runtime.
+func TestAuthRequiresKeyAndRoster(t *testing.T) {
+	if _, err := Load(withoutAuthFiles("participant_key: /k\n"), env(nil)); err == nil {
+		t.Error("loaded with a key but no roster")
+	}
+	if _, err := Load(withoutAuthFiles("roster: /r\n"), env(nil)); err == nil {
+		t.Error("loaded with a roster but no key")
 	}
 }

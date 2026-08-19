@@ -25,8 +25,45 @@ mgmt_token: ""
 data_dir: ./data
 
 # This participant's identifier, as it appears in every catalog this connector
-# serves. Required and never inferred. DSBOX_PARTICIPANT_ID overrides it.
+# serves and as the issuer of every credential it presents. Required and never
+# inferred. DSBOX_PARTICIPANT_ID overrides it.
 participant_id: urn:participant:example
+
+# This connector's Ed25519 private key, in PEM. It signs the credential
+# presented to every counterparty (DECISIONS.md section 10). Required unless
+# require_auth is false. Generate one with:
+#
+#     dsops keygen -out /etc/dsbox/participant.key
+#
+# DSBOX_PARTICIPANT_KEY overrides it.
+participant_key: /etc/dsbox/participant.key
+
+# The participant roster: whose signatures this connector accepts
+# (DECISIONS.md section 9). Required unless require_auth is false. A JSON
+# document mapping participant identifiers to base64url Ed25519 public keys:
+#
+#     {"participants": [{"id": "urn:participant:peer", "public_key": "..."}]}
+#
+# Read once at startup, so adding or removing a participant means editing this
+# file and restarting. An unusable roster is a startup failure rather than a
+# warning: a connector that cannot verify anyone should say so at boot, not by
+# refusing every request later.
+#
+# Note what this is not yet: section 9 makes the operator's signature over
+# this file the trust anchor, and that signature is not implemented. Until it
+# is, the roster is trusted exactly as far as this config file is — so it must
+# come from local disk, never from an untrusted channel.
+#
+# DSBOX_ROSTER overrides it.
+roster: /etc/dsbox/roster.json
+
+# Turn connector-to-connector authentication off. Defaults to true (on), and
+# false is permitted only alongside dev_mode: true — a connector that has not
+# been declared a development instance may not accept unauthenticated
+# counterparties. It exists for migration, not convenience: switching a
+# running connector from anonymous to authenticated is otherwise a flag day
+# for every counterparty at once.
+# require_auth: true
 
 # The datasets this connector advertises. Optional: with none configured, the
 # catalog is served without a dataset key at all.
