@@ -44,6 +44,20 @@ read as claiming otherwise.
 A protocol counts as done only when its TCK suite is added to the gate's
 whitelist, so this table cannot drift ahead of reality.
 
+Connectors now authenticate to each other. Every DSP endpoint except the
+version document requires a JWT signed EdDSA over Ed25519 by a participant in
+this connector's roster and addressed to it, and every call this connector
+makes carries one (DECISIONS.md sections 9 and 10). The suite above runs with
+that on; removing the harness's credential fails 63 of the 65.
+
+Three limits are worth stating plainly rather than leaving to be discovered.
+`did:web` resolution is not implemented — the roster is the resolution
+mechanism, and participant identifiers are opaque strings. The operator's
+signature over the roster is not implemented either, so the roster is trusted
+exactly as far as the config file beside it is: it must come from local disk,
+never from an untrusted channel. And a captured credential can be replayed
+until it expires, five minutes after it was minted.
+
 There is no release yet, and nothing here is ready to run.
 
 ## Why this exists

@@ -22,6 +22,30 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Identities, before the connector starts: it loads the roster once at
+# startup, so both keys and the roster have to exist first. The TCK's
+# credential is minted later, after seeding — a cold image build here can take
+# minutes, and a token minted now would spend its five-minute life on the
+# build rather than on the suite.
+#
+# Generated into a gitignored directory. No key material is ever committed,
+# and the harness makes its own rather than carrying a fixture.
+identity="$dir/identities"
+rm -rf "$identity"
+mkdir -p "$identity"
+( cd "$root" && go build -o "$identity/dsops" ./cmd/dsops )
+
+connector_pub=$("$identity/dsops" keygen -out "$identity/connector.key")
+tck_pub=$("$identity/dsops" keygen -out "$identity/tck.key")
+cat >"$identity/roster.json" <<EOF
+{
+  "participants": [
+    {"id": "urn:participant:dsbox-test", "public_key": "$connector_pub"},
+    {"id": "urn:participant:tck", "public_key": "$tck_pub"}
+  ]
+}
+EOF
+
 $compose up -d --build dsbox
 
 printf 'waiting for the connector'
@@ -89,6 +113,17 @@ seed_agreement urn:uuid:tck-tpc-02-02
 seed_agreement urn:uuid:tck-tpc-02-03
 seed_agreement urn:uuid:tck-tpc-02-05
 echo 'seeded 12 transfer agreements'
+
+# The TCK's credential, minted now that everything slow is behind us. It is a
+# static string for the whole run: DspSystemLauncher registers it as an
+# interceptor once and cannot refresh it. A suite takes about 54 seconds
+# against a five-minute life, so the margin is the build time this deliberately
+# sits after.
+token=$("$identity/dsops" token -key "$identity/tck.key" \
+	-iss urn:participant:tck -aud urn:participant:dsbox-test)
+cat "$dir/config.properties" >"$identity/config.properties"
+printf '\ndataspacetck.dsp.connector.http.headers.authorization=Bearer %s\n' \
+	"$token" >>"$identity/config.properties"
 
 # --use-aliases: `compose run` does not register the service's own name as a
 # network alias by default (only `up` does), so without this flag the

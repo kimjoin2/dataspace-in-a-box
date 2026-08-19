@@ -20,3 +20,6 @@
 # checkout, so leaving it untracked means one `git add -A` on the main checkout
 # commits an entire duplicate tree.
 /.claude/worktrees/
+
+# Key material the TCK harness generates for itself. Never committed.
+test/tck/identities/
