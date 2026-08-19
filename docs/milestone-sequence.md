@@ -9,7 +9,37 @@ The TCK has carried every milestone so far. It stops carrying them at
 different points for each of the remaining ones, and that — more than
 dependency order — is what sets the sequence.
 
-## Where this stands
+## What has been done since this was written
+
+Milestones 1 and 2 are complete, and both confirmed the reasoning that put
+them in this order.
+
+**1. Connector authentication** (2026-08-19). Every DSP route except the
+version document requires an EdDSA credential from a roster participant.
+The prediction that the TCK could still verify it held: the suite stayed at
+64 of 65 with the harness presenting a minted token, and removing that token
+failed 63 of the 65 — which is the evidence no unit test could give that the
+middleware is wired to the routes the TCK actually calls. Spec:
+`specs/2026-08-19-connector-authentication-design.md`.
+
+**2. The data plane** (2026-08-19). `make demo` moves a real file between two
+authenticated connectors under a negotiated agreement, and fails if a single
+line differs. The prediction that this milestone would have no external
+verification also held — no TCK test moves a byte — which is why the demo is
+part of the milestone rather than a nicety after it. Spec:
+`specs/2026-08-19-data-plane-design.md`.
+
+**The ordering argument was load-bearing, not tidy-minded.** Building the data
+plane first would have shipped a server handing bytes to anyone who could
+drive a transfer to `STARTED` anonymously — which, before milestone 1, was
+anyone. The data endpoint's authorization is now three checks against a
+credential that already existed, and it needed no second token type precisely
+because authentication came first.
+
+Milestones 3 and 4 are unchanged and still ahead. What follows is the original
+argument, kept as written.
+
+## Where this stood when this was written
 
 The connector speaks the DSP 2025-1 control plane in both roles and the
 official TCK reports 64 of 65 with every suite gated. That is a real result

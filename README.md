@@ -9,10 +9,13 @@ not a wrapper around an existing connector. Compliance is verified by the
 official [DSP TCK](https://github.com/eclipse-dataspacetck/dsp-tck) running in
 CI, so the claim is a build artifact rather than a sales conversation.
 
-## Status: nothing works yet
+## Status: it moves files, and not much else yet
 
-The repository is public from its first commit, which means you are looking at
-it before it does anything. Here is the honest state.
+The repository has been public since its first commit, so this section has
+always said what was true at the time. What is true now: two connectors can
+authenticate, negotiate an agreement, and move a real file, and `make demo`
+does exactly that end to end. What is not yet true is below the table — the
+gaps are named rather than left to be found.
 
 | DSP protocol | TCK suite | Status |
 |---|---|---|
@@ -67,9 +70,28 @@ until it expires, five minutes after it was minted.
     make demo   # two connectors, one negotiated agreement, one file moved
     make tck    # the compliance gate: 64 of 65, 0 outside it
 
-There is no release yet. The transfer's write timeout bounds how large a file
-can finish, and neither range requests nor resumption exist — a failed pull
-refetches from zero.
+There is no release yet, and three gaps are worth knowing before anyone
+mistakes this for finished.
+
+**Contracts cannot carry terms.** The negotiation refuses any offer whose
+permission has a constraint, because this connector evaluates none — the rule
+`CLAUDE.md` states without exception is that a constraint which is not
+enforced is not accepted. Read the other way, that means the only agreement
+reachable today is unrestricted use. Validity periods and usage limits are
+the next milestone, not a present feature.
+
+**The roster is not portable.** `DECISIONS.md` section 9 makes the operator's
+signature over it the trust anchor, and that signature is not implemented, so
+the file must come from local disk. Distributing one over any other channel is
+not safe yet.
+
+**Transfers are small and one-shot.** The write timeout bounds how large a
+file can finish; there are no range requests and no resumption, so a failed
+pull refetches from zero.
+
+Everything else known and unfixed is in [`docs/follow-ups.md`](docs/follow-ups.md),
+with the reasoning for each, and the order the remaining milestones should be
+built in is in [`docs/milestone-sequence.md`](docs/milestone-sequence.md).
 
 ## Why this exists
 
