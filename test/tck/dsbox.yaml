@@ -90,3 +90,20 @@ transfer_policies:
     sequence: [TERMINATED]
   - agreement_id: urn:uuid:tck-tp-nostart
     sequence: []
+
+# The consumer role's autonomous behavior. Only the four TP_C tests that
+# require this connector to send a message of its own appear here; the other
+# twelve share an agreement with no entry, which is what makes them passive.
+consumer_transfer_policies:
+  - agreement_id: urn:uuid:tck-tpc-02-01
+    after: STARTED
+    sequence: [TERMINATED]
+  - agreement_id: urn:uuid:tck-tpc-02-02
+    after: STARTED
+    sequence: [COMPLETED]
+  - agreement_id: urn:uuid:tck-tpc-02-03
+    after: STARTED
+    sequence: [SUSPENDED, TERMINATED]
+  - agreement_id: urn:uuid:tck-tpc-02-05
+    after: REQUESTED
+    sequence: [TERMINATED]

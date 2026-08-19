@@ -23,10 +23,11 @@ import (
 // when every test in it actually runs. evaluate counts results for every
 // suite, without exception. Requiring an exact count means a run that stops
 // halfway through a suite fails instead of reporting green.
-// TP is where the two diverge: the suite declares 16 @MandatoryTest methods
-// but tp_02_04 also carries JUnit's @Disabled, and a disabled test produces no
-// result, so the count is 15.
-var expected = map[string]int{"MET": 1, "CAT": 3, "CN": 15, "CN_C": 16, "TP": 15}
+// TP and TP_C are where the two diverge: each suite declares 16
+// @MandatoryTest methods, and each has one — tp_02_04 and tp_c_02_04 — that
+// also carries JUnit's @Disabled. A disabled test produces no result, so both
+// counts are 15 rather than 16.
+var expected = map[string]int{"MET": 1, "CAT": 3, "CN": 15, "CN_C": 16, "TP": 15, "TP_C": 15}
 
 // exempt names individual gated test IDs that are known to fail and are
 // tracked rather than required — see docs/follow-ups.md for each entry's

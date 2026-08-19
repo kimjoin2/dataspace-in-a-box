@@ -79,7 +79,16 @@ seed_agreement urn:uuid:tck-tp-01-04
 seed_agreement urn:uuid:tck-tp-01-05
 seed_agreement urn:uuid:tck-tp-default
 seed_agreement urn:uuid:tck-tp-nostart
-echo 'seeded 7 transfer agreements'
+# TP_C. Every consumer-role test needs one too, because POST
+# /transfers/initiate refuses an agreement this connector has no record of —
+# the same rule, from the other role. Twelve of the sixteen share the passive
+# id; only the consumer-driven tests need their own.
+seed_agreement urn:uuid:tck-tpc-passive
+seed_agreement urn:uuid:tck-tpc-02-01
+seed_agreement urn:uuid:tck-tpc-02-02
+seed_agreement urn:uuid:tck-tpc-02-03
+seed_agreement urn:uuid:tck-tpc-02-05
+echo 'seeded 12 transfer agreements'
 
 # --use-aliases: `compose run` does not register the service's own name as a
 # network alias by default (only `up` does), so without this flag the
