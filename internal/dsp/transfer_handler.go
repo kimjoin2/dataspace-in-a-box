@@ -273,7 +273,7 @@ func (h transferHandler) driveTransfer(t store.TransferProcess) {
 // constructed URL is validated before anything is sent — see
 // validateCallbackURL's doc comment.
 func (h transferHandler) pushTransferStep(t store.TransferProcess, to string) bool {
-	path, msg, legalFrom, ok := transferStepMessage(t, to)
+	path, msg, legalFrom, ok := h.transferStepMessage(t, to)
 	if !ok {
 		// Unreachable through configuration, which validates every state in a
 		// sequence, so this catches a new state added to one side only.
@@ -341,9 +341,14 @@ func (h transferHandler) pushTransferStep(t store.TransferProcess, to string) bo
 // message hands applyTransition, which is what makes "this connector emits
 // only what it would accept" a single fact rather than two that have to be
 // kept in step.
-func transferStepMessage(t store.TransferProcess, to string) (string, any, func(string) bool, bool) {
+func (h transferHandler) transferStepMessage(t store.TransferProcess, to string) (string, any, func(string) bool, bool) {
 	switch to {
 	case TransferStarted:
+		// The address rides along only when there is something behind it, so
+		// a control-plane-only dataset keeps the Phase A message shape.
+		if h.hasSourceFor(t.AgreementID) {
+			return transferStartCallbackPath, buildTransferStartMessageWithData(t, h.cfg.PublicURL), startLegalFrom, true
+		}
 		return transferStartCallbackPath, buildTransferStartMessage(t), startLegalFrom, true
 	case TransferSuspended:
 		return transferSuspensionCallbackPath, buildTransferSuspensionMessage(t), suspensionLegalFrom, true
@@ -416,7 +421,7 @@ func (h transferHandler) applyTransition(w http.ResponseWriter, r *http.Request,
 	}
 
 	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
-	var msg envelope
+	var msg transferEnvelope
 	if err := json.NewDecoder(body).Decode(&msg); err != nil {
 		writeError(w, TransferErrorType, http.StatusBadRequest,
 			"the request body is not a JSON object in the DSP compact form")
@@ -443,6 +448,18 @@ func (h transferHandler) applyTransition(w http.ResponseWriter, r *http.Request,
 	// from handleTransferRequest instead, at the point the transfer is
 	// created.
 	if t.Consumer {
+		// A start carrying an address is this connector's cue to fetch. Read
+		// from the body that was just accepted rather than re-decoded: the
+		// address is only meaningful on the message that delivered it.
+		if to == TransferStarted && msg.DataAddress != nil {
+			go h.pullTransferData(store.ConsumerTransfer{
+				ConsumerPID:    t.ConsumerPID,
+				ProviderPID:    t.ProviderPID,
+				AgreementID:    t.AgreementID,
+				CounterpartyID: t.CounterpartyID,
+				State:          to,
+			}, msg.DataAddress)
+		}
 		h.maybeDriveConsumerTransfer(store.ConsumerTransfer{
 			ConsumerPID:     t.ConsumerPID,
 			ProviderPID:     t.ProviderPID,
@@ -578,4 +595,31 @@ func writeTransferStateUpdateError(w http.ResponseWriter, id string, err error) 
 	}
 	slog.Error("update transfer state", "transfer_id", id, "error", err)
 	w.WriteHeader(http.StatusInternalServerError)
+}
+
+// hasSourceFor reports whether the dataset behind an agreement has bytes
+// configured. It is the same resolution dataHandler does, and it is asked
+// here so a start message advertises an address only when a pull would
+// actually succeed.
+func (h transferHandler) hasSourceFor(agreementID string) bool {
+	a, ok, err := h.store.GetAgreement(agreementID)
+	if err != nil || !ok {
+		return false
+	}
+	for _, d := range h.cfg.Datasets {
+		if d.ID == a.DatasetID && d.SourceFile != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// transferEnvelope is the envelope plus the one field a transfer message can
+// carry that changes what this connector does next. Only start messages have
+// a dataAddress; on every other message the field is simply absent, which is
+// why one type serves all four endpoints.
+type transferEnvelope struct {
+	Context     []string     `json:"@context"`
+	Type        string       `json:"@type"`
+	DataAddress *DataAddress `json:"dataAddress,omitempty"`
 }

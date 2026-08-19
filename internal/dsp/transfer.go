@@ -81,6 +81,26 @@ type TransferStartMessage struct {
 	Type        string   `json:"@type"`
 	ProviderPID string   `json:"providerPid"`
 	ConsumerPID string   `json:"consumerPid"`
+	// DataAddress says where the bytes are. Omitted entirely when this
+	// connector has none to offer, which keeps the Phase A shape byte for
+	// byte: the schema makes it optional, and an empty object would activate
+	// data-address-schema.json's own requirements for nothing.
+	DataAddress *DataAddress `json:"dataAddress,omitempty"`
+}
+
+// DataAddress is where a consumer fetches a pull transfer's bytes. Only the
+// two fields the schema requires, plus the endpoint itself.
+//
+// No endpointProperties.authorization. The address is not a capability here:
+// the data endpoint sits behind the same roster credential as every other
+// route and checks the transfer's state and its counterparty, so a leaked URL
+// grants nothing on its own. Putting a token here would invent a second
+// credential beside one that already answers the question — see the design
+// spec, "Authorization: no new credential".
+type DataAddress struct {
+	Type         string `json:"@type"`
+	EndpointType string `json:"endpointType"`
+	Endpoint     string `json:"endpoint"`
 }
 
 // TransferSuspensionMessage, TransferTerminationMessage, and
@@ -174,6 +194,21 @@ func buildTransferStartMessage(t store.TransferProcess) TransferStartMessage {
 		ProviderPID: t.ProviderPID,
 		ConsumerPID: t.ConsumerPID,
 	}
+}
+
+// buildTransferStartMessageWithData is buildTransferStartMessage plus the
+// address the bytes are at. Separate rather than a parameter on the original
+// because the caller that has a public URL to build one from is the provider
+// driver, and the callers that do not should not be handed a way to pass an
+// empty one.
+func buildTransferStartMessageWithData(t store.TransferProcess, publicURL string) TransferStartMessage {
+	msg := buildTransferStartMessage(t)
+	msg.DataAddress = &DataAddress{
+		Type:         "DataAddress",
+		EndpointType: "https://w3id.org/idsa/v4.1/HTTP",
+		Endpoint:     publicURL + VersionPath + "/data/" + t.ProviderPID,
+	}
+	return msg
 }
 
 // The three builders below exist because this connector emits these messages

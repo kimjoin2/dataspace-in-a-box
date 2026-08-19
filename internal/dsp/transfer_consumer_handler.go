@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
@@ -235,4 +238,79 @@ func (h transferHandler) maybeDriveConsumerTransfer(t store.ConsumerTransfer, re
 	}
 	t.State = reached
 	go h.driveConsumerTransfer(t)
+}
+
+// downloadDir is where pulled bytes land, under the one directory this
+// connector already owns. A second configurable path would be a second thing
+// to get wrong, and this milestone gains nothing from it.
+const downloadDir = "downloads"
+
+// pullTransferData fetches what a dataAddress points at and writes it under
+// data_dir. Called once when a start message arrives carrying an address.
+//
+// Not retried. A failed pull leaves the transfer in STARTED, which is the
+// honest state — the provider is still willing to serve and an operator can
+// ask again. Retrying automatically would make a slow first fetch
+// indistinguishable from a stuck one, and would race a second writer onto the
+// same file.
+func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAddress) {
+	if addr == nil || addr.Endpoint == "" {
+		return
+	}
+	// The endpoint came from a counterparty, so it goes through the same
+	// guard as every other address this connector is told to contact.
+	if err := validateOutgoingCallback(addr.Endpoint); err != nil {
+		slog.Error("refuse data endpoint", "consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "error", err)
+		return
+	}
+	req, err := http.NewRequest(http.MethodGet, addr.Endpoint, nil)
+	if err != nil {
+		slog.Error("build data pull", "consumer_pid", t.ConsumerPID, "error", err)
+		return
+	}
+	if authorization := mintOutboundCredential(t.CounterpartyID); authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := callbackHTTPClient.Do(req)
+	if err != nil {
+		slog.Error("data pull", "consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "error", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		slog.Error("data endpoint refused the pull",
+			"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "status", resp.StatusCode)
+		return
+	}
+
+	dir := filepath.Join(h.cfg.DataDir, downloadDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		slog.Error("create download directory", "dir", dir, "error", err)
+		return
+	}
+	// Written to a temporary file and renamed, so a partial fetch never
+	// appears as a complete download. A reader that finds the file finds all
+	// of it.
+	tmp, err := os.CreateTemp(dir, ".partial-*")
+	if err != nil {
+		slog.Error("create download file", "dir", dir, "error", err)
+		return
+	}
+	defer os.Remove(tmp.Name())
+	n, err := io.Copy(tmp, resp.Body)
+	if err != nil {
+		tmp.Close()
+		slog.Error("write download", "consumer_pid", t.ConsumerPID, "error", err)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		slog.Error("close download", "consumer_pid", t.ConsumerPID, "error", err)
+		return
+	}
+	final := filepath.Join(dir, t.ConsumerPID)
+	if err := os.Rename(tmp.Name(), final); err != nil {
+		slog.Error("place download", "path", final, "error", err)
+		return
+	}
+	slog.Info("pulled transfer data", "consumer_pid", t.ConsumerPID, "path", final, "bytes", n)
 }

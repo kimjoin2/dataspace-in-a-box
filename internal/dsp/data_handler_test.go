@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,4 +121,92 @@ func TestDataPullChecksOwnershipBeforeState(t *testing.T) {
 	if rec := pullAs(t, h, id, testOther); rec.Code != http.StatusForbidden {
 		t.Errorf("got %d, want 403 — state was leaked to a stranger", rec.Code)
 	}
+}
+
+// A start message carrying an address makes the consumer fetch, and what it
+// fetches lands on disk whole. This is the consumer half of the data plane
+// and the TCK verifies none of it.
+func TestConsumerPullsWhenTheStartCarriesAnAddress(t *testing.T) {
+	var pulled string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pulled = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(servedBytes))
+	}))
+	defer provider.Close()
+
+	dir := t.TempDir()
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	id := seedConsumerTransfer(t, st, TransferRequested)
+
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + TransferStartMessageType + `",` +
+		`"providerPid":"urn:uuid:p","consumerPid":"` + id + `",` +
+		`"dataAddress":{"@type":"DataAddress","endpointType":"https://w3id.org/idsa/v4.1/HTTP",` +
+		`"endpoint":"` + provider.URL + `"}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, VersionPath+"/transfers/"+id+"/start", strings.NewReader(body))
+	req.SetPathValue("id", id)
+	h.handleTransferStart(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start: got %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	path := filepath.Join(dir, downloadDir, id)
+	waitForFile(t, path)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read download: %v", err)
+	}
+	if string(got) != servedBytes {
+		t.Errorf("downloaded %q, want %q", got, servedBytes)
+	}
+	// The pull is an outbound call like any other, so it carries a credential
+	// when one is configured. Here the minter is the no-op default, so the
+	// assertion is only that the pull happened at all.
+	_ = pulled
+
+	// Nothing partial is left behind.
+	entries, err := os.ReadDir(filepath.Join(dir, downloadDir))
+	if err != nil {
+		t.Fatalf("read download dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".partial-") {
+			t.Errorf("a partial file was left behind: %s", e.Name())
+		}
+	}
+}
+
+// A start with no address is the control-plane-only case, and it must not
+// produce a fetch or a file.
+func TestConsumerDoesNotPullWithoutAnAddress(t *testing.T) {
+	dir := t.TempDir()
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	id := seedConsumerTransfer(t, st, TransferRequested)
+
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + TransferStartMessageType + `",` +
+		`"providerPid":"urn:uuid:p","consumerPid":"` + id + `"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, VersionPath+"/transfers/"+id+"/start", strings.NewReader(body))
+	req.SetPathValue("id", id)
+	h.handleTransferStart(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start: got %d, want 200", rec.Code)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(dir, downloadDir)); !os.IsNotExist(err) {
+		t.Errorf("a download directory appeared with no address to pull from: %v", err)
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("no file appeared at %s", path)
 }
