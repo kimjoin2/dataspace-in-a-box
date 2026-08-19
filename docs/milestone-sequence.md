@@ -84,17 +84,29 @@ would be authorizing itself, which turns the transfer state machine into
 decoration. Building the data plane first means shipping, however briefly, a
 server that hands out bytes to anyone who asks for them.
 
-**Settle before starting.** The TCK sends a *static* string, and §10 specifies
-a five-minute expiry. Those are compatible only if a token minted at harness
-start outlives the run. `run.sh` already talks to the management API before
-the suite starts, so minting one there is the natural fit — but the run's
-duration has to be measured first, and if it exceeds the expiry the choice is
-between a longer-lived harness credential and a design change. Do not assume;
-time a run.
+**Measured, and it fits.** The TCK sends a *static* string, and §10 specifies a
+five-minute expiry, so the two are compatible only if a minted token outlives
+the run. The suite takes **54 seconds** — first to last timestamped line of a
+real run:
 
-Also open: whether outbound authentication ships in the same milestone. The
-TCK's mock endpoints do not verify what this connector sends, so that half is
-untestable by the harness and rests on unit tests either way.
+```sh
+grep -oE "^\[[^]]+\]" tck-output.txt | sed -n '1p;$p'
+```
+
+Against a 300-second expiry that is comfortable, so §10 stands as written and
+the harness needs no special credential.
+
+One placement detail decides it, though. Mint the token **after** the
+connector is up and the agreements are seeded — where `run.sh` already is at
+that point — rather than before `docker compose`. A cold image build ahead of
+the suite can take minutes, and a token minted before it would be spending its
+expiry on the build. Minted at the seeding step, the whole five minutes is
+available to a fifty-four-second suite.
+
+Still open: whether outbound authentication ships in the same milestone.
+
+The TCK's mock endpoints do not verify what this connector sends, so that half
+is untestable by the harness and rests on unit tests either way.
 
 ### 2. The data plane (Phase B, HTTP-PULL)
 
