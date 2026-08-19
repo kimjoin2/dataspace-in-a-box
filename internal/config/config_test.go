@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -536,5 +537,28 @@ func TestAuthRequiresKeyAndRoster(t *testing.T) {
 	}
 	if _, err := Load(withoutAuthFiles("roster: /r\n"), env(nil)); err == nil {
 		t.Error("loaded with a roster but no key")
+	}
+}
+
+// A source_file that is not there is a typo, and a typo should fail at boot
+// rather than on the first pull — by which time a counterparty is waiting.
+func TestSourceFileMustExist(t *testing.T) {
+	if _, err := Load(minimal("datasets:\n  - id: urn:dataset:a\n    source_file: /nope/missing\n"), env(nil)); err == nil {
+		t.Error("a missing source_file loaded without error")
+	}
+	if _, err := Load(minimal("datasets:\n  - id: urn:dataset:a\n    source_file: /tmp\n"), env(nil)); err == nil {
+		t.Error("a directory loaded as a source_file")
+	}
+
+	path := filepath.Join(t.TempDir(), "d.csv")
+	if err := os.WriteFile(path, []byte("a,b\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(minimal("datasets:\n  - id: urn:dataset:a\n    source_file: "+path+"\n"), env(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Datasets[0].SourceFile != path {
+		t.Errorf("SourceFile = %q", cfg.Datasets[0].SourceFile)
 	}
 }

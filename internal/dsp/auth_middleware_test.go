@@ -84,8 +84,25 @@ func dspRoutes(t *testing.T) []routeUnderTest {
 	for _, m := range literal.FindAllStringSubmatch(string(src), -1) {
 		routes = append(routes, routeUnderTest{m[1], fillPathParams(m[2])})
 	}
+	// A method-less pattern, which the version endpoint uses so a non-GET
+	// gets 405 rather than being swallowed by the catch-all. GET stands in
+	// for "any method" here; the path is what matters.
+	methodless := regexp.MustCompile(`HandleFunc\("(/[^" ]+)"`)
+	for _, m := range methodless.FindAllStringSubmatch(string(src), -1) {
+		routes = append(routes, routeUnderTest{"GET", fillPathParams(m[1])})
+	}
 	if len(routes) < 15 {
 		t.Fatalf("parsed only %d routes out of router.go, which cannot be right", len(routes))
+	}
+	// Every mounted route must be one this parser can see, or it is not
+	// checked for authentication and ships open. A pattern built from a
+	// constant instead of a literal slips past silently — that happened once
+	// with the data endpoint — so the count is compared against every
+	// HandleFunc call in the file rather than trusted.
+	calls := regexp.MustCompile(`HandleFunc\(`).FindAllString(string(src), -1)
+	if len(calls) != len(routes) {
+		t.Fatalf("router.go makes %d HandleFunc calls but only %d parse into routes; "+
+			"write the pattern as a string literal so it is checked for authentication", len(calls), len(routes))
 	}
 	return routes
 }

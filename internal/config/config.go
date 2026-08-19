@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -128,6 +129,22 @@ type Dataset struct {
 	// every dataset's behavior before this milestone. This is the second of
 	// the two policy shapes DECISIONS.md section 14 permits in v1.
 	ValidityUntil *time.Time `yaml:"validity_until"`
+
+	// SourceFile is the file this dataset's bytes come from. Optional: a
+	// dataset without one is advertisable, negotiable, and transferable as a
+	// control-plane exercise, and its data endpoint answers 409 — the
+	// agreement is real and there is simply nothing configured behind it.
+	//
+	// Checked for existence at load, so a typo fails at boot rather than on
+	// the first pull, and read at request time rather than held open, because
+	// a file swapped underneath the connector is the operator's business.
+	//
+	// Note what a transfer_policies sequence does to this. That table is a
+	// test affordance whose default, [STARTED], is the configuration that
+	// serves data; a sequence naming COMPLETED or TERMINATED ends the
+	// transfer on a timer, and ending a transfer ends access to its bytes.
+	// A terminal step and a source_file are mutually exclusive in practice.
+	SourceFile string `yaml:"source_file"`
 }
 
 // ConsumerPolicy selects this connector's autonomous reaction to what a
@@ -300,6 +317,17 @@ func (c Config) validate() error {
 	for i, d := range c.Datasets {
 		if err := validateDatasetID(d.ID); err != nil {
 			return fmt.Errorf("datasets[%d]: %w", i, err)
+		}
+		if d.SourceFile != "" {
+			// Checked here so a typo fails at boot. Not held open: the file
+			// is read per request, and a directory is never a dataset.
+			info, err := os.Stat(d.SourceFile)
+			if err != nil {
+				return fmt.Errorf("datasets[%d]: source_file %q: %w", i, d.SourceFile, err)
+			}
+			if info.IsDir() {
+				return fmt.Errorf("datasets[%d]: source_file %q is a directory", i, d.SourceFile)
+			}
 		}
 		if seen[d.ID] {
 			return fmt.Errorf("datasets[%d]: duplicate id %q", i, d.ID)

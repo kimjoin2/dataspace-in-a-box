@@ -40,6 +40,9 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay}
 	mux.HandleFunc("POST "+VersionPath+"/transfers/request", tr.handleTransferRequest)
 	mux.HandleFunc("POST "+VersionPath+"/transfers/initiate", tr.handleTransferInitiate)
+
+	data := dataHandler{cfg: cfg, store: st}
+	mux.HandleFunc("GET "+VersionPath+"/data/{id}", data.handleData)
 	mux.HandleFunc("GET "+VersionPath+"/transfers/{id}", tr.handleGetTransfer)
 	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/start", tr.handleTransferStart)
 	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/completion", tr.handleTransferCompletion)
