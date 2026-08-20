@@ -1281,3 +1281,79 @@ see an Offer this connector pushes carrying a constraint on the wire.
 unconstrained offers" predates this milestone and does not by itself cover
 it. All three tests were re-run and pass; the gate stays 64 of 65, one
 tracked exemption, unchanged.
+
+## 27. Roster signing and did:web resolution
+
+**Decision.** §9 decided both pieces already and built neither. The
+connector-auth milestone's design spec named the gap and narrowed it on
+purpose: "a roster fetched from anywhere other than local disk is not safe
+under this milestone, and adding the signature is the prerequisite for
+distributing one." This milestone adds the signature and a real `did:web`
+resolver, and does not reopen the auth spec's other decision: resolution
+still has no part in answering "is this request authenticated" — see 27.4.
+
+**27.1 The roster is signed by a key that is not any participant's.** A new
+config value, `roster_signer` — a bare Ed25519 public key, not a file path,
+required whenever authentication is on. Not a participant's key: the roster
+is the registry itself, and signing it with an entry's own key would let
+that entry vouch for its own trustworthiness. It sits in `config.yaml` under
+the same "this file's integrity is already assumed, on the same disk, in
+the same deployment" reasoning the auth spec already gave for the roster
+file itself.
+
+**27.2 What gets signed is a re-marshal, not the file's own bytes, so no
+canonical-JSON scheme was needed.** `roster.json` gains a `signature` field.
+The bytes signed are `json.Marshal` of the parsed `[]rosterEntry` — Go's
+`encoding/json` marshals struct fields in declaration order, so this is
+deterministic for a fixed struct without a canonicalization spec. The
+signer and `LoadRoster` both compute it from their own parsed value, so
+reformatting the source file (whitespace, key order) cannot change what is
+checked, and only the file's actual content — the participants — can.
+
+**27.3 `dsops roster sign` prints the signature; it does not rewrite the
+file.** `dsops`'s own package doc already states why: "a command that
+rewrote \[the roster\] would put a tool between the operator and a file
+they are meant to read." Signing is mechanical, unlike deciding who belongs
+in the roster, but the shape stays consistent with `keygen` and `token` —
+print, and the operator pastes it in — rather than carving an exception
+into a principle stated once for a reason.
+
+**27.4 `did:web` resolution is real and is nowhere near the authentication
+path.** `ResolveDIDWeb` fetches a DID document over HTTP(S) and reads an
+Ed25519 key out of a `publicKeyJwk` verification method — JWK (RFC 7517),
+narrowed to OKP/Ed25519 (RFC 8037), not `publicKeyMultibase`: multibase is
+base58btc with a Multicodec header, and this project's default answer to a
+dependency question is the standard library, which decodes JWK's base64url
+`x` already and would need a base58 decoder written for multibase to save a
+few bytes over JWK. It is exposed as `dsops resolve <did:web:...>`, printing
+a key in the same shape `keygen` does, for an operator to paste into a
+roster entry — theirs from `keygen`, a counterparty's from `resolve`,
+identically. It is never called from `internal/dsp`: the roster already maps
+identifier to key, so resolving on every request would add a network
+dependency to authentication and change nothing about who ends up trusted —
+the auth spec's own reasoning, unchanged by this milestone existing.
+
+**27.5 `-allow-http` mirrors `dev_mode`'s reasoning without touching
+`config.DevMode`.** `didWebURL` takes a plain `bool`, not a `config.Config`:
+`internal/auth` takes no dependency on `internal/config`, and resolution is
+a CLI-driven operator action, not something a running connector's config
+shapes. `dsops resolve -allow-http` builds an `http://` URL instead of
+`https://`, for the same reason §13 already relaxes `public_url` under
+`dev_mode: true` — local demos and tests with no TLS to terminate — without
+being the same field or the same code path.
+
+*Trade-off accepted.* Two problems this milestone does not solve, stated
+rather than left implicit. First, `roster_signer`'s own distribution is the
+same bootstrap problem one level up: a signature protects the roster once a
+connector has a copy of both it and the right signer key, and says nothing
+about how either first reaches a new connector — still "diffed in git",
+still local disk, still a governance question and not a cryptographic one.
+Second, no key rotation path: a `did:web` document that changes its key
+propagates nowhere on its own, and the roster stays a static, manually
+refreshed cache of whatever `resolve` last returned. `make demo` and
+`make tck` both now sign the roster they build (a `dsops roster sign` step
+`run.sh` in each carries); neither exercises `did:web` resolution live —
+`ResolveDIDWeb`'s own tests, against `httptest.Server`, are the evidence for
+that half, and folding it into either harness would mean standing up a
+document server neither actually needs, for proof the unit tests already
+give more directly.

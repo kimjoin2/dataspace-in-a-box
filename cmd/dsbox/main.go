@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -63,7 +64,14 @@ func run() error {
 		if signKey, err = auth.LoadPrivateKey(cfg.ParticipantKey); err != nil {
 			return fmt.Errorf("load participant_key %q: %w", cfg.ParticipantKey, err)
 		}
-		if roster, err = auth.LoadRoster(cfg.RosterPath); err != nil {
+		signerRaw, err := base64.RawURLEncoding.DecodeString(cfg.RosterSigner)
+		if err != nil {
+			return fmt.Errorf("roster_signer is not base64url: %w", err)
+		}
+		if len(signerRaw) != ed25519.PublicKeySize {
+			return fmt.Errorf("roster_signer is %d bytes, want %d", len(signerRaw), ed25519.PublicKeySize)
+		}
+		if roster, err = auth.LoadRoster(cfg.RosterPath, ed25519.PublicKey(signerRaw)); err != nil {
 			return err
 		}
 	} else {

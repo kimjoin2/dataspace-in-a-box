@@ -38,13 +38,26 @@ func authedRouter(t *testing.T) (http.Handler, ed25519.PrivateKey) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
+	signerPub, signerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
 	path := filepath.Join(t.TempDir(), "roster.json")
 	body := `{"participants":[{"id":"` + testPeer + `","public_key":"` +
 		base64.RawURLEncoding.EncodeToString(pub) + `"}]}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write roster: %v", err)
 	}
-	roster, err := auth.LoadRoster(path)
+	sig, err := auth.SignRoster(path, signerPriv)
+	if err != nil {
+		t.Fatalf("SignRoster: %v", err)
+	}
+	signed := `{"participants":[{"id":"` + testPeer + `","public_key":"` +
+		base64.RawURLEncoding.EncodeToString(pub) + `"}],"signature":"` + sig + `"}`
+	if err := os.WriteFile(path, []byte(signed), 0o600); err != nil {
+		t.Fatalf("write signed roster: %v", err)
+	}
+	roster, err := auth.LoadRoster(path, signerPub)
 	if err != nil {
 		t.Fatalf("LoadRoster: %v", err)
 	}

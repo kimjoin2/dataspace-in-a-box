@@ -622,9 +622,11 @@ func TestResolveTransferSequenceFromALoadedConfig(t *testing.T) {
 			"participant_id: urn:participant:example\n"+
 			"data_dir: ./data\n"+
 			// Authentication is on by default, so a loadable document names
-			// the two files it needs. Neither is opened here.
+			// the two files it needs plus the roster signer. Neither file is
+			// opened here.
 			"participant_key: /etc/dsbox/participant.key\n"+
 			"roster: /etc/dsbox/roster.json\n"+
+			"roster_signer: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\n"+
 			"transfer_policies:\n"+
 			"  - agreement_id: urn:uuid:agreement-1\n"+
 			"    sequence: []\n"), func(string) string { return "" })

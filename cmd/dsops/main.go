@@ -1,12 +1,15 @@
 // Command dsops generates and uses the key material connectors authenticate
-// with. Two subcommands, because two are what a deployment needs: one to
-// create a participant's key, and one to mint a credential by hand — for a
-// test harness, or to check a roster entry without standing a connector up.
+// with: a participant's key, a credential minted by hand — for a test
+// harness, or to check a roster entry without standing a connector up — a
+// roster's signature, and a counterparty's key resolved from its did:web
+// identifier.
 //
 // It deliberately does not manage the roster. A roster is a small JSON file
 // that an operator edits and diffs in git (DECISIONS.md section 9), and a
 // command that rewrote it would put a tool between the operator and a file
-// they are meant to read.
+// they are meant to read. Signing is no exception: `roster sign` prints a
+// signature for the operator to paste in, the same way `keygen` prints a
+// public key rather than writing it into anyone's roster.
 package main
 
 import (
@@ -32,7 +35,18 @@ const usage = `usage:
         what goes in a counterparty's roster.
 
   dsops token -key <path> -iss <participant> -aud <participant> [-ttl 5m]
-        Mint a credential. Prints the token, with no "Bearer " prefix.`
+        Mint a credential. Prints the token, with no "Bearer " prefix.
+
+  dsops roster sign -roster <path> -key <path>
+        Sign a roster with the operator's key. Prints the signature; it does
+        not write the file — paste the printed value into the roster's own
+        "signature" field.
+
+  dsops resolve <did:web:...> [-allow-http]
+        Resolve a did:web identifier to its Ed25519 public key over HTTPS.
+        Prints the key in the same form keygen does, for pasting into a
+        roster entry. -allow-http resolves over plain HTTP instead, for a
+        server with no TLS to terminate (local demos and tests only).`
 
 func run(args []string, out *os.File) error {
 	if len(args) == 0 {
@@ -43,6 +57,10 @@ func run(args []string, out *os.File) error {
 		return keygen(args[1:], out)
 	case "token":
 		return token(args[1:], out)
+	case "roster":
+		return roster(args[1:], out)
+	case "resolve":
+		return resolve(args[1:], out)
 	default:
 		return fmt.Errorf("unknown subcommand %q\n\n%s", args[0], usage)
 	}
@@ -86,5 +104,50 @@ func token(args []string, out *os.File) error {
 		return err
 	}
 	_, err = fmt.Fprintln(out, tok)
+	return err
+}
+
+// roster dispatches this subcommand's own verb — "sign" today, matching the
+// keygen/token pattern of one flag set per verb rather than a shared one
+// growing flags that only some verbs use.
+func roster(args []string, out *os.File) error {
+	if len(args) == 0 || args[0] != "sign" {
+		return fmt.Errorf("roster: only \"sign\" is a known verb")
+	}
+	fs := flag.NewFlagSet("roster sign", flag.ContinueOnError)
+	rosterPath := fs.String("roster", "", "path to the roster to sign")
+	key := fs.String("key", "", "path to the operator's signing key")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *rosterPath == "" || *key == "" {
+		return fmt.Errorf("roster sign: -roster and -key are both required")
+	}
+	priv, err := auth.LoadPrivateKey(*key)
+	if err != nil {
+		return err
+	}
+	sig, err := auth.SignRoster(*rosterPath, priv)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, sig)
+	return err
+}
+
+func resolve(args []string, out *os.File) error {
+	fs := flag.NewFlagSet("resolve", flag.ContinueOnError)
+	allowHTTP := fs.Bool("allow-http", false, "resolve over plain HTTP instead of HTTPS")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("resolve: exactly one did:web identifier is required")
+	}
+	pub, err := auth.ResolveDIDWeb(fs.Arg(0), *allowHTTP)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, base64.RawURLEncoding.EncodeToString(pub))
 	return err
 }

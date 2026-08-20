@@ -37,6 +37,7 @@ mkdir -p "$identity"
 
 connector_pub=$("$identity/dsops" keygen -out "$identity/connector.key")
 tck_pub=$("$identity/dsops" keygen -out "$identity/tck.key")
+operator_pub=$("$identity/dsops" keygen -out "$identity/operator.key")
 cat >"$identity/roster.json" <<EOF
 {
   "participants": [
@@ -45,6 +46,17 @@ cat >"$identity/roster.json" <<EOF
   ]
 }
 EOF
+signature=$("$identity/dsops" roster sign -roster "$identity/roster.json" -key "$identity/operator.key")
+cat >"$identity/roster.json" <<EOF
+{
+  "participants": [
+    {"id": "urn:participant:dsbox-test", "public_key": "$connector_pub"},
+    {"id": "urn:participant:tck", "public_key": "$tck_pub"}
+  ],
+  "signature": "$signature"
+}
+EOF
+export DSBOX_ROSTER_SIGNER="$operator_pub"
 
 $compose up -d --build dsbox
 

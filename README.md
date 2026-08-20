@@ -15,8 +15,10 @@ The repository has been public since its first commit, so this section has
 always said what was true at the time. What is true now: two connectors can
 authenticate, negotiate an agreement that can carry a real term — a validity
 period — and move a real file that the data plane stops serving once that
-term expires, and `make demo` does exactly that end to end. What is not yet
-true is below the table — the gaps are named rather than left to be found.
+term expires, and `make demo` does exactly that end to end, on a roster that
+now carries the operator's own signature rather than being trusted only
+because it sits on the right disk. What is not yet true is below the table —
+the gaps are named rather than left to be found.
 
 | DSP protocol | TCK suite | Status |
 |---|---|---|
@@ -60,19 +62,21 @@ this connector's roster and addressed to it, and every call this connector
 makes carries one (DECISIONS.md sections 9 and 10). The suite above runs with
 that on; removing the harness's credential fails 63 of the 65.
 
-Three limits are worth stating plainly rather than leaving to be discovered.
-`did:web` resolution is not implemented — the roster is the resolution
-mechanism, and participant identifiers are opaque strings. The operator's
-signature over the roster is not implemented either, so the roster is trusted
-exactly as far as the config file beside it is: it must come from local disk,
-never from an untrusted channel. And a captured credential can be replayed
-until it expires, five minutes after it was minted.
+Two limits are worth stating plainly rather than leaving to be discovered.
+`did:web` resolution exists (`dsops resolve <did:web:...>`) but is not part
+of authenticating a request — the roster is still what every request checks
+against, resolution is only how an operator builds or checks a roster entry,
+on purpose (see `DECISIONS.md` section 9 and the design spec: putting
+resolution on the request path would add a network dependency to
+authentication and change nothing about who ends up trusted). And a captured
+credential can be replayed until it expires, five minutes after it was
+minted.
 
     make demo   # two connectors, one negotiated agreement, one file moved
     make tck    # the compliance gate: 64 of 65, 0 outside it
 
-There is no release yet, and three gaps are worth knowing before anyone
-mistakes this for finished.
+There is no release yet, and gaps are worth knowing before anyone mistakes
+this for finished.
 
 **Contracts carry exactly one kind of term.** A dataset's `validity_until`
 now becomes a real ODRL constraint on its offer and agreement — not only a
@@ -85,10 +89,13 @@ exception — a constraint which is not enforced is not accepted. Usage
 purposes, spatial restrictions, and counts are not evaluated and are not a
 present feature.
 
-**The roster is not portable.** `DECISIONS.md` section 9 makes the operator's
-signature over it the trust anchor, and that signature is not implemented, so
-the file must come from local disk. Distributing one over any other channel is
-not safe yet.
+**The roster is signed, but its own distribution is still a bootstrap
+problem.** `roster.json` now carries the operator's signature, verified
+against `roster_signer` at load — an unsigned or forged roster is a startup
+failure. What that does not solve: how `roster_signer` itself, or a first
+copy of the roster, reaches every connector that must trust it. That is a
+governance question `DECISIONS.md` section 9 leaves to "diffed in git", not
+one a signature scheme answers by itself.
 
 **Transfers are small and one-shot.** The write timeout bounds how large a
 file can finish; there are no range requests and no resumption, so a failed

@@ -97,6 +97,15 @@ type Config struct {
 	// Required when authentication is on.
 	RosterPath string `yaml:"roster"`
 
+	// RosterSigner is the operator's Ed25519 public key (base64url), the one
+	// this connector's roster must carry a valid signature from
+	// (DECISIONS.md section 9's trust anchor). Not a participant's key: the
+	// roster is the registry itself, and signing it with an entry's own key
+	// would let that entry vouch for itself. Required when authentication is
+	// on. Generate the signing key with `dsops keygen`, sign a roster with
+	// `dsops roster sign`.
+	RosterSigner string `yaml:"roster_signer"`
+
 	// RequireAuth turns connector-to-connector authentication on. A pointer
 	// so an omitted key is distinguishable from an explicit false; nil means
 	// the default, which is on — see AuthRequired.
@@ -270,6 +279,9 @@ func Load(data []byte, getenv func(string) string) (Config, error) {
 	if v := getenv("DSBOX_ROSTER"); v != "" {
 		cfg.RosterPath = v
 	}
+	if v := getenv("DSBOX_ROSTER_SIGNER"); v != "" {
+		cfg.RosterSigner = v
+	}
 	if v := getenv("DSBOX_MGMT_TOKEN"); v != "" {
 		cfg.MgmtToken = v
 	}
@@ -395,6 +407,9 @@ func (c Config) validate() error {
 		}
 		if c.RosterPath == "" {
 			return fmt.Errorf("roster is required when authentication is on: it says whose signatures this connector accepts")
+		}
+		if c.RosterSigner == "" {
+			return fmt.Errorf("roster_signer is required when authentication is on: it is what the roster's signature must verify against")
 		}
 	}
 	if c.DataDir == "" {

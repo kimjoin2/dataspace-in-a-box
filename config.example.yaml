@@ -40,22 +40,46 @@ participant_key: /etc/dsbox/participant.key
 
 # The participant roster: whose signatures this connector accepts
 # (DECISIONS.md section 9). Required unless require_auth is false. A JSON
-# document mapping participant identifiers to base64url Ed25519 public keys:
+# document mapping participant identifiers to base64url Ed25519 public keys,
+# signed by roster_signer below:
 #
-#     {"participants": [{"id": "urn:participant:peer", "public_key": "..."}]}
+#     {"participants": [{"id": "urn:participant:peer", "public_key": "..."}],
+#      "signature": "..."}
 #
-# Read once at startup, so adding or removing a participant means editing this
-# file and restarting. An unusable roster is a startup failure rather than a
-# warning: a connector that cannot verify anyone should say so at boot, not by
-# refusing every request later.
+# Build a participant's public_key with `dsops keygen` (theirs) or
+# `dsops resolve <did:web:...>` (a counterparty's, resolved rather than
+# copied by hand). Sign the finished file with `dsops roster sign`.
 #
-# Note what this is not yet: section 9 makes the operator's signature over
-# this file the trust anchor, and that signature is not implemented. Until it
-# is, the roster is trusted exactly as far as this config file is — so it must
-# come from local disk, never from an untrusted channel.
+# Read once at startup, so adding or removing a participant means editing
+# this file, re-signing it, and restarting. An unusable roster — including
+# one with no signature, or one whose signature does not verify — is a
+# startup failure rather than a warning: a connector that cannot verify
+# anyone should say so at boot, not by refusing every request later.
+#
+# The signature is what lets this file be distributed over a channel less
+# trusted than the disk it ends up on; without it, the roster is trusted
+# exactly as far as this config file is, the same as roster_signer's own
+# distribution problem below.
 #
 # DSBOX_ROSTER overrides it.
 roster: /etc/dsbox/roster.json
+
+# The operator's Ed25519 public key (base64url) — what roster's own
+# "signature" field must verify against. Not a participant's key: the
+# roster is the registry itself, and signing it with an entry's own key
+# would let that entry vouch for itself. Required unless require_auth is
+# false. Generate the signing key with `dsops keygen`, same as any other key
+# in this project.
+#
+# This is the one piece section 9 leaves unsolved rather than moves:
+# roster_signer's own distribution to every connector that must trust the
+# same roster is still an out-of-band problem, the same one config.yaml
+# itself already has.
+#
+# DSBOX_ROSTER_SIGNER overrides it. The value below is an example, not a
+# real key — nothing verifies against it until an operator generates their
+# own and points every connector sharing this roster at the same public half.
+roster_signer: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
 
 # Turn connector-to-connector authentication off. Defaults to true (on), and
 # false is permitted only alongside dev_mode: true — a connector that has not

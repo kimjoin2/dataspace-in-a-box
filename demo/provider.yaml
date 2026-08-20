@@ -4,6 +4,8 @@ dev_mode: true
 participant_id: urn:participant:provider
 participant_key: /etc/dsbox/participant.key
 roster: /etc/dsbox/roster.json
+# roster_signer is not set here: it is a fresh key every run, so run.sh
+# passes it through compose.yaml's environment (DSBOX_ROSTER_SIGNER).
 dsp_addr: 0.0.0.0:8080
 mgmt_addr: 0.0.0.0:8081
 mgmt_token: demo-management-token

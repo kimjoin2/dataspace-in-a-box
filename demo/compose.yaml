@@ -7,6 +7,10 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    environment:
+      # A fresh key every run (run.sh, generated/ is gitignored), so it
+      # cannot live in the tracked *.yaml the way the file paths do.
+      - DSBOX_ROSTER_SIGNER=${DSBOX_ROSTER_SIGNER}
     volumes:
       - ./provider.yaml:/etc/dsbox/config.yaml:ro
       - ./generated/provider.key:/etc/dsbox/participant.key:ro
@@ -25,6 +29,8 @@ services:
       dockerfile: Dockerfile
     depends_on:
       - provider
+    environment:
+      - DSBOX_ROSTER_SIGNER=${DSBOX_ROSTER_SIGNER}
     volumes:
       - ./consumer.yaml:/etc/dsbox/config.yaml:ro
       - ./generated/consumer.key:/etc/dsbox/participant.key:ro

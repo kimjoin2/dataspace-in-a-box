@@ -25,6 +25,7 @@ chmod 777 "$gen/consumer-data"
 ( cd "$root" && go build -o "$gen/dsops" ./cmd/dsops )
 provider_pub=$("$gen/dsops" keygen -out "$gen/provider.key")
 consumer_pub=$("$gen/dsops" keygen -out "$gen/consumer.key")
+operator_pub=$("$gen/dsops" keygen -out "$gen/operator.key")
 cat >"$gen/roster.json" <<EOF
 {
   "participants": [
@@ -33,6 +34,19 @@ cat >"$gen/roster.json" <<EOF
   ]
 }
 EOF
+# roster_signer, not a participant: the roster is the registry itself, and
+# signing it with an entry's own key would let that entry vouch for itself.
+signature=$("$gen/dsops" roster sign -roster "$gen/roster.json" -key "$gen/operator.key")
+cat >"$gen/roster.json" <<EOF
+{
+  "participants": [
+    {"id": "urn:participant:provider", "public_key": "$provider_pub"},
+    {"id": "urn:participant:consumer", "public_key": "$consumer_pub"}
+  ],
+  "signature": "$signature"
+}
+EOF
+export DSBOX_ROSTER_SIGNER="$operator_pub"
 
 # The file that will be moved. Generated rather than committed so the demo
 # proves a transfer rather than the presence of a fixture.

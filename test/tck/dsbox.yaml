@@ -33,6 +33,10 @@ participant_id: urn:participant:dsbox-test
 # urn:participant:tck with a credential run.sh mints for it.
 participant_key: /etc/dsbox/participant.key
 roster: /etc/dsbox/roster.json
+# roster_signer is not set here: unlike the two paths above, which are
+# always the same mount point, the signer is a fresh key every run — run.sh
+# passes its value through compose.yaml's environment instead
+# (DSBOX_ROSTER_SIGNER).
 datasets:
   - id: urn:dataset:tck-catalog
   - id: urn:dataset:tck-request

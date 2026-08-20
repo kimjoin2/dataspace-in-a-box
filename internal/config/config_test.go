@@ -23,12 +23,15 @@ func withoutAuthFiles(extra string) []byte {
 		"data_dir: ./data\n" + extra)
 }
 
-// minimal is withoutAuthFiles plus the key and roster paths, because
-// require_auth defaults to true and a document lacking them no longer loads.
-// The paths are never opened during config loading — only startup reads them.
+// minimal is withoutAuthFiles plus the key and roster paths and the roster
+// signer, because require_auth defaults to true and a document lacking them
+// no longer loads. The paths are never opened during config loading — only
+// startup reads them, and roster_signer is never decoded here either — only
+// its presence is validated.
 func minimal(extra string) []byte {
 	return withoutAuthFiles("participant_key: /etc/dsbox/participant.key\n" +
-		"roster: /etc/dsbox/roster.json\n" + extra)
+		"roster: /etc/dsbox/roster.json\n" +
+		"roster_signer: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\n" + extra)
 }
 
 func TestLoadAppliesDefaults(t *testing.T) {
@@ -59,7 +62,7 @@ func TestLoadRejectsPlainHTTPOutsideDevMode(t *testing.T) {
 }
 
 func TestLoadAllowsPlainHTTPInDevMode(t *testing.T) {
-	_, err := Load([]byte("public_url: http://dsbox:8080\ndev_mode: true\nparticipant_id: urn:participant:example\ndata_dir: ./data\nparticipant_key: /k\nroster: /r\n"), env(nil))
+	_, err := Load([]byte("public_url: http://dsbox:8080\ndev_mode: true\nparticipant_id: urn:participant:example\ndata_dir: ./data\nparticipant_key: /k\nroster: /r\nroster_signer: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\n"), env(nil))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -81,7 +84,7 @@ func TestLoadRejectsTrailingSlash(t *testing.T) {
 
 func TestEnvironmentOverridesFile(t *testing.T) {
 	cfg, err := Load(
-		[]byte("public_url: https://from-file.example.org\ndsp_addr: 0.0.0.0:9999\nparticipant_id: urn:participant:example\ndata_dir: ./data\nparticipant_key: /k\nroster: /r\n"),
+		[]byte("public_url: https://from-file.example.org\ndsp_addr: 0.0.0.0:9999\nparticipant_id: urn:participant:example\ndata_dir: ./data\nparticipant_key: /k\nroster: /r\nroster_signer: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\n"),
 		env(map[string]string{
 			"DSBOX_PUBLIC_URL": "https://from-env.example.org",
 			"DSBOX_DSP_ADDR":   "0.0.0.0:7777",
@@ -132,6 +135,7 @@ func TestEmptyDocumentWithEnvironmentStillLoads(t *testing.T) {
 		"DSBOX_DATA_DIR":        "./data",
 		"DSBOX_PARTICIPANT_KEY": "/k",
 		"DSBOX_ROSTER":          "/r",
+		"DSBOX_ROSTER_SIGNER":   "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
 	}))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -246,7 +250,7 @@ func TestExampleConfigLoads(t *testing.T) {
 }
 
 func TestLoadRequiresDataDir(t *testing.T) {
-	_, err := Load([]byte("public_url: https://connector.example.org\nparticipant_id: urn:participant:example\nparticipant_key: /k\nroster: /r\n"), env(nil))
+	_, err := Load([]byte("public_url: https://connector.example.org\nparticipant_id: urn:participant:example\nparticipant_key: /k\nroster: /r\nroster_signer: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\n"), env(nil))
 	if err == nil {
 		t.Fatal("Load: expected an error when data_dir is absent")
 	}
@@ -254,7 +258,7 @@ func TestLoadRequiresDataDir(t *testing.T) {
 
 func TestDataDirFromEnvironmentOverridesFile(t *testing.T) {
 	cfg, err := Load(
-		[]byte("public_url: https://connector.example.org\nparticipant_id: urn:participant:example\ndata_dir: ./from-file\nparticipant_key: /k\nroster: /r\n"),
+		[]byte("public_url: https://connector.example.org\nparticipant_id: urn:participant:example\ndata_dir: ./from-file\nparticipant_key: /k\nroster: /r\nroster_signer: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\n"),
 		env(map[string]string{"DSBOX_DATA_DIR": "./from-env"}),
 	)
 	if err != nil {
@@ -537,6 +541,16 @@ func TestAuthRequiresKeyAndRoster(t *testing.T) {
 	}
 	if _, err := Load(withoutAuthFiles("roster: /r\n"), env(nil)); err == nil {
 		t.Error("loaded with a roster but no key")
+	}
+}
+
+// roster_signer is required alongside the two files: a roster with no
+// signer to verify it against is unverifiable, and that must fail at boot
+// rather than at the first roster load.
+func TestAuthRequiresRosterSigner(t *testing.T) {
+	_, err := Load(withoutAuthFiles("participant_key: /k\nroster: /r\n"), env(nil))
+	if err == nil {
+		t.Error("loaded with a key and a roster but no roster_signer")
 	}
 }
 
