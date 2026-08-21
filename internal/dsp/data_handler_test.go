@@ -2,6 +2,7 @@ package dsp
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -231,6 +232,100 @@ func TestConsumerDoesNotPullWithoutAnAddress(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if _, err := os.Stat(filepath.Join(dir, downloadDir)); !os.IsNotExist(err) {
 		t.Errorf("a download directory appeared with no address to pull from: %v", err)
+	}
+}
+
+func TestParseRangeStart(t *testing.T) {
+	cases := []struct {
+		header string
+		want   int64
+		wantOK bool
+	}{
+		{"", 0, false},
+		{"bytes=0-", 0, true},
+		{"bytes=42-", 42, true},
+		{"bytes=-5", 0, false},         // the excluded suffix form
+		{"bytes=5-10", 0, false},       // the excluded closed form
+		{"bytes=0-10,20-30", 0, false}, // the excluded multi-range form
+		{"bytes=abc-", 0, false},
+		{"bytes=-1-", 0, false},
+		{"not-bytes=5-", 0, false},
+	}
+	for _, c := range cases {
+		got, gotOK := parseRangeStart(c.header)
+		if got != c.want || gotOK != c.wantOK {
+			t.Errorf("parseRangeStart(%q) = (%d, %v), want (%d, %v)", c.header, got, gotOK, c.want, c.wantOK)
+		}
+	}
+}
+
+// TestDataPullServesAPartialRange pins the 206 path: a valid open-ended
+// range seeks and streams only the requested suffix, with a correct
+// Content-Range.
+func TestDataPullServesAPartialRange(t *testing.T) {
+	h, id := dataFixture(t, TransferStarted, testPeer, true)
+	req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/"+id, nil)
+	req.SetPathValue("id", id)
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+	req.Header.Set("Range", "bytes=3-")
+	rec := httptest.NewRecorder()
+	h.handleData(rec, req)
+
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("got %d, want 206: %s", rec.Code, rec.Body)
+	}
+	want := servedBytes[3:]
+	if got := rec.Body.String(); got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+	wantRange := fmt.Sprintf("bytes 3-%d/%d", len(servedBytes)-1, len(servedBytes))
+	if got := rec.Header().Get("Content-Range"); got != wantRange {
+		t.Errorf("Content-Range = %q, want %q", got, wantRange)
+	}
+}
+
+// TestDataPullRangeAtOrPastTheEndIs416 pins the integrity check the spec's
+// "Integrity across a resume" section is built on: a range that starts at or
+// after the file's current size is refused, not silently served empty or
+// served from zero.
+func TestDataPullRangeAtOrPastTheEndIs416(t *testing.T) {
+	h, id := dataFixture(t, TransferStarted, testPeer, true)
+	req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/"+id, nil)
+	req.SetPathValue("id", id)
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", len(servedBytes)))
+	rec := httptest.NewRecorder()
+	h.handleData(rec, req)
+
+	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("got %d, want 416: %s", rec.Code, rec.Body)
+	}
+	wantRange := fmt.Sprintf("bytes */%d", len(servedBytes))
+	if got := rec.Header().Get("Content-Range"); got != wantRange {
+		t.Errorf("Content-Range = %q, want %q", got, wantRange)
+	}
+	if rec.Body.String() == servedBytes {
+		t.Error("served the file anyway")
+	}
+}
+
+// TestDataPullUnsupportedRangeFormIsIgnored pins RFC 7233's own guidance for
+// a range form this connector does not implement: ignore it and serve the
+// whole thing, exactly as if no Range header had been sent at all.
+func TestDataPullUnsupportedRangeFormIsIgnored(t *testing.T) {
+	h, id := dataFixture(t, TransferStarted, testPeer, true)
+	req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/"+id, nil)
+	req.SetPathValue("id", id)
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+	req.Header.Set("Range", "bytes=0-5")
+	rec := httptest.NewRecorder()
+	h.handleData(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (the unsupported closed form is ignored): %s", rec.Code, rec.Body)
+	}
+	if got := rec.Body.String(); got != servedBytes {
+		t.Errorf("body = %q, want the whole file %q", got, servedBytes)
 	}
 }
 

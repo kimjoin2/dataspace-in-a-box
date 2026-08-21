@@ -1,10 +1,13 @@
 package dsp
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
@@ -15,6 +18,28 @@ import (
 type dataHandler struct {
 	cfg   config.Config
 	store *store.Store
+}
+
+// parseRangeStart reads this connector's one supported Range form,
+// "bytes=N-": a single open-ended offset. Anything else — absent,
+// unparseable, a closed or multi-range form, or the "bytes=-N" suffix form —
+// is reported as absent, which is RFC 7233's own guidance for a range a
+// server does not support: ignore it and serve the whole thing.
+func parseRangeStart(header string) (int64, bool) {
+	const prefix = "bytes="
+	if !strings.HasPrefix(header, prefix) {
+		return 0, false
+	}
+	rest := strings.TrimPrefix(header, prefix)
+	if !strings.HasSuffix(rest, "-") {
+		return 0, false
+	}
+	rest = strings.TrimSuffix(rest, "-")
+	n, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // handleData serves GET {version}/data/{providerPid} — where a consumer
@@ -106,12 +131,39 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
+	stat, err := f.Stat()
+	if err != nil {
+		slog.Error("stat source_file", "path", ds.SourceFile, "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if rangeStart, hasRange := parseRangeStart(r.Header.Get("Range")); hasRange {
+		if rangeStart >= stat.Size() {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", stat.Size()))
+			writeError(w, TransferErrorType, http.StatusRequestedRangeNotSatisfiable,
+				"the requested range starts at or after the end of this dataset's current content")
+			return
+		}
+		if _, err := f.Seek(rangeStart, io.SeekStart); err != nil {
+			slog.Error("seek source_file for range request", "path", ds.SourceFile, "error", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, stat.Size()-1, stat.Size()))
+		w.Header().Set("Content-Length", strconv.FormatInt(stat.Size()-rangeStart, 10))
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusPartialContent)
+		if _, err := io.Copy(w, f); err != nil {
+			slog.Error("stream data", "provider_pid", providerPID, "error", err)
+		}
+		return
+	}
+
 	// Streamed rather than buffered: memory must not scale with file size.
 	// The server's write timeout still bounds how large a file can finish.
 	w.Header().Set("Content-Type", "application/octet-stream")
 	if _, err := io.Copy(w, f); err != nil {
-		// Nothing useful can be sent now — the status line is long gone. The
-		// log is the only place this can be seen.
 		slog.Error("stream data", "provider_pid", providerPID, "error", err)
 	}
 }
