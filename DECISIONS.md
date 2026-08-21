@@ -1606,7 +1606,7 @@ supplies the key that was missing off the wire: an agreement's `dataset_id`
 is known regardless of whether the agreement was negotiated or imported (the
 same lookup `hasSourceFor` already performs). An `agreement_id` match in
 `transfer_policies` always takes precedence when both exist. This exists to
-let the demo (below) prove resumption against a real negotiated agreement,
+let a future demo prove resumption against a real negotiated agreement,
 but it is not demo-only: it is the general answer to §25.7's open question.
 
 **31.3 A concurrency guard was needed that the old design did not require.**
