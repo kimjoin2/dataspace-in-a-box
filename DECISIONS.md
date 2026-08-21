@@ -1639,8 +1639,14 @@ unit-tested in
 
 *Trade-off accepted.* An orphaned `.partial-<consumerPID>` file — a
 transfer that terminates instead of restarting after being interrupted
-leaves one behind forever — is not cleaned up. Pre-existing risk in a
-smaller form (a stray random-named temp file could already leak on an
-unclean process exit); this milestone makes the leaked file larger and its
-name predictable. Tracked in `docs/follow-ups.md` rather than solved here:
-it needs a retention policy this project has none of yet.
+leaves one behind forever — is not cleaned up. A counterparty that answers
+every ranged request with a plain `200`, never honoring `Range` at all,
+turns this from an occasional leak into the transfer's only possible
+outcome: the `default:` case above refuses to append, so every restart
+repeats the identical abort and the transfer can never complete. The only
+way out — starting an entirely new transfer — abandons the same partial
+file rather than reclaiming it. Pre-existing risk in a smaller form (a
+stray random-named temp file could already leak on an unclean process
+exit); this milestone makes the leaked file larger and its name
+predictable. Tracked in `docs/follow-ups.md` rather than solved here: it
+needs a retention policy this project has none of yet.
