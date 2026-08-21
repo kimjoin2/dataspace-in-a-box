@@ -692,6 +692,43 @@ func TestResolveTransferSequenceNilDatasetFallbackStillDefaults(t *testing.T) {
 	}
 }
 
+// TestResolveTransferSequenceDatasetKeyedFromALoadedConfig mirrors
+// TestResolveTransferSequenceFromALoadedConfig above, but for the
+// dataset-keyed fallback (config.Dataset.TransferSequence) rather than the
+// agreement-keyed table (config.TransferPolicy.Sequence). Whether yaml.v3
+// decodes `transfer_sequence: []` to a non-nil empty slice, or an absent
+// key to nil, is a decoder detail — the same one
+// TestResolveTransferSequenceNilDatasetFallbackStillDefaults's Go literal
+// (`config.Dataset{ID: "urn:dataset:a"}`) cannot exercise, because a literal
+// never goes through the decoder at all. Only a document carried through
+// config.Load can catch a yaml.v3 behavior change here.
+func TestResolveTransferSequenceDatasetKeyedFromALoadedConfig(t *testing.T) {
+	cfg, err := config.Load([]byte(
+		"public_url: https://connector.example.org\n"+
+			"participant_id: urn:participant:example\n"+
+			"data_dir: ./data\n"+
+			// Authentication is on by default, so a loadable document names
+			// the two files it needs plus the roster signer. Neither file is
+			// opened here.
+			"participant_key: /etc/dsbox/participant.key\n"+
+			"roster: /etc/dsbox/roster.json\n"+
+			"roster_signer: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\n"+
+			"datasets:\n"+
+			"  - id: urn:dataset:empty-sequence\n"+
+			"    transfer_sequence: []\n"+
+			"  - id: urn:dataset:no-sequence\n"), func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if got := resolveTransferSequence(cfg, "urn:uuid:unconfigured", "urn:dataset:empty-sequence"); len(got) != 0 {
+		t.Errorf("resolveTransferSequence(loaded transfer_sequence: []) = %v, want no steps at all", got)
+	}
+	if got := resolveTransferSequence(cfg, "urn:uuid:unconfigured", "urn:dataset:no-sequence"); len(got) != 1 || got[0] != TransferStarted {
+		t.Errorf("resolveTransferSequence(dataset with transfer_sequence absent from the same document) = %v, want [%s]",
+			got, TransferStarted)
+	}
+}
+
 // TestTransferSequenceEmptyStaysRequestedAndPushesNothing covers the four TCK
 // provider tests that carry no "provider started" step and poll for
 // REQUESTED. Both halves are asserted: a connector that pushed a start and
