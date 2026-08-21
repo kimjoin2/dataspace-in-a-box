@@ -110,6 +110,17 @@ datasets:
     # try it:
     # validity_until: 2027-01-01T00:00:00Z
 
+    # Optional. Not a policy shape — DSP 2025-1 itself leaves the choice
+    # between VERIFIED -> FINALIZED and VERIFIED -> TERMINATED to the
+    # provider, with no request-side signal to decide by, so it has to be
+    # declared here rather than derived. false (default, and every dataset's
+    # behavior before this field existed): finalize once the consumer
+    # verifies the agreement. true: terminate instead. A real deployment has
+    # no reason to advertise a dataset whose agreements always terminate —
+    # this exists for exercising the transition, the same role
+    # transfer_policies plays for the transfer protocol.
+    # terminate_on_verify: false
+
 # Optional. Configures this connector's autonomous behavior when it is
 # negotiating as consumer (POST /negotiations/initiate), keyed by the
 # dataset_id it itself requests. An unmatched dataset_id gets every field's

@@ -448,6 +448,41 @@ func TestHandleVerification_FromAgreed_FinalizesAndPushesEvent(t *testing.T) {
 	waitForState(t, st, n.ProviderPID, StateFinalized)
 }
 
+// TestHandleVerification_TerminateOnVerify_TerminatesAndPushesTermination is
+// CN:02-07: DSP names VERIFIED -> TERMINATED a legal provider transition
+// alongside VERIFIED -> FINALIZED, with no wire rule for choosing between
+// them, so the choice is config.Dataset.TerminateOnVerify rather than
+// anything read from the verification message itself.
+func TestHandleVerification_TerminateOnVerify_TerminatesAndPushesTermination(t *testing.T) {
+	fc := newFakeCallback()
+	defer fc.srv.Close()
+	h, st := newTestHandler(t, negotiationTestConfig("https://provider.example.org",
+		config.Dataset{ID: "urn:dataset:a", TerminateOnVerify: true}))
+	n := store.Negotiation{
+		ProviderPID: "urn:uuid:provider-1", ConsumerPID: "urn:uuid:consumer-1",
+		State: StateAgreed, DatasetID: "urn:dataset:a", OfferID: "urn:dataset:a#offer",
+		CallbackAddress: fc.srv.URL,
+		CreatedAt:       time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := st.Create(n); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	rr := postJSONWithID(t, h.handleVerification, n.ProviderPID, map[string]any{
+		"@context": []string{ContextURL}, "@type": ContractAgreementVerificationMessageType,
+		"providerPid": n.ProviderPID, "consumerPid": n.ConsumerPID,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body)
+	}
+	push := fc.wait(t, "/termination")
+	if push["code"] != "1" {
+		t.Errorf("pushed termination code = %v, want 1", push["code"])
+	}
+
+	waitForState(t, st, n.ProviderPID, StateTerminated)
+}
+
 func TestHandleTermination_FromFinalized_Returns400(t *testing.T) {
 	// CN:03-01: terminating a FINALIZED negotiation.
 	h, st := newTestHandler(t, negotiationTestConfig("https://provider.example.org", config.Dataset{ID: "urn:dataset:a"}))

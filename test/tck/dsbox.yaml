@@ -45,8 +45,17 @@ datasets:
   # CN_02_02/04).
   - id: urn:dataset:cn-mismatch
   # CN: the dataset CN_01_04 requests, with its offer id matching exactly —
-  # the immediate-AGREED path (CN_01_04, CN_02_03).
+  # the immediate-AGREED path (CN_01_04, CN_02_03, CN_03_01).
   - id: urn:dataset:cn-match
+  # CN: otherwise identical to cn-match — matches, never expires — except
+  # its agreements terminate rather than finalize on verification. DSP 2025-1
+  # names both as legal provider transitions from VERIFIED with no
+  # wire-observable rule for choosing (CN_02_07's own verification message is
+  # identical to CN_03_01's), so a distinct dataset is what tells this
+  # connector's own two otherwise-identical negotiations apart at request
+  # time, the only point the choice can be keyed at (CN_02_07).
+  - id: urn:dataset:cn-verify-terminate
+    terminate_on_verify: true
   # CN: otherwise identical to the two above, but already past its
   # validity_until — the expired-offer paths (CN_02_01, CN_02_05, CN_02_06).
   - id: urn:dataset:cn-expired

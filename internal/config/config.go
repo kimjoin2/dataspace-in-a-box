@@ -154,6 +154,20 @@ type Dataset struct {
 	// transfer on a timer, and ending a transfer ends access to its bytes.
 	// A terminal step and a source_file are mutually exclusive in practice.
 	SourceFile string `yaml:"source_file"`
+
+	// TerminateOnVerify chooses this dataset's autonomous outcome once a
+	// negotiated agreement over it reaches VERIFIED: false (default)
+	// finalizes, the behavior every dataset had before this field existed;
+	// true terminates instead. DSP 2025-1's own contract negotiation state
+	// machine names both VERIFIED -> FINALIZED and VERIFIED -> TERMINATED as
+	// legal provider-initiated transitions and gives no wire-observable rule
+	// for choosing between them — nothing in a verification message
+	// distinguishes one case from the other — so the choice has to be an
+	// operator declaration, the same shape ValidityUntil and SourceFile
+	// already are for this type. A test affordance in the same sense
+	// transfer_policies is: a real deployment has no reason to advertise a
+	// dataset whose agreements it always terminates.
+	TerminateOnVerify bool `yaml:"terminate_on_verify"`
 }
 
 // ConsumerPolicy selects this connector's autonomous reaction to what a

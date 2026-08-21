@@ -24,19 +24,16 @@ the gaps are named rather than left to be found.
 |---|---|---|
 | Version metadata | `MET` | gated in CI |
 | Catalog | `CAT` | gated in CI |
-| Contract negotiation | `CN` (provider role) | gated in CI, 14 of 15 (`CN:02-07` is a tracked, named gap — see `docs/follow-ups.md`) |
+| Contract negotiation | `CN` (provider role) | gated in CI, 15 of 15 |
 | Contract negotiation | `CN_C` (consumer role) | gated in CI, 16 of 16 |
 | Transfer process | `TP` (provider role) | gated in CI, 15 of 15 |
 | Transfer process | `TP_C` (consumer role) | gated in CI, 15 of 15 |
 
 Every suite the TCK runs is now in the gate's whitelist.
 
-Current TCK pass rate: **64 of 65 tests total** (`MET` 1 of 1, `CAT` 3 of 3,
-`CN` 14 of 15 — `CN:02-07` fails by design, tracked rather than hidden —
-`CN_C` 16 of 16, `TP` 15 of 15, `TP_C` 15 of 15). All 65 are required by the
-CI gate. The single failure is `CN:02-07`, which fails not because a protocol
-is missing but because no connector-side mechanism in this milestone produces
-the behavior it requires.
+Current TCK pass rate: **65 of 65 tests total** (`MET` 1 of 1, `CAT` 3 of 3,
+`CN` 15 of 15, `CN_C` 16 of 16, `TP` 15 of 15, `TP_C` 15 of 15). All 65 are
+required by the CI gate, and none are exempted.
 
 This connector now moves data. A dataset with a `source_file` is served over
 HTTP-PULL to a counterparty holding a started transfer, and a consumer that
@@ -73,7 +70,7 @@ credential can be replayed until it expires, five minutes after it was
 minted.
 
     make demo   # two connectors, one negotiated agreement, one file moved
-    make tck    # the compliance gate: 64 of 65, 0 outside it
+    make tck    # the compliance gate: 65 of 65, 0 outside it
 
 There is no release yet, and gaps are worth knowing before anyone mistakes
 this for finished.

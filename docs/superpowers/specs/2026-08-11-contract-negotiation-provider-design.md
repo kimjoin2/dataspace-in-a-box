@@ -240,6 +240,16 @@ mechanism in this milestone produces `CN:02-07`'s behavior. It is tracked as a
 named, honest gap — see "Gate" and `docs/follow-ups.md` — for whichever future
 milestone finds the actual trigger DSP intends here.
 
+**Closed 2026-08-21 (DECISIONS.md section 29) — there was no trigger to
+find.** DSP 2025-1's own state diagram names both `VERIFIED -> FINALIZED`
+and `VERIFIED -> TERMINATED` legal provider transitions with no
+request-side rule for choosing; `CN:02-07`'s own verification message is
+wire-identical to `CN:03-01`'s, which finalizes. The gap this section
+describes was real, but "a check performed once at accept-time cannot
+explain a rejection that surfaces later" was solving for the wrong thing —
+the answer was never a check to add, it was `config.Dataset.TerminateOnVerify`,
+an operator declaration keyed the same way `ValidityUntil` already is.
+
 *Trade-off accepted:* "the provider may terminate for other business reasons"
 is not built beyond these two checks. `CN:02-07` stays failing until a real
 trigger is found. If a future requirement needs a broader mechanism, this is

@@ -45,47 +45,6 @@ the error message would fix that.
 
 ## From the contract negotiation (provider) milestone (2026-08)
 
-**`CN:02-07` has no implemented trigger.** Every autonomous termination this
-milestone implements is checked once, at accept-time: either the initial
-request's offer matches an expired dataset, or an `ACCEPTED` event arrives
-for one. `CN:02-07`'s sequence reaches a clean `AGREED` — meaning the offer
-matched and passed the validity check — and only terminates, unprompted,
-after `VERIFIED`. A check performed once at accept-time cannot explain a
-rejection surfacing later on a negotiation that already passed it. Tracked as
-a named gate exemption (`cmd/tckgate/main.go`'s `exempt` map) rather than
-silently dropped. Full reasoning:
-`docs/superpowers/specs/2026-08-11-contract-negotiation-provider-design.md`,
-"`CN:02-07` does not fit this account". Closing this means finding DSP's
-actual intended trigger for an unprompted post-verification termination —
-not yet determined from the public TCK sources this project is permitted to
-use.
-
-**Update (2026-08-21):** the "reaches a clean `AGREED`" sentence above was
-itself never checked against a live run until this date, and it was wrong —
-`test/tck/config.properties` had no `CN_02_07_DATASETID`/`OFFERID`
-override, so the TCK's random, unadvertised default meant the negotiation
-never left `REQUESTED`, and the real failure was `Timeout waiting for state
-to transition to AGREED`, not anything about termination. Adding the same
-matching pair `CN_01_04`/`CN_02_03` use (`urn:dataset:cn-match`) gets the
-negotiation to `AGREED` for real, and `CN:02-07` now fails exactly where the
-original diagnosis said it would: `Timeout waiting for state to transition
-to TERMINATED`.
-
-Decompiling the pinned TCK image
-(`org.eclipse.dataspacetck.dsp.verification.cn.ContractNegotiationProvider02Test.cn_02_07`)
-adds one fact the original diagnosis did not have: `expectTermination()`
-registers a real inbound handler on `/negotiations/[^/]+/termination/`, and
-`sendVerifiedEvent()` really does `POST
-{providerBase}/negotiations/{providerPid}/agreement/verification` — the
-`ContractAgreementVerificationMessage` endpoint this connector already
-implements. So "no trigger exists" was also not quite right: the TCK does
-send an observable message, on a route that already exists. What is still
-missing is the DSP-semantics reason this specific verification should
-produce a termination instead of the normal `VERIFIED` transition every
-other agreement gets — nothing in the decompiled bytecode marks this
-agreement as different (no expired dataset, no malformed message), and that
-is still not determined from the sources this project is permitted to use.
-
 **A callback push retries on any non-2xx, including the ones that will never
 succeed.** `attemptPush` treats every status at or above 300 the same, so a
 `400` or a `403` — a permanent answer from a consumer that will say it again —

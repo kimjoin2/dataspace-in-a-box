@@ -1423,3 +1423,72 @@ has not chosen, which is a §10-level decision, not an implementation detail
 — `CLAUDE.md`'s rule applies: ask before working around a decision
 `DECISIONS.md` already made, and this section is that ask answered "not yet,"
 recorded rather than worked around.
+
+## 29. `CN:02-07` closed: VERIFIED's choice of FINALIZED or TERMINATED is a dataset declaration
+
+**Decision.** `config.Dataset` gains `TerminateOnVerify bool` (default
+false). `handleVerification` looks it up by `n.DatasetID` — the same
+accessor `isValid` already uses for `ValidityUntil` — and pushes a
+termination instead of the `FINALIZED` event when it is true. The gate is
+65 of 65, no exemptions, as of 2026-08-21.
+
+**Rationale.** Two prior accounts of this gap were each half right and
+half wrong, corrected in order rather than by editing either:
+
+§25.5's premise — "`CN:02-07` needs a termination trigger that fires after
+a negotiation has already passed [the accept-time] check once" — assumed a
+*trigger* was the missing piece. Decompiling the pinned TCK's own
+`cn_02_07` test method
+(`org.eclipse.dataspacetck.dsp.verification.cn.ContractNegotiationProvider02Test`)
+and diffing it against `cn_03_01` (`ContractNegotiationProvider03Test`) —
+the sibling test that reaches `FINALIZED` normally — found the two send a
+*wire-identical* verification: same dataset, same generic
+`ContractAgreementVerificationMessage` body. Nothing in what the TCK sends
+distinguishes one from the other. There is no trigger to find because there
+is nothing to detect.
+
+What actually decides it is the protocol's own state machine. DSP 2025-1's
+published negotiation state diagram
+(`figures/contract.negotiation.state.machine.puml`) declares both
+`VERIFIED -> FINALIZED` and `VERIFIED -> TERMINATED` as legal,
+provider-initiated transitions — `P`, not derived from any consumer
+message. The TCK's own `@TestSequenceDiagram` annotations on the two
+methods confirm the same split: `cn_02_07` ends
+`CUT->>TCK: ContractNegotiationTerminationMessage`; `cn_03_01` ends
+`CUT->>TCK: ContractNegotiationEventMessage:finalized`. Two mandatory tests
+exist to confirm a conformant provider can produce *either* — not to
+assert which one a given verification requires. That makes the choice an
+operator declaration by construction, the same shape as `ValidityUntil` and
+`SourceFile` already are on `Dataset`, and the same shape `transfer_policies`
+already is for the transfer protocol's own provider-discretion points —
+negotiation had no equivalent hook before this section.
+
+**29.1 A second dataset, not a second field on the existing one.**
+`CN:02-07` and `CN:03-01` need *opposite* outcomes from otherwise identical
+requests, and the request is the only thing observable before an agreement
+id exists — so the two tests cannot share `cn-match` the way `CN_01_04` and
+`CN_02_03` already do. `test/tck/dsbox.yaml` gains
+`urn:dataset:cn-verify-terminate`: matches immediately like `cn-match`,
+differs only in carrying `terminate_on_verify: true`. `CN:03-01` keeps
+`cn-match` unchanged.
+
+**29.2 What was actually broken before either investigation started.**
+`docs/follow-ups.md`'s original account of this gap asserted `CN:02-07`'s
+"sequence reaches a clean `AGREED`" — a claim never checked against a live
+run, and false: `test/tck/config.properties` had no
+`CN_02_07_DATASETID`/`OFFERID` override, so the TCK's random,
+unadvertised default meant `decideInitialRequest` returned `outcomeNone`
+and the negotiation never left `REQUESTED`. `CN:02-07` was failing on a
+config gap unrelated to termination, before ever reaching the scenario its
+own name describes. Fixed by giving it the same matching-pair treatment
+`CN_01_04`/`CN_02_03` already had, pointed at the new dataset. Worth naming
+because it is the second time this project has found a "the TCK is
+expected to fail here anyway" comment that turned out to be an assumption
+standing in for a check (docs/follow-ups.md's original `CN_02_02` comment
+was correct; this one, reasoning by analogy from it, was not) — the fix in
+both cases was running it rather than trusting the analogy.
+
+*Trade-off accepted.* None beyond what §14 already accepted for
+`transfer_policies`'s existence: a config surface with no purpose in a real
+deployment (an operator has no reason to advertise a dataset whose
+agreements always terminate) — a test affordance, declared as one.

@@ -239,9 +239,12 @@ func (h negotiationHandler) handleProviderAcceptedEvent(w http.ResponseWriter, r
 
 // handleVerification serves POST /negotiations/{id}/agreement/verification.
 // Verification is only legal from AGREED (CN:03-02, CN:03-03 both violate
-// this). VERIFIED -> FINALIZED has no validity check: a negotiation that
-// reached AGREED always finalizes on verification — see the design spec's
-// note on CN:02-07.
+// this). What VERIFIED moves to next is config.Dataset.TerminateOnVerify,
+// keyed by n.DatasetID the same way isValid already is — DSP names both
+// FINALIZED and TERMINATED as legal provider-initiated transitions from
+// VERIFIED and gives no wire rule for choosing (CN:02-07's own verification
+// message is identical to CN:03-01's, which finalizes), so the choice is an
+// operator declaration, not something derived from the request.
 func (h negotiationHandler) handleVerification(w http.ResponseWriter, r *http.Request) {
 	n, ok, err := h.lookup(w, r)
 	if err != nil || !ok {
@@ -271,6 +274,10 @@ func (h negotiationHandler) handleVerification(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusOK)
 
 	n.State = StateVerified
+	if ds, ok := findConfiguredDataset(h.cfg, n.DatasetID); ok && ds.TerminateOnVerify {
+		go h.pushAndStore(n, StateTerminated, terminationCallbackPath, buildTerminationMessage(n))
+		return
+	}
 	go h.pushAndStore(n, StateFinalized, eventCallbackPath, buildFinalizedEventMessage(n))
 }
 
