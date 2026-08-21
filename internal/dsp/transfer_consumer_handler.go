@@ -246,13 +246,15 @@ func (h transferHandler) maybeDriveConsumerTransfer(t store.ConsumerTransfer, re
 const downloadDir = "downloads"
 
 // pullTransferData fetches what a dataAddress points at and writes it under
-// data_dir. Called once when a start message arrives carrying an address.
+// data_dir, resuming from a previous attempt when one left bytes behind.
+// Called whenever a start message carrying an address arrives — the first
+// time for a transfer, and again on every restart after a suspension.
 //
-// Not retried. A failed pull leaves the transfer in STARTED, which is the
-// honest state — the provider is still willing to serve and an operator can
-// ask again. Retrying automatically would make a slow first fetch
-// indistinguishable from a stuck one, and would race a second writer onto the
-// same file.
+// Not self-retried. A failed pull leaves the transfer in STARTED, which is
+// the honest state — the provider is still willing to serve and an operator
+// can ask again. What changes with resumption is what "ask again" costs: the
+// next externally triggered attempt continues from wherever the last one
+// left off, rather than starting over.
 func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAddress) {
 	if addr == nil || addr.Endpoint == "" {
 		return
@@ -263,6 +265,22 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		slog.Error("refuse data endpoint", "consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "error", err)
 		return
 	}
+
+	dir := filepath.Join(h.cfg.DataDir, downloadDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		slog.Error("create download directory", "dir", dir, "error", err)
+		return
+	}
+	// A fixed name rather than os.CreateTemp's random one, so a later
+	// restart of the same transfer can find what an earlier attempt left
+	// behind and continue it.
+	partial := filepath.Join(dir, ".partial-"+t.ConsumerPID)
+	var existingSize int64
+	if info, err := os.Stat(partial); err == nil {
+		existingSize = info.Size()
+	}
+	resuming := existingSize > 0
+
 	req, err := http.NewRequest(http.MethodGet, addr.Endpoint, nil)
 	if err != nil {
 		slog.Error("build data pull", "consumer_pid", t.ConsumerPID, "error", err)
@@ -271,44 +289,73 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	if authorization := mintOutboundCredential(t.CounterpartyID); authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
+	if resuming {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingSize))
+	}
 	resp, err := callbackHTTPClient.Do(req)
 	if err != nil {
 		slog.Error("data pull", "consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "error", err)
 		return
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
+
+	if resuming {
+		switch resp.StatusCode {
+		case http.StatusPartialContent:
+			// fall through to the append below
+		case http.StatusRequestedRangeNotSatisfiable:
+			// The provider's file is no longer at least as long as what this
+			// connector already has — it was replaced or shrank between
+			// attempts. Not a valid prefix of anything; start over next time.
+			slog.Warn("provider's file is no longer past what this connector already has; discarding the partial download",
+				"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "had_bytes", existingSize)
+			if err := os.Remove(partial); err != nil {
+				slog.Error("remove stale partial download", "path", partial, "error", err)
+			}
+			return
+		default:
+			// Any other answer to a resumed pull, including an unexpected
+			// 200 — this connector's own provider role always answers a
+			// Range request with 206 or 416, so a 200 here would mean the
+			// counterparty does not honor Range at all, and appending its
+			// full-content body to an existing partial would corrupt the
+			// file. Safer to abort and leave the partial exactly as it was.
+			slog.Error("data endpoint gave an unexpected answer to a resumed pull; leaving the partial download in place",
+				"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "status", resp.StatusCode, "had_bytes", existingSize)
+			return
+		}
+	} else if resp.StatusCode >= 300 {
 		slog.Error("data endpoint refused the pull",
 			"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "status", resp.StatusCode)
 		return
 	}
 
-	dir := filepath.Join(h.cfg.DataDir, downloadDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		slog.Error("create download directory", "dir", dir, "error", err)
+	flag := os.O_CREATE | os.O_WRONLY
+	if resuming {
+		flag |= os.O_APPEND
+	} else {
+		flag |= os.O_TRUNC
+	}
+	out, err := os.OpenFile(partial, flag, 0o644)
+	if err != nil {
+		slog.Error("open download file", "path", partial, "error", err)
 		return
 	}
-	// Written to a temporary file and renamed, so a partial fetch never
-	// appears as a complete download. A reader that finds the file finds all
-	// of it.
-	tmp, err := os.CreateTemp(dir, ".partial-*")
+	n, err := io.Copy(out, resp.Body)
 	if err != nil {
-		slog.Error("create download file", "dir", dir, "error", err)
-		return
-	}
-	defer os.Remove(tmp.Name())
-	n, err := io.Copy(tmp, resp.Body)
-	if err != nil {
-		tmp.Close()
+		out.Close()
 		slog.Error("write download", "consumer_pid", t.ConsumerPID, "error", err)
 		return
 	}
-	if err := tmp.Close(); err != nil {
+	if err := out.Close(); err != nil {
 		slog.Error("close download", "consumer_pid", t.ConsumerPID, "error", err)
 		return
 	}
+	if resuming {
+		slog.Info("resumed transfer data pull", "consumer_pid", t.ConsumerPID, "had_bytes", existingSize, "appended_bytes", n)
+	}
 	final := filepath.Join(dir, t.ConsumerPID)
-	if err := os.Rename(tmp.Name(), final); err != nil {
+	if err := os.Rename(partial, final); err != nil {
 		slog.Error("place download", "path", final, "error", err)
 		return
 	}

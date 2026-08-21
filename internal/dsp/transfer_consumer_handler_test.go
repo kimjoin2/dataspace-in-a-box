@@ -3,8 +3,11 @@ package dsp
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -281,5 +284,121 @@ func TestConsumerDriverStopsAtAnIllegalStep(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if len(got) != 1 || got[0].msgType != TransferTerminationMessageType {
 		t.Fatalf("pushed %v, want exactly one termination", got)
+	}
+}
+
+// pullPartialPath is the deterministic name pullTransferData now uses,
+// exposed here so tests can seed and inspect it directly.
+func pullPartialPath(dir, consumerPID string) string {
+	return filepath.Join(dir, downloadDir, ".partial-"+consumerPID)
+}
+
+// TestPullTransferData_ResumesFromAnExistingPartialFile seeds a partial
+// download by hand and points the mock provider at a server that asserts
+// the resulting request carries the matching Range and answers 206 with
+// only the remaining bytes — then checks the two pieces landed concatenated
+// in the final file.
+func TestPullTransferData_ResumesFromAnExistingPartialFile(t *testing.T) {
+	const already = "id,value\n1,hel"
+	const rest = "lo\n"
+	dir := t.TempDir()
+	h, _ := newTestTransferHandler(t, config.Config{DataDir: dir})
+	consumerPID := "urn:uuid:resume-1"
+
+	partialDir := filepath.Join(dir, downloadDir)
+	if err := os.MkdirAll(partialDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(pullPartialPath(dir, consumerPID), []byte(already), 0o644); err != nil {
+		t.Fatalf("seed partial file: %v", err)
+	}
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		want := fmt.Sprintf("bytes=%d-", len(already))
+		if got := r.Header.Get("Range"); got != want {
+			t.Errorf("Range = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", len(already), len(already)+len(rest)-1, len(already)+len(rest)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte(rest))
+	}))
+	defer provider.Close()
+
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: consumerPID}, &DataAddress{Endpoint: provider.URL})
+
+	final := filepath.Join(dir, downloadDir, consumerPID)
+	waitForFile(t, final)
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("read final file: %v", err)
+	}
+	if string(got) != already+rest {
+		t.Errorf("final content = %q, want %q", got, already+rest)
+	}
+	if _, err := os.Stat(pullPartialPath(dir, consumerPID)); !os.IsNotExist(err) {
+		t.Error("the partial file was not renamed away")
+	}
+}
+
+// TestPullTransferData_416DiscardsThePartialFile pins the integrity check:
+// a 416 answer to a resumed pull means the provider's file is no longer
+// long enough to be a valid continuation, so the partial is deleted rather
+// than kept or appended to.
+func TestPullTransferData_416DiscardsThePartialFile(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := newTestTransferHandler(t, config.Config{DataDir: dir})
+	consumerPID := "urn:uuid:resume-416"
+
+	if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(pullPartialPath(dir, consumerPID), []byte("stale-bytes"), 0o644); err != nil {
+		t.Fatalf("seed partial file: %v", err)
+	}
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+	}))
+	defer provider.Close()
+
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: consumerPID}, &DataAddress{Endpoint: provider.URL})
+
+	if _, err := os.Stat(pullPartialPath(dir, consumerPID)); !os.IsNotExist(err) {
+		t.Error("the stale partial file was not removed after a 416")
+	}
+	if _, err := os.Stat(filepath.Join(dir, downloadDir, consumerPID)); !os.IsNotExist(err) {
+		t.Error("a final file appeared, but nothing was ever successfully downloaded")
+	}
+}
+
+// TestPullTransferData_OrdinaryFailureDuringAResumeKeepsThePartialFile pins
+// the one behavior change from before this milestone: an ordinary failure
+// (here, a 500) on a resumed pull must not discard bytes already received.
+func TestPullTransferData_OrdinaryFailureDuringAResumeKeepsThePartialFile(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := newTestTransferHandler(t, config.Config{DataDir: dir})
+	consumerPID := "urn:uuid:resume-500"
+	const already = "id,value\n"
+
+	if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(pullPartialPath(dir, consumerPID), []byte(already), 0o644); err != nil {
+		t.Fatalf("seed partial file: %v", err)
+	}
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer provider.Close()
+
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: consumerPID}, &DataAddress{Endpoint: provider.URL})
+
+	got, err := os.ReadFile(pullPartialPath(dir, consumerPID))
+	if err != nil {
+		t.Fatalf("the partial file was removed after an ordinary failure: %v", err)
+	}
+	if string(got) != already {
+		t.Errorf("partial content = %q, want it untouched at %q", got, already)
 	}
 }
