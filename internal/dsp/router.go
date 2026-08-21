@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/auth"
@@ -37,7 +38,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	// {id} on the five addressed transfer routes is this connector's own
 	// generated provider pid, the same convention the provider-role
 	// negotiation routes above use.
-	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay}
+	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}}
 	mux.HandleFunc("POST "+VersionPath+"/transfers/request", tr.handleTransferRequest)
 	mux.HandleFunc("POST "+VersionPath+"/transfers/initiate", tr.handleTransferInitiate)
 

@@ -430,3 +430,55 @@ func TestPullTransferData_OrdinaryFailureDuringAResumeKeepsThePartialFile(t *tes
 		t.Errorf("partial content = %q, want it untouched at %q", got, already)
 	}
 }
+
+// TestPullTransferData_ConcurrentCallsForTheSameTransferDoNotRace pins the
+// guard this task adds: a second pullTransferData call for a transfer whose
+// first call is still in flight must be dropped, not run alongside it —
+// two goroutines writing the same deterministic partial file at once would
+// corrupt it.
+func TestPullTransferData_ConcurrentCallsForTheSameTransferDoNotRace(t *testing.T) {
+	// started is buffered and signaled with a non-blocking send rather than
+	// closed: while this test is verifying Step 2's expected failure (the
+	// guard not yet in place), a missing guard lets the second call reach
+	// this same handler too, and a second close would panic.
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		_, _ = w.Write([]byte(servedBytes))
+	}))
+	defer provider.Close()
+
+	dir := t.TempDir()
+	h, _ := newTestTransferHandler(t, config.Config{DataDir: dir})
+	consumerTransfer := store.ConsumerTransfer{ConsumerPID: "urn:uuid:race-consumer"}
+	addr := &DataAddress{Endpoint: provider.URL}
+
+	go h.pullTransferData(consumerTransfer, addr)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first call never reached the provider")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		h.pullTransferData(consumerTransfer, addr)
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Correct: the second call saw the guard and returned immediately,
+		// without waiting on `release`.
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("the second call for the same transfer did not return promptly — it ran a second real pull instead of being dropped")
+	}
+
+	close(release)
+	waitForFile(t, filepath.Join(dir, downloadDir, consumerTransfer.ConsumerPID))
+}

@@ -256,6 +256,14 @@ const downloadDir = "downloads"
 // next externally triggered attempt continues from wherever the last one
 // left off, rather than starting over.
 func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAddress) {
+	if h.pulling != nil {
+		if _, alreadyRunning := h.pulling.LoadOrStore(t.ConsumerPID, struct{}{}); alreadyRunning {
+			slog.Warn("a pull for this transfer is already in flight; dropping this restart's trigger",
+				"consumer_pid", t.ConsumerPID)
+			return
+		}
+		defer h.pulling.Delete(t.ConsumerPID)
+	}
 	if addr == nil || addr.Endpoint == "" {
 		return
 	}

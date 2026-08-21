@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
@@ -68,6 +69,14 @@ type transferHandler struct {
 	cfg       config.Config
 	store     *store.Store
 	stepDelay time.Duration
+	// pulling tracks in-flight pullTransferData calls by ConsumerPID, so a
+	// restart that arrives while a previous pull for the same transfer is
+	// still running is dropped instead of racing it onto the same
+	// deterministic partial file. nil disables the guard rather than
+	// panicking — every construction site that does not set this field
+	// (most existing tests, which never exercise pullTransferData) is
+	// unaffected.
+	pulling *sync.Map
 }
 
 // handleTransferRequest serves POST /transfers/request, the only entry point

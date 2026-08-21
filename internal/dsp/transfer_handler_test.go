@@ -30,7 +30,7 @@ func newTestTransferHandler(t *testing.T, cfg config.Config) (transferHandler, *
 	validateOutgoingCallback = func(string) error { return nil }
 	t.Cleanup(func() { validateOutgoingCallback = origValidate })
 
-	return transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay}, st
+	return transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}}, st
 }
 
 func seedAgreement(t *testing.T, st *store.Store, id string) {
