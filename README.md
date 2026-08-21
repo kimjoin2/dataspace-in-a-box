@@ -94,9 +94,15 @@ copy of the roster, reaches every connector that must trust it. That is a
 governance question `DECISIONS.md` section 9 leaves to "diffed in git", not
 one a signature scheme answers by itself.
 
-**Transfers are small and one-shot.** The write timeout bounds how large a
-file can finish; there are no range requests and no resumption, so a failed
-pull refetches from zero.
+**A resumed transfer trusts a size check, not a content check.** A pull
+that gets interrupted resumes from where it left off on the next restart —
+the provider answers `Range: bytes=N-` with `206` and the remaining bytes,
+or `416` if its file is no longer at least that long, which is also the
+whole of the integrity check: a same-size content replacement between
+attempts is not caught. An orphaned partial download from a transfer that
+never restarts is not cleaned up either. The write timeout still bounds how
+large a single uninterrupted fetch can finish before this connector's own
+role in the interruption starts to matter.
 
 Everything else known and unfixed is in [`docs/follow-ups.md`](docs/follow-ups.md),
 with the reasoning for each, and the order the remaining milestones should be

@@ -142,3 +142,18 @@ What is still unmeasured is how much slack 200 ms actually has. The way to
 find out is to shorten it deliberately until pushes start being refused. It is
 worth doing, and it is now cheaper than it was: `make demo` and `make tck` can
 be run together to put the machine under exactly the load that exposed this.
+
+## From the transfer range/resumption milestone (2026-08)
+
+**An orphaned `.partial-<consumerPID>` file is never cleaned up.** A
+transfer that is interrupted and then terminates instead of restarting
+leaves that file on disk forever — the deterministic name this milestone
+introduced for resumption makes what was already a smaller, random-named
+leak risk into a larger, predictable one. Solving it needs a retention or
+garbage-collection policy this project has none of yet: an obvious rule
+("delete a partial file once its transfer reaches a terminal state") needs
+the partial-file cleanup to happen somewhere that already knows the
+transfer terminated, which today is a different code path (`handleTransfer
+Termination`/`handleTransferCompletion`) than the one writing the file
+(`pullTransferData`), and wiring the two together is a design decision, not
+a cleanup.

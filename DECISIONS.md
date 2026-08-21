@@ -1572,3 +1572,71 @@ both cases was running it rather than trusting the analogy.
 `transfer_policies`'s existence: a config surface with no purpose in a real
 deployment (an operator has no reason to advertise a dataset whose
 agreements always terminate) — a test affordance, declared as one.
+
+## 31. Transfer robustness: `Range` support and resumption
+
+**Decision.** The provider's data endpoint supports one `Range` form,
+`bytes=N-`: `206 Partial Content` when `0 <= N < size`, `416 Range Not
+Satisfiable` when `N >= size`, and today's unconditional `200` for anything
+else — no header, an unparseable one, or a form this connector does not
+implement (multi-range, a closed range, the `bytes=-N` suffix form), per RFC
+7233's own guidance for a range a server does not support. The consumer's
+`pullTransferData` writes to a deterministic path,
+`downloads/.partial-<consumerPID>`, instead of a random temp name, and on a
+restart sends `Range: bytes=N-` for whatever it already has. `206` appends;
+`416` discards the partial and starts fresh on the next restart; any other
+answer to a resumed pull is logged and leaves the partial untouched — the
+one behavior change from before this milestone, where any failure discarded
+everything received.
+
+**31.1 Integrity across a resume is a size check, not a content check.** A
+partial file at or past the provider's current file size cannot be a valid
+prefix of it, so `416` is what tells the consumer "this is not the file I
+was receiving." No hash, no `ETag`. A same-size content replacement between
+attempts is not caught — accepted, not solved, the same posture
+`SourceFile`'s own doc comment already states for a file swapped
+underneath the connector.
+
+**31.2 `resolveTransferSequence` gains a dataset-keyed fallback, closing a
+gap §25.7 named but left open.** §25.7 recorded that `transfer_policies`
+cannot key a negotiated agreement, because that id does not exist until the
+negotiation producing it is already under way, and named the absence of any
+other wire-observable key as the reason. `config.Dataset.TransferSequence`
+supplies the key that was missing off the wire: an agreement's `dataset_id`
+is known regardless of whether the agreement was negotiated or imported (the
+same lookup `hasSourceFor` already performs). An `agreement_id` match in
+`transfer_policies` always takes precedence when both exist. This exists to
+let the demo (below) prove resumption against a real negotiated agreement,
+but it is not demo-only: it is the general answer to §25.7's open question.
+
+**31.3 A concurrency guard was needed that the old design did not require.**
+The deterministic partial-file path (31 above) is a new appendable target
+two `pullTransferData` calls could race on, unlike the old random-named
+temp file. DSP's own legality table allows a restart to arrive while a
+previous pull is still running — nothing ties the provider's autonomous
+suspend/restart timer to how long the consumer's own fetch takes.
+`transferHandler.pulling`, a `*sync.Map` shared across every copy of the
+handler, drops a restart's trigger if a pull for the same `ConsumerPID` is
+already in flight, logged the same way a stale state-update elsewhere in
+this connector already is, rather than run two writers against one file.
+
+**31.4 Demo-only fault injection: `simulate_interrupt_after_bytes`, a new
+dataset, not a reused one.** `config.Dataset.SimulateInterruptAfterBytes`
+truncates a non-`Range` request at that many bytes and severs the
+connection via `http.Hijacker`, so `make demo` can force a real
+interruption rather than assert against a mock. It never fires on a `Range`
+request, which is what lets the interrupt-then-resume sequence terminate.
+The scenario runs against a dedicated dataset,
+`urn:dataset:sample-resume`, rather than the existing `urn:dataset:sample`
+— the same call as `CN:02-07`'s (§29.1): a shared fixture would make every
+future demo run pay for a two-phase cycle permanently and collapse two
+different failures (the basic pull broke; the resume broke) into one
+ambiguous signal.
+
+*Trade-off accepted.* An orphaned `.partial-<consumerPID>` file — a
+transfer that terminates instead of restarting after being interrupted
+leaves one behind forever — is not cleaned up. Pre-existing risk in a
+smaller form (a stray random-named temp file could already leak on an
+unclean process exit); this milestone makes the leaked file larger and its
+name predictable. Tracked in `docs/follow-ups.md` rather than solved here:
+it needs a retention policy this project has none of yet.
