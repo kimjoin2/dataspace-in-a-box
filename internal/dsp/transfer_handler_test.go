@@ -574,7 +574,7 @@ func TestTransferRequestPushesStartMessage(t *testing.T) {
 // written before this configuration existed depends on: an agreement nobody
 // configured is still started.
 func TestResolveTransferSequenceDefaultsToStarted(t *testing.T) {
-	got := resolveTransferSequence(config.Config{}, "urn:uuid:unconfigured")
+	got := resolveTransferSequence(config.Config{}, "urn:uuid:unconfigured", "")
 	if len(got) != 1 || got[0] != TransferStarted {
 		t.Errorf("resolveTransferSequence(no entry) = %v, want [%s]", got, TransferStarted)
 	}
@@ -585,7 +585,7 @@ func TestResolveTransferSequenceUsesTheMatchingEntry(t *testing.T) {
 		{AgreementID: "urn:uuid:other", Sequence: []string{TransferTerminated}},
 		{AgreementID: "urn:uuid:agreement-1", Sequence: []string{TransferStarted, TransferSuspended, TransferTerminated}},
 	}}
-	got := resolveTransferSequence(cfg, "urn:uuid:agreement-1")
+	got := resolveTransferSequence(cfg, "urn:uuid:agreement-1", "")
 	want := []string{TransferStarted, TransferSuspended, TransferTerminated}
 	if len(got) != len(want) {
 		t.Fatalf("resolveTransferSequence = %v, want %v", got, want)
@@ -605,7 +605,7 @@ func TestResolveTransferSequenceEmptyEntryIsNotTheDefault(t *testing.T) {
 	cfg := config.Config{TransferPolicies: []config.TransferPolicy{
 		{AgreementID: "urn:uuid:agreement-1", Sequence: []string{}},
 	}}
-	if got := resolveTransferSequence(cfg, "urn:uuid:agreement-1"); len(got) != 0 {
+	if got := resolveTransferSequence(cfg, "urn:uuid:agreement-1", ""); len(got) != 0 {
 		t.Errorf("resolveTransferSequence(empty entry) = %v, want no steps at all", got)
 	}
 }
@@ -633,12 +633,62 @@ func TestResolveTransferSequenceFromALoadedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	if got := resolveTransferSequence(cfg, "urn:uuid:agreement-1"); len(got) != 0 {
+	if got := resolveTransferSequence(cfg, "urn:uuid:agreement-1", ""); len(got) != 0 {
 		t.Errorf("resolveTransferSequence(loaded empty sequence) = %v, want no steps at all", got)
 	}
-	if got := resolveTransferSequence(cfg, "urn:uuid:unconfigured"); len(got) != 1 || got[0] != TransferStarted {
+	if got := resolveTransferSequence(cfg, "urn:uuid:unconfigured", ""); len(got) != 1 || got[0] != TransferStarted {
 		t.Errorf("resolveTransferSequence(agreement absent from the same document) = %v, want [%s]",
 			got, TransferStarted)
+	}
+}
+
+// TestResolveTransferSequenceFallsBackToTheDataset pins the fallback this
+// milestone adds: with no agreement_id match, a dataset whose TransferSequence
+// is set drives the sequence instead of the [STARTED] default.
+func TestResolveTransferSequenceFallsBackToTheDataset(t *testing.T) {
+	cfg := config.Config{Datasets: []config.Dataset{
+		{ID: "urn:dataset:a", TransferSequence: []string{TransferStarted, TransferSuspended, TransferStarted, TransferCompleted}},
+	}}
+	got := resolveTransferSequence(cfg, "urn:uuid:unconfigured", "urn:dataset:a")
+	want := []string{TransferStarted, TransferSuspended, TransferStarted, TransferCompleted}
+	if len(got) != len(want) {
+		t.Fatalf("resolveTransferSequence = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("resolveTransferSequence = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestResolveTransferSequenceAgreementEntryWinsOverDatasetFallback pins the
+// precedence: an agreement_id match in transfer_policies always overrides
+// the dataset's own fallback, even when both are configured for the same
+// transfer.
+func TestResolveTransferSequenceAgreementEntryWinsOverDatasetFallback(t *testing.T) {
+	cfg := config.Config{
+		TransferPolicies: []config.TransferPolicy{
+			{AgreementID: "urn:uuid:agreement-1", Sequence: []string{TransferTerminated}},
+		},
+		Datasets: []config.Dataset{
+			{ID: "urn:dataset:a", TransferSequence: []string{TransferCompleted}},
+		},
+	}
+	got := resolveTransferSequence(cfg, "urn:uuid:agreement-1", "urn:dataset:a")
+	if len(got) != 1 || got[0] != TransferTerminated {
+		t.Errorf("resolveTransferSequence = %v, want [%s] (the agreement_id entry, not the dataset fallback)", got, TransferTerminated)
+	}
+}
+
+// TestResolveTransferSequenceNilDatasetFallbackStillDefaults pins that a
+// dataset with no TransferSequence configured (the field's zero value, nil)
+// is not distinguishable from "no dataset matched" — both still default to
+// [STARTED], the same way an unconfigured agreement always has.
+func TestResolveTransferSequenceNilDatasetFallbackStillDefaults(t *testing.T) {
+	cfg := config.Config{Datasets: []config.Dataset{{ID: "urn:dataset:a"}}}
+	got := resolveTransferSequence(cfg, "urn:uuid:unconfigured", "urn:dataset:a")
+	if len(got) != 1 || got[0] != TransferStarted {
+		t.Errorf("resolveTransferSequence = %v, want [%s]", got, TransferStarted)
 	}
 }
 

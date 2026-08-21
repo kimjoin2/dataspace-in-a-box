@@ -179,14 +179,25 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 	go h.driveTransfer(t)
 }
 
-// resolveTransferSequence returns the states this connector walks on its own
-// after accepting a transfer request under this agreement. An agreement with
-// no configured entry starts and stops there; an entry with an empty sequence
-// deliberately does nothing, which is how a transfer stays in REQUESTED.
-func resolveTransferSequence(cfg config.Config, agreementID string) []string {
+// resolveTransferSequence resolves the autonomous sequence a provider-role
+// transfer's agreement drives to. An agreement_id-keyed entry in
+// cfg.TransferPolicies always wins when present. Failing that, datasetID's
+// own TransferSequence is used if non-nil — the fallback DECISIONS.md
+// section 25.7 named as missing: transfer_policies cannot be keyed by an
+// agreement this connector negotiated itself, because that id does not
+// exist until the negotiation that produces it is already under way, but
+// the agreement's dataset_id is known regardless of how the agreement came
+// to be (see hasSourceFor, which resolves it the same way). Neither
+// matching leaves [STARTED], today's default.
+func resolveTransferSequence(cfg config.Config, agreementID, datasetID string) []string {
 	for _, p := range cfg.TransferPolicies {
 		if p.AgreementID == agreementID {
 			return p.Sequence
+		}
+	}
+	for _, d := range cfg.Datasets {
+		if d.ID == datasetID && d.TransferSequence != nil {
+			return d.TransferSequence
 		}
 	}
 	return []string{TransferStarted}
@@ -233,7 +244,13 @@ func resolveConsumerTransferPolicy(cfg config.Config, agreementID string) (strin
 // sitting in that buffer for the whole retry schedule — while the
 // counterparty waits for it before it is ready to receive the push.
 func (h transferHandler) driveTransfer(t store.TransferProcess) {
-	for _, state := range resolveTransferSequence(h.cfg, t.AgreementID) {
+	datasetID := ""
+	if a, ok, err := h.store.GetAgreement(t.AgreementID); err != nil {
+		slog.Error("get agreement for transfer sequence", "agreement_id", t.AgreementID, "error", err)
+	} else if ok {
+		datasetID = a.DatasetID
+	}
+	for _, state := range resolveTransferSequence(h.cfg, t.AgreementID, datasetID) {
 		// Before every step, including the first. The first used to go out
 		// immediately, and under load that lost a real race: on 2026-08-19,
 		// with the demo's image builds competing for the machine, a start
