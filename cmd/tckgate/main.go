@@ -39,7 +39,12 @@ var expected = map[string]int{"MET": 1, "CAT": 3, "CN": 15, "CN_C": 16, "TP": 15
 // checked once, at accept-time; VERIFIED -> FINALIZED deliberately has no
 // further check (see docs/superpowers/specs/2026-08-11-contract-negotiation-provider-design.md,
 // "CN:02-07 does not fit this account"). No connector-side mechanism in this
-// milestone produces that behavior.
+// milestone produces that behavior. docs/follow-ups.md's 2026-08-21 update
+// confirms this against a live run and adds what decompiling the pinned TCK
+// found: the TCK does send an observable trigger (a real verification POST
+// this connector already handles), so what is missing is not a trigger to
+// detect but the DSP-semantics reason this agreement should terminate
+// instead of reaching VERIFIED normally.
 var exempt = map[string]bool{"CN:02-07": true}
 
 // resultLine matches one per-test result in the TCK's stdout. Group 1 is the
