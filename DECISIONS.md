@@ -1378,9 +1378,19 @@ requests across 65 tests, all carrying the identical credential. That is not
 an artifact of this project's harness; it is the TCK exercising the
 credential the way DECISIONS.md section 10 designed it to be used — a
 short-lived *bearer* token, valid for repeated calls within its window, not
-a one-time-use artifact. Rejecting a token's second presentation would
-reject the TCK's third request onward, collapsing the suite from 64 of 65 to
-a handful.
+a one-time-use artifact.
+
+Not left as an inference from that comment: `jti`-based single-use
+enforcement — a `Jti` claim, `store.RecordCredential` tracking one row per
+credential, and the auth middleware refusing a second presentation with a
+401 and a log line — was built in full and run against the real pinned TCK
+image. Result: 63 of 65 required tests failed, everything past the second
+authenticated request in every suite. The implementation was then reverted
+in the same session rather than kept behind a flag or left disabled;
+`go test ./...` and `make tck` (64 of 65, unchanged) were re-run clean
+afterward. This project's own "mutation testing as verification" habit,
+applied here as "run it against the real gate before believing a
+description of what it does."
 
 The asymmetry that made this easy to miss: this connector's own outbound
 code already mints a fresh token per HTTP attempt (`pushCallback`'s "minted
