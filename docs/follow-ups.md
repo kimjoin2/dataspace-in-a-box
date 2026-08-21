@@ -127,17 +127,6 @@ here. It still deserves attention: for a project promising "clone, run,
 working in ten minutes", two instances on localhost is the first thing a
 reader tries, and the failure gives them a `400` with no hint of why.
 
-**Before the transfer-process milestone: split
-`internal/dsp/negotiation_handler.go`.** 803 lines, with a 1,463-line test
-file beside it. The seam already exists and needs no design work: routing and
-the provider role stay, and a new `negotiation_consumer_handler.go` takes
-`handleInitiate`, `startNegotiation`, `handleOffers`, `reactToOffer`,
-`resolveProviderPID`, `handleAgreement`, `reactToAgreement`,
-`handleConsumerFinalizedEvent`, and `handleConsumerTermination`. Do it as a
-pure move, on its own, *before* that milestone's diff lands — deliberately
-not done in the CN_C fix wave, because folding an 800-line move into the same
-commit range that fixed three data races would have obscured both.
-
 ## From the transfer process (provider, Phase A) milestone (2026-08)
 
 **The 200 ms `transferStepDelay`'s margin is measured for later steps and

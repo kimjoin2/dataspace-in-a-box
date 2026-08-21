@@ -1,8 +1,7 @@
 // This file holds the consumer role's negotiation handlers and reactions,
 // split out of negotiation_handler.go so that file's provider role, dual-role
 // routing, and shared helpers do not keep growing alongside the
-// transfer-process milestone. See docs/follow-ups.md's "split
-// negotiation_handler.go" entry for the rationale.
+// transfer-process milestone.
 
 package dsp
 
