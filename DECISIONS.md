@@ -1620,18 +1620,15 @@ handler, drops a restart's trigger if a pull for the same `ConsumerPID` is
 already in flight, logged the same way a stale state-update elsewhere in
 this connector already is, rather than run two writers against one file.
 
-**31.4 Demo-only fault injection: `simulate_interrupt_after_bytes`, a new
-dataset, not a reused one.** `config.Dataset.SimulateInterruptAfterBytes`
+**31.4 Fault injection mechanism: `config.Dataset.SimulateInterruptAfterBytes`
+for testing resumption.** `config.Dataset.SimulateInterruptAfterBytes`
 truncates a non-`Range` request at that many bytes and severs the
-connection via `http.Hijacker`, so `make demo` can force a real
-interruption rather than assert against a mock. It never fires on a `Range`
-request, which is what lets the interrupt-then-resume sequence terminate.
-The scenario runs against a dedicated dataset,
-`urn:dataset:sample-resume`, rather than the existing `urn:dataset:sample`
-— the same call as `CN:02-07`'s (§29.1): a shared fixture would make every
-future demo run pay for a two-phase cycle permanently and collapse two
-different failures (the basic pull broke; the resume broke) into one
-ambiguous signal.
+connection via `http.Hijacker`, so test code can force a real
+interruption rather than mock one. It never fires on a `Range` request,
+which keeps the interrupt-then-resume sequence testable — the field exists
+so a future demo or integration test (not yet built) can exercise a real
+resumption scenario against this mechanism. The implementation is
+unit-tested in `internal/dsp/data_handler_test.go`.
 
 *Trade-off accepted.* An orphaned `.partial-<consumerPID>` file — a
 transfer that terminates instead of restarting after being interrupted

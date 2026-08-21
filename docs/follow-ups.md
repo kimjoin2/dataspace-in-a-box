@@ -153,7 +153,7 @@ leak risk into a larger, predictable one. Solving it needs a retention or
 garbage-collection policy this project has none of yet: an obvious rule
 ("delete a partial file once its transfer reaches a terminal state") needs
 the partial-file cleanup to happen somewhere that already knows the
-transfer terminated, which today is a different code path (`handleTransfer
-Termination`/`handleTransferCompletion`) than the one writing the file
+transfer terminated, which today is a different code path
+(`handleTransferTermination`/`handleTransferCompletion`) than the one writing the file
 (`pullTransferData`), and wiring the two together is a design decision, not
 a cleanup.
