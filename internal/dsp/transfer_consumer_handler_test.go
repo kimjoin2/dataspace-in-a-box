@@ -309,7 +309,7 @@ func TestPullTransferData_ResumesFromAnExistingPartialFile(t *testing.T) {
 	if err := os.MkdirAll(partialDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(pullPartialPath(dir, consumerPID), []byte(already), 0o644); err != nil {
+	if err := os.WriteFile(pullPartialPath(dir, consumerPID), []byte(already), 0o600); err != nil {
 		t.Fatalf("seed partial file: %v", err)
 	}
 
@@ -337,6 +337,34 @@ func TestPullTransferData_ResumesFromAnExistingPartialFile(t *testing.T) {
 	}
 	if _, err := os.Stat(pullPartialPath(dir, consumerPID)); !os.IsNotExist(err) {
 		t.Error("the partial file was not renamed away")
+	}
+
+	// Security regression check: the download file must be owner-only
+	// (0600), not group/world-readable (0644, what os.CreateTemp's
+	// replacement briefly regressed to). os.Rename preserves the source
+	// file's mode, so the resumed pull's final file above must still carry
+	// whatever mode the partial was created with — checked here — and a
+	// completely fresh pull (no pre-existing partial, so os.OpenFile's
+	// O_CREATE actually applies the mode argument) is checked below, since
+	// that is the only path where the argument being 0600 vs 0644 matters.
+	if info, err := os.Stat(final); err != nil {
+		t.Fatalf("stat final file: %v", err)
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("resumed final file mode = %v, want 0600", perm)
+	}
+
+	freshPID := "urn:uuid:resume-1-fresh"
+	freshProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("fresh-bytes"))
+	}))
+	defer freshProvider.Close()
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: freshPID}, &DataAddress{Endpoint: freshProvider.URL})
+	freshFinal := filepath.Join(dir, downloadDir, freshPID)
+	waitForFile(t, freshFinal)
+	if info, err := os.Stat(freshFinal); err != nil {
+		t.Fatalf("stat fresh final file: %v", err)
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("fresh final file mode = %v, want 0600", perm)
 	}
 }
 
