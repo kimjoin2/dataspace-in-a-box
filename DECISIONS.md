@@ -1606,7 +1606,7 @@ supplies the key that was missing off the wire: an agreement's `dataset_id`
 is known regardless of whether the agreement was negotiated or imported (the
 same lookup `hasSourceFor` already performs). An `agreement_id` match in
 `transfer_policies` always takes precedence when both exist. This exists to
-let a future demo prove resumption against a real negotiated agreement,
+let the demo prove resumption against a real negotiated agreement,
 but it is not demo-only: it is the general answer to §25.7's open question.
 
 **31.3 A concurrency guard was needed that the old design did not require.**
@@ -1625,10 +1625,17 @@ for testing resumption.** `config.Dataset.SimulateInterruptAfterBytes`
 truncates a non-`Range` request at that many bytes and severs the
 connection via `http.Hijacker`, so test code can force a real
 interruption rather than mock one. It never fires on a `Range` request,
-which keeps the interrupt-then-resume sequence testable — the field exists
-so a future demo or integration test (not yet built) can exercise a real
-resumption scenario against this mechanism. The implementation is
-unit-tested in `internal/dsp/data_handler_test.go`.
+which keeps the interrupt-then-resume sequence testable — the field is what
+`make demo`'s second round exercises. That round runs against a dedicated
+dataset, `urn:dataset:sample-resume`, rather than the original
+`urn:dataset:sample`, so the baseline scenario's pass/fail signal stays
+unambiguous. It checks two things, not one: a byte-for-byte diff of the
+recovered file against what was sent, and a grep of the consumer's log for
+the `"resumed transfer data pull"` line the append path logs on a resumed
+pull — the diff alone cannot tell a real resume apart from a coincidental
+full refetch after a failure, only the log line can. The implementation is
+unit-tested in
+`internal/dsp/data_handler_test.go`.
 
 *Trade-off accepted.* An orphaned `.partial-<consumerPID>` file — a
 transfer that terminates instead of restarting after being interrupted
