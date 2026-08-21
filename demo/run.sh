@@ -191,7 +191,7 @@ echo "==> waiting for the resumed file"
 i=0
 resume_downloaded=""
 while [ "$i" -lt 60 ]; do
-	resume_downloaded=$(find "$gen/consumer-data/downloads" -type f ! -name '.partial-*' ! -samefile "$downloaded" 2>/dev/null | head -1 || true)
+	resume_downloaded=$(find "$gen/consumer-data/downloads" -type f ! -name '.partial-*' ! -path "$downloaded" 2>/dev/null | head -1 || true)
 	[ -n "$resume_downloaded" ] && break
 	i=$((i + 1))
 	sleep 1

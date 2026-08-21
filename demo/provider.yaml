@@ -18,9 +18,17 @@ datasets:
   - id: urn:dataset:sample-resume
     source_file: /etc/dsbox/data/sample-resume.csv
     simulate_interrupt_after_bytes: 2000
-    transfer_sequence: [STARTED, SUSPENDED, STARTED, COMPLETED]
+    # COMPLETED deliberately left off: with it included, the provider
+    # autonomously completes the transfer transferStepDelay after the second
+    # STARTED, and a resumed pull that has not finished landing by then would
+    # hit a 409 (transfer no longer STARTED) instead of succeeding. run.sh's
+    # resume-scenario assertions only check the recovered file's content and
+    # a log line proving resumption happened, so dropping COMPLETED loses no
+    # coverage while closing that race window.
+    transfer_sequence: [STARTED, SUSPENDED, STARTED]
 
-# No transfer_policies entry, so this agreement gets the default [STARTED]:
-# accept the request and start. That is the configuration that serves data —
-# a sequence naming COMPLETED would end the transfer, and with it the access,
-# before the consumer could fetch anything.
+# No transfer_policies entry for the sample agreement, so it gets the
+# default [STARTED]: accept the request and start. That is the
+# configuration that serves data — a sequence naming COMPLETED would end
+# the transfer, and with it the access, before the consumer could fetch
+# anything.
