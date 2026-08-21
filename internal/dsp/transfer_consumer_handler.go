@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
@@ -245,6 +247,29 @@ func (h transferHandler) maybeDriveConsumerTransfer(t store.ConsumerTransfer, re
 // to get wrong, and this milestone gains nothing from it.
 const downloadDir = "downloads"
 
+// contentRangeFirstByte parses a 206 response's Content-Range header and
+// returns its first-byte-pos. RFC 7233 §4.2's shape for a single range is
+// "bytes <first>-<last>/<complete-length>" — the same shape this
+// connector's own provider emits (data_handler.go's 206 branch). Anything
+// else — the header absent, or not in that shape — is reported via the
+// bool rather than guessed at.
+func contentRangeFirstByte(header string) (int64, bool) {
+	const prefix = "bytes "
+	if !strings.HasPrefix(header, prefix) {
+		return 0, false
+	}
+	rest := strings.TrimPrefix(header, prefix)
+	dash := strings.IndexByte(rest, '-')
+	if dash < 0 {
+		return 0, false
+	}
+	first, err := strconv.ParseInt(rest[:dash], 10, 64)
+	if err != nil || first < 0 {
+		return 0, false
+	}
+	return first, true
+}
+
 // pullTransferData fetches what a dataAddress points at and writes it under
 // data_dir, resuming from a previous attempt when one left bytes behind.
 // Called whenever a start message carrying an address arrives — the first
@@ -310,6 +335,23 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	if resuming {
 		switch resp.StatusCode {
 		case http.StatusPartialContent:
+			// A 206 status alone does not prove the body actually starts
+			// where this connector's partial download left off — a
+			// non-conforming counterparty or a misbehaving proxy could
+			// answer 206 with content-range starting somewhere else.
+			// Content-Range is the one place that claim is checked before
+			// the body is trusted enough to append. Same posture as the
+			// default: case below when it does not check out: log and
+			// leave the partial exactly as it was. Not the 416 case — a
+			// wrong Content-Range is not proof the provider's file
+			// changed, just a different-shaped answer to investigate.
+			contentRange := resp.Header.Get("Content-Range")
+			first, ok := contentRangeFirstByte(contentRange)
+			if !ok || first != existingSize {
+				slog.Error("206 response's Content-Range does not start where this connector's partial download left off; leaving the partial download in place",
+					"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "content_range", contentRange, "had_bytes", existingSize)
+				return
+			}
 			// fall through to the append below
 		case http.StatusRequestedRangeNotSatisfiable:
 			// The provider's file is no longer at least as long as what this

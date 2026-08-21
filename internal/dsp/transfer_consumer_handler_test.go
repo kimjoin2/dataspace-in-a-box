@@ -399,6 +399,51 @@ func TestPullTransferData_416DiscardsThePartialFile(t *testing.T) {
 	}
 }
 
+// TestPullTransferData_206WithWrongContentRangeLeavesThePartialFileUntouched
+// pins the check the final review added: a 206 status alone does not prove
+// the body picks up where this connector's partial download left off. A
+// provider (or a misbehaving proxy) that answers 206 but with a
+// Content-Range starting somewhere other than the resume offset must not
+// have its body appended — that would silently corrupt the file the same
+// way an unexpected 200 would, which the default: case already guards
+// against.
+func TestPullTransferData_206WithWrongContentRangeLeavesThePartialFileUntouched(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := newTestTransferHandler(t, config.Config{DataDir: dir})
+	consumerPID := "urn:uuid:resume-bad-content-range"
+	const already = "id,value\n1,hello\n"
+
+	if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(pullPartialPath(dir, consumerPID), []byte(already), 0o600); err != nil {
+		t.Fatalf("seed partial file: %v", err)
+	}
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Answers 206, but its Content-Range claims the body starts at 0 —
+		// not at len(already), the offset this connector actually asked to
+		// resume from via its own Range header.
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(already)-1, len(already)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte(already))
+	}))
+	defer provider.Close()
+
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: consumerPID}, &DataAddress{Endpoint: provider.URL})
+
+	got, err := os.ReadFile(pullPartialPath(dir, consumerPID))
+	if err != nil {
+		t.Fatalf("the partial file was removed after a mismatched Content-Range: %v", err)
+	}
+	if string(got) != already {
+		t.Errorf("partial content = %q, want it untouched at %q (the mismatched 206 must not be appended)", got, already)
+	}
+	if _, err := os.Stat(filepath.Join(dir, downloadDir, consumerPID)); !os.IsNotExist(err) {
+		t.Error("a final file appeared, but the 206's Content-Range did not match the resume offset")
+	}
+}
+
 // TestPullTransferData_OrdinaryFailureDuringAResumeKeepsThePartialFile pins
 // the one behavior change from before this milestone: an ordinary failure
 // (here, a 500) on a resumed pull must not discard bytes already received.
