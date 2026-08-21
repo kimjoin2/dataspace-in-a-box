@@ -48,9 +48,11 @@ type header struct {
 
 // claims is the whole credential. No sub: issuer and subject are the same
 // party, and a field that always duplicates another is one more thing to keep
-// in step. No jti: it would only earn its place alongside replay detection,
-// which needs storage and a sweep and is not in this milestone — see the
-// design spec's accepted trade-offs.
+// in step. No jti, and none is coming: DECISIONS.md section 28 found that a
+// jti-based single-use check would reject the official TCK's own conformant
+// behavior — it presents one token for an entire suite run — so replay
+// defense for this credential shape needs a different mechanism than storage
+// and a sweep, which is not a decision this package can make on its own.
 type claims struct {
 	Iss string `json:"iss"`
 	Aud string `json:"aud"`

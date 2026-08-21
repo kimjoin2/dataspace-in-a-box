@@ -1357,3 +1357,59 @@ refreshed cache of whatever `resolve` last returned. `make demo` and
 that half, and folding it into either harness would mean standing up a
 document server neither actually needs, for proof the unit tests already
 give more directly.
+
+## 28. Replay defense is not built, and closing it as originally scoped is not possible without leaving §10
+
+**Decision.** Do not add `jti`-based single-use token enforcement. The
+connector-auth design spec's own accepted trade-off — "Replay inside the
+five-minute window... Closing this needs storage and expiry sweeping" —
+described a real gap, but its implicit premise, that a token is meant to be
+presented once, does not hold for a client this connector must interoperate
+with: the official TCK. This section replaces that framing with why, rather
+than editing §10 or the design spec's original text.
+
+**Rationale.** `test/tck/run.sh` mints exactly one token per suite run and
+sets it as a static configuration property, `dataspacetck.dsp.connector.
+http.headers.authorization`, that `DspSystemLauncher` attaches to every
+request the TCK makes — the script's own comment already says so: "It is a
+static string for the whole run: DspSystemLauncher registers it as an
+interceptor once and cannot refresh it." A TCK run is dozens of authenticated
+requests across 65 tests, all carrying the identical credential. That is not
+an artifact of this project's harness; it is the TCK exercising the
+credential the way DECISIONS.md section 10 designed it to be used — a
+short-lived *bearer* token, valid for repeated calls within its window, not
+a one-time-use artifact. Rejecting a token's second presentation would
+reject the TCK's third request onward, collapsing the suite from 64 of 65 to
+a handful.
+
+The asymmetry that made this easy to miss: this connector's own outbound
+code already mints a fresh token per HTTP attempt (`pushCallback`'s "minted
+per attempt, not once per call"), so nothing in this connector's own
+behavior ever exercises a token twice. The TCK, playing the counterparty,
+does — and the TCK is the authority on what a conformant client does, not
+this connector's own habits.
+
+No mechanism this milestone considered closes the real gap — a captured
+token usable by anyone until it expires — without either rejecting
+TCK-conformant behavior or requiring information this design has nowhere to
+get it from. Scoping rejection to "the same `(jti, path, method, body)`
+twice" was considered and set aside unverified: the `CN_C`/`CN` suites
+include deliberate identical re-requests as their own test subject
+(`CN:03-04`'s "two re-requests carrying the *identical* offer, first
+succeeds, second is rejected" — by the negotiation state machine, not the
+auth layer), and adding a second, auth-layer rejection ahead of that logic
+risks changing what those tests observe in a way this session did not have
+grounds to certify safe.
+
+*Trade-off accepted.* A captured credential remains usable by anyone holding
+it until it expires, five minutes after minting — unchanged from before this
+investigation, and, per the reasoning above, not closable by storage and a
+sweep alone as originally scoped. What bounds the exposure is §10's own
+choice of window length and the assumption TLS terminates in front of this
+connector in any deployment where interception is a real threat (§13); this
+milestone does not reopen either. Real replay defense for a reusable bearer
+token needs proof-of-possession (DPoP, mTLS) or a token model this project
+has not chosen, which is a §10-level decision, not an implementation detail
+— `CLAUDE.md`'s rule applies: ask before working around a decision
+`DECISIONS.md` already made, and this section is that ask answered "not yet,"
+recorded rather than worked around.

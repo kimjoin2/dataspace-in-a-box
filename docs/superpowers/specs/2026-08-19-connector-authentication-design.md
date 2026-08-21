@@ -234,9 +234,12 @@ wired to nothing would otherwise look identical to success.
 ## Accepted trade-offs
 
 **Replay inside the five-minute window.** No `jti`, no nonce, no seen-token
-store. An attacker who captures a token can reuse it until it expires. Closing
-this needs storage and expiry sweeping; it is not free, and the window is
-bounded by §10's own choice.
+store. An attacker who captures a token can reuse it until it expires.
+"Closing this needs storage and expiry sweeping" was this section's original
+guess at the fix; DECISIONS.md section 28 (2026-08) found it does not work —
+the official TCK itself presents one token for a whole suite run, so a
+single-use check would reject conformant behavior, not just an attacker. The
+window stays bounded only by §10's own choice.
 
 **No revocation faster than roster redistribution.** §9 already accepted this;
 removing a participant means editing and redistributing the file.
