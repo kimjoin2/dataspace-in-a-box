@@ -3,6 +3,7 @@ package dsp
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -327,6 +328,114 @@ func TestDataPullUnsupportedRangeFormIsIgnored(t *testing.T) {
 	if got := rec.Body.String(); got != servedBytes {
 		t.Errorf("body = %q, want the whole file %q", got, servedBytes)
 	}
+}
+
+// TestDataPullSimulatedInterruptTruncatesAndSeversTheConnection pins the
+// demo-only fault-injection knob: a non-Range request is cut short at the
+// configured byte count and the connection is severed, not cleanly closed —
+// the client must see a real error, the same as it would against a genuine
+// network interruption.
+func TestDataPullSimulatedInterruptTruncatesAndSeversTheConnection(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+
+	content := strings.Repeat("x", 100)
+	path := filepath.Join(t.TempDir(), "a.csv")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	ds := config.Dataset{ID: "urn:dataset:a", SourceFile: path, SimulateInterruptAfterBytes: 20}
+	cfg := config.Config{ParticipantID: testSelf, Datasets: []config.Dataset{ds}}
+	now := time.Now()
+	if err := st.CreateAgreement(store.Agreement{AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
+		Origin: store.OriginImported, CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgreement: %v", err)
+	}
+	if err := st.CreateTransfer(store.TransferProcess{ProviderPID: "p1", ConsumerPID: "c1",
+		AgreementID: "urn:uuid:a", State: TransferStarted, CallbackAddress: "http://x", Format: "HTTP-PULL",
+		CounterpartyID: testPeer, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+	h := dataHandler{cfg: cfg, store: st}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.SetPathValue("id", "p1")
+		r = r.WithContext(context.WithValue(r.Context(), issuerContextKey{}, testPeer))
+		h.handleData(w, r)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + VersionPath + "/data/p1")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		t.Fatalf("read: got no error, and %d bytes — the connection should have been severed before the full 100 arrived", len(got))
+	}
+	if len(got) != 20 {
+		t.Errorf("read %d bytes before the error, want exactly the configured 20", len(got))
+	}
+}
+
+// TestDataPullSimulatedInterruptDoesNotFireOnARangedRequest pins the other
+// half: a resumed (ranged) request always completes, which is what lets a
+// demo's interrupt-then-resume sequence terminate instead of truncating
+// forever.
+func TestDataPullSimulatedInterruptDoesNotFireOnARangedRequest(t *testing.T) {
+	h, id := dataFixtureWithSimulatedInterrupt(t, 3)
+	req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/"+id, nil)
+	req.SetPathValue("id", id)
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+	req.Header.Set("Range", "bytes=3-")
+	rec := httptest.NewRecorder()
+	h.handleData(rec, req)
+
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("got %d, want 206 — a ranged request must never be truncated: %s", rec.Code, rec.Body)
+	}
+	want := servedBytes[3:]
+	if got := rec.Body.String(); got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+// dataFixtureWithSimulatedInterrupt is dataFixture plus
+// SimulateInterruptAfterBytes, for the one test above that needs the field
+// set but exercises it through httptest.NewRecorder (which is fine for the
+// ranged case: the knob must not fire at all there, so Hijack is never
+// reached).
+func dataFixtureWithSimulatedInterrupt(t *testing.T, afterBytes int64) (dataHandler, string) {
+	t.Helper()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	path := filepath.Join(t.TempDir(), "a.csv")
+	if err := os.WriteFile(path, []byte(servedBytes), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	ds := config.Dataset{ID: "urn:dataset:a", SourceFile: path, SimulateInterruptAfterBytes: afterBytes}
+	cfg := config.Config{ParticipantID: testSelf, Datasets: []config.Dataset{ds}}
+
+	now := time.Now()
+	if err := st.CreateAgreement(store.Agreement{AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
+		Origin: store.OriginImported, CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgreement: %v", err)
+	}
+	if err := st.CreateTransfer(store.TransferProcess{ProviderPID: "p1", ConsumerPID: "c1",
+		AgreementID: "urn:uuid:a", State: TransferStarted, CallbackAddress: "http://x", Format: "HTTP-PULL",
+		CounterpartyID: testPeer, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+	return dataHandler{cfg: cfg, store: st}, "p1"
 }
 
 func waitForFile(t *testing.T, path string) {

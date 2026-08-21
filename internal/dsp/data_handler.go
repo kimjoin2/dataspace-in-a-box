@@ -160,6 +160,28 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if ds.SimulateInterruptAfterBytes > 0 {
+		n := ds.SimulateInterruptAfterBytes
+		if n > stat.Size() {
+			n = stat.Size()
+		}
+		io.CopyN(w, f, n) //nolint:errcheck // the connection is about to be severed regardless
+		// The truncated bytes are sitting in ResponseWriter's own
+		// pre-chunking buffer (net/http buffers up to 2KB before deciding
+		// chunked vs. Content-Length) and Hijack does not flush it — only
+		// explicitly flushing here gets the n bytes onto the wire before
+		// the connection is severed.
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				conn.Close()
+			}
+		}
+		return
+	}
+
 	// Streamed rather than buffered: memory must not scale with file size.
 	// The server's write timeout still bounds how large a file can finish.
 	w.Header().Set("Content-Type", "application/octet-stream")
