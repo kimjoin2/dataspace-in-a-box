@@ -47,9 +47,14 @@ snapshotted" rule `SourceFile`'s own doc comment already states):
   already makes — transfer exists, is `STARTED`, belongs to the requesting
   participant, the dataset's `ValidityUntil` still holds — runs first and
   unchanged; `Range` handling only changes what happens after they pass.
-- `N >= size`: `416 Range Not Satisfiable`, `Content-Range: bytes */size`.
-  This is not an error path bolted on for this milestone — it is what
-  "integrity across a resume" below is built out of.
+- `N >= size`: `416 Range Not Satisfiable`, `Content-Range: bytes */size`,
+  and a JSON body through the same `writeError`/`TransferErrorType` path
+  every other rejection on this endpoint already uses (`403`, `404`, the
+  three `409`s) — `416` is a client-actionable rejection like those, not a
+  bare status. `Content-Range` is set on the header map before that call:
+  `writeJSON` finalizes headers the moment it calls `WriteHeader`, so it has
+  to be there first. This is not an error path bolted on for this milestone
+  — it is what "integrity across a resume" below is built out of.
 
 ## Consumer: resuming instead of refetching
 
@@ -166,8 +171,21 @@ original one through), so `Hijack` works without any change elsewhere.
 
 ## The demo scenario
 
-`demo/provider.yaml`'s dataset gains `simulate_interrupt_after_bytes` (some
-value smaller than the sample file) and `transfer_sequence: [STARTED,
+This gets its own dataset, `urn:dataset:sample-resume`, rather than joining
+`simulate_interrupt_after_bytes` and `transfer_sequence` onto the existing
+`urn:dataset:sample`. Overloading the original would make every future demo
+run pay for a two-phase interrupt-and-resume cycle permanently, and worse,
+collapse two different failures into one signal: a diff mismatch would no
+longer say whether the basic HTTP-PULL path broke or the resume path did.
+This is the same call `DECISIONS.md` §29.1 already made for `CN:02-07` — a
+dedicated fixture over folding new behavior into a dataset a different
+scenario already depends on. `demo/run.sh` generates a second file, larger
+than the three-line `sample.csv` (a few hundred lines, still generated
+rather than committed, for the same reason the original is), and negotiates
+and transfers it in a second round after today's round completes unchanged.
+
+`demo/provider.yaml` gets the new dataset, `simulate_interrupt_after_bytes`
+set below the second file's size, and `transfer_sequence: [STARTED,
 SUSPENDED, STARTED, COMPLETED]`. Nothing in `demo/run.sh` needs to manually
 trigger anything — the provider walks that sequence on its own, exactly as
 it already does for the TCK's own fixtures, `transferStepDelay` apart. The
@@ -176,12 +194,25 @@ first `STARTED` triggers a pull that gets truncated; well before the next
 carrying the same `dataAddress` arrives, and `pullTransferData` finds the
 partial file and resumes it.
 
-`run.sh` keeps its existing byte-for-byte diff of the received file against
-the source — that proves correctness, but not that resumption specifically
-happened, since a silent full refetch would pass the same diff. It also
-greps the consumer's log for a line this milestone adds to the resume path
-(reporting the partial size found and the range requested), so the demo
-fails if the file happened to match without the resume path ever running.
+With two agreements now on record, the script's existing way of finding
+"the" agreement — a single-line, greedy-regex `sed` pickout that happens to
+land on whatever the pattern last matches — is not something to extend as
+written; it was never really choosing "the first" or "the last" so much as
+whatever a single regex pass finds, and doing that reliably across two
+agreements needs an explicit selector. `GET /agreements`' response already
+carries `datasetId` per entry (`agreementView.DatasetID`,
+`internal/mgmt/router.go`), so the second round's lookup filters on
+`"datasetId":"urn:dataset:sample-resume"` rather than reusing the first
+round's pattern unchanged. Left to the implementation plan to write
+precisely.
+
+`run.sh` diffs the received file against the generated source for both
+rounds — that proves correctness, but not that resumption specifically
+happened in the second one, since a silent full refetch would pass the same
+diff. It also greps the consumer's log for a line this milestone adds to the
+resume path (reporting the partial size found and the range requested), so
+the demo fails if the second file happened to match without the resume path
+ever running.
 
 ## Accepted trade-offs
 
