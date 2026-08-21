@@ -610,6 +610,105 @@ func TestGetAgreementMissingIsNotFound(t *testing.T) {
 	}
 }
 
+// TestCreateAgreementIfNegotiationAgreedRecordsWhenStateMatches pins the
+// positive case: a negotiation sitting in one of the allowed states gets its
+// agreement recorded, and the method reports that it did.
+func TestCreateAgreementIfNegotiationAgreedRecordsWhenStateMatches(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	n := testNegotiation()
+	n.State = "AGREED"
+	if err := s.Create(n); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	a := testAgreement()
+	recorded, currentState, err := s.CreateAgreementIfNegotiationAgreed(n.ProviderPID, []string{"AGREED", "VERIFIED", "FINALIZED"}, a)
+	if err != nil {
+		t.Fatalf("CreateAgreementIfNegotiationAgreed: %v", err)
+	}
+	if !recorded {
+		t.Fatalf("recorded = false, want true — negotiation was in an allowed state (%q)", currentState)
+	}
+	if currentState != "AGREED" {
+		t.Errorf("currentState = %q, want AGREED", currentState)
+	}
+
+	got, ok, err := s.GetAgreement(a.AgreementID)
+	if err != nil {
+		t.Fatalf("GetAgreement: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetAgreement: no row written despite recorded = true")
+	}
+	if got.DatasetID != a.DatasetID {
+		t.Errorf("DatasetID = %q, want %q", got.DatasetID, a.DatasetID)
+	}
+}
+
+// TestCreateAgreementIfNegotiationAgreedSkipsWhenStateDoesNotMatch is the
+// negative case this method exists to close atomically: a negotiation that
+// moved to a state outside the allowed set (a termination racing the push)
+// must leave no agreement row behind.
+func TestCreateAgreementIfNegotiationAgreedSkipsWhenStateDoesNotMatch(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	n := testNegotiation()
+	n.State = "TERMINATED"
+	if err := s.Create(n); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	a := testAgreement()
+	recorded, currentState, err := s.CreateAgreementIfNegotiationAgreed(n.ProviderPID, []string{"AGREED", "VERIFIED", "FINALIZED"}, a)
+	if err != nil {
+		t.Fatalf("CreateAgreementIfNegotiationAgreed: %v", err)
+	}
+	if recorded {
+		t.Error("recorded = true, want false — TERMINATED is not in the allowed set")
+	}
+	if currentState != "TERMINATED" {
+		t.Errorf("currentState = %q, want TERMINATED", currentState)
+	}
+
+	if _, ok, err := s.GetAgreement(a.AgreementID); err != nil {
+		t.Fatalf("GetAgreement: %v", err)
+	} else if ok {
+		t.Error("GetAgreement: found a row despite recorded = false")
+	}
+}
+
+// TestCreateAgreementIfNegotiationAgreedMissingNegotiationIsNotRecorded
+// covers the case with no row to check at all — must behave like "not
+// allowed", not error.
+func TestCreateAgreementIfNegotiationAgreedMissingNegotiationIsNotRecorded(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	a := testAgreement()
+	recorded, currentState, err := s.CreateAgreementIfNegotiationAgreed("does-not-exist", []string{"AGREED"}, a)
+	if err != nil {
+		t.Fatalf("CreateAgreementIfNegotiationAgreed: %v", err)
+	}
+	if recorded {
+		t.Error("recorded = true, want false — there is no negotiation to have agreed")
+	}
+	if currentState != "" {
+		t.Errorf("currentState = %q, want empty for a missing negotiation", currentState)
+	}
+}
+
 func TestCreateAgreementDuplicateIsAnError(t *testing.T) {
 	s, err := Open(":memory:")
 	if err != nil {

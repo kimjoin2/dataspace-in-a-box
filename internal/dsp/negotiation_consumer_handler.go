@@ -284,8 +284,12 @@ func (h negotiationHandler) handleAgreement(w http.ResponseWriter, r *http.Reque
 
 	n.State = StateAgreed
 	// Same reasoning as handleOffers: the agreement's terms are not stored,
-	// so the constraint question is answered here.
-	go h.reactToAgreement(n, hasUnenforceableConstraint(msg.Agreement.Permission))
+	// so the constraint question is answered here. wrongTarget is answered
+	// here too, for the same reason: msg.Agreement.Target is what got
+	// written to the agreements row above, but n.DatasetID — what this
+	// connector itself requested — is what reactToAgreement's policy lookup
+	// uses, and the two are never compared anywhere else.
+	go h.reactToAgreement(n, hasUnenforceableConstraint(msg.Agreement.Permission), msg.Agreement.Target != n.DatasetID)
 }
 
 // reactToAgreement applies this connector's on_agreement policy. The verify
@@ -293,14 +297,16 @@ func (h negotiationHandler) handleAgreement(w http.ResponseWriter, r *http.Reque
 // the design spec's "03-06 verification-ack rule": this connector must not
 // report VERIFIED unless the provider actually acknowledged it.
 // unenforceable reports whether the agreement carried a constraint this
-// connector cannot enforce — see decideAgreementReaction.
-func (h negotiationHandler) reactToAgreement(n store.ConsumerNegotiation, unenforceable bool) {
+// connector cannot enforce, and wrongTarget whether it named a dataset this
+// connector did not request — see decideAgreementReaction for both.
+func (h negotiationHandler) reactToAgreement(n store.ConsumerNegotiation, unenforceable, wrongTarget bool) {
 	n = h.resolveProviderPID(n)
 	policy := resolvePolicy(h.cfg, n.DatasetID)
-	action := decideAgreementReaction(policy.OnAgreement, unenforceable)
+	action := decideAgreementReaction(policy.OnAgreement, unenforceable, wrongTarget)
 	if action != policy.OnAgreement {
-		slog.Info("rejecting an agreement whose constraints this connector cannot enforce",
-			"consumer_pid", n.ConsumerPID, "dataset_id", n.DatasetID, "configured_on_agreement", policy.OnAgreement)
+		slog.Info("rejecting an agreement whose terms this connector cannot adopt",
+			"consumer_pid", n.ConsumerPID, "dataset_id", n.DatasetID, "configured_on_agreement", policy.OnAgreement,
+			"unenforceable_constraint", unenforceable, "wrong_target", wrongTarget)
 	}
 	switch action {
 	case "verify":

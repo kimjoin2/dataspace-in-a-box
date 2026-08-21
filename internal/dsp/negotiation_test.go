@@ -491,16 +491,22 @@ func TestDecideAgreementReaction(t *testing.T) {
 	cases := []struct {
 		onAgreement   string
 		unenforceable bool
+		wrongTarget   bool
 		want          string
 	}{
-		{"verify", false, "verify"},
-		{"reject", false, "reject"},
-		{"verify", true, "reject"},
-		{"reject", true, "reject"},
+		{"verify", false, false, "verify"},
+		{"reject", false, false, "reject"},
+		{"verify", true, false, "reject"},
+		{"reject", true, false, "reject"},
+		// wrongTarget diverts verify the same way unenforceable does: an
+		// agreement naming a dataset this connector did not request is a term
+		// it did not ask for, same family as an unenforceable constraint.
+		{"verify", false, true, "reject"},
+		{"reject", false, true, "reject"},
 	}
 	for _, c := range cases {
-		if got := decideAgreementReaction(c.onAgreement, c.unenforceable); got != c.want {
-			t.Errorf("decideAgreementReaction(%q, %v) = %q, want %q", c.onAgreement, c.unenforceable, got, c.want)
+		if got := decideAgreementReaction(c.onAgreement, c.unenforceable, c.wrongTarget); got != c.want {
+			t.Errorf("decideAgreementReaction(%q, %v, %v) = %q, want %q", c.onAgreement, c.unenforceable, c.wrongTarget, got, c.want)
 		}
 	}
 }

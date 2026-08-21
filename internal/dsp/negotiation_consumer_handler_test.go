@@ -414,7 +414,7 @@ func TestReactToAgreement_PicksUpAProviderPIDRecordedAfterTheHandlerReadItsRow(t
 	stale.ProviderPID = ""
 	h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
 
-	h.reactToAgreement(stale, false)
+	h.reactToAgreement(stale, false, false)
 
 	select {
 	case path := <-gotPath:
@@ -551,9 +551,16 @@ func agreementMessageJSON(n store.ConsumerNegotiation) string {
 }
 
 func agreementMessageJSONWithPermission(n store.ConsumerNegotiation, permission string) string {
+	return agreementMessageJSONWithTargetAndPermission(n, n.DatasetID, permission)
+}
+
+// agreementMessageJSONWithTargetAndPermission is agreementMessageJSON with
+// the agreement's target supplied verbatim, so the target-mismatch guard
+// test can vary the one thing it is about.
+func agreementMessageJSONWithTargetAndPermission(n store.ConsumerNegotiation, target, permission string) string {
 	return `{"@context":["` + ContextURL + `"],"@type":"` + ContractAgreementMessageType + `",` +
 		`"providerPid":"` + n.ProviderPID + `","consumerPid":"` + n.ConsumerPID + `",` +
-		`"agreement":{"@id":"` + n.ProviderPID + `","target":"` + n.DatasetID + `","permission":` + permission +
+		`"agreement":{"@id":"` + n.ProviderPID + `","target":"` + target + `","permission":` + permission +
 		`,"assigner":"x","assignee":"y","timestamp":"2026-08-15T00:00:00Z"}}`
 }
 
@@ -649,6 +656,44 @@ func TestHandleAgreement_ConstraintGuard(t *testing.T) {
 			h.handleAgreement(w, req)
 			if w.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", w.Code)
+			}
+
+			waitForConsumerState(t, st, n.ConsumerPID, c.want)
+		})
+	}
+}
+
+// TestHandleAgreement_TargetMismatchGuard pins the same "do not adopt terms
+// you did not ask for" rule as TestHandleAgreement_ConstraintGuard, applied
+// to the agreement's target instead of its permission: a provider that
+// agrees to a different dataset than the one this connector requested must
+// not be verified into, even though the message is otherwise well-formed.
+func TestHandleAgreement_TargetMismatchGuard(t *testing.T) {
+	cases := []struct {
+		name   string
+		target string
+		want   string
+	}{
+		{"target matches the requested dataset", "urn:dataset:a", StateVerified},
+		{"target names a different dataset", "urn:dataset:other", StateTerminated},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer provider.Close()
+
+			n := testConsumerNegotiationAt(provider.URL)
+			n.State = StateRequested
+			h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+			req := httptest.NewRequest("POST", "/x", strings.NewReader(agreementMessageJSONWithTargetAndPermission(n, c.target, `[]`)))
+			req.SetPathValue("id", n.ConsumerPID)
+			w := httptest.NewRecorder()
+			h.handleAgreement(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 — the guard rejects the negotiation, not the message", w.Code)
 			}
 
 			waitForConsumerState(t, st, n.ConsumerPID, c.want)

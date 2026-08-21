@@ -578,6 +578,58 @@ func (s *Store) GetAgreement(agreementID string) (Agreement, bool, error) {
 	return a, true, nil
 }
 
+// CreateAgreementIfNegotiationAgreed re-checks providerPID's negotiation
+// state and, only if it is one of allowedStates, inserts a in the same
+// transaction. It reports whether the agreement was recorded, and the state
+// the negotiation was actually found in (empty if there is no such
+// negotiation at all).
+//
+// The check and the insert run inside one *sql.Tx rather than as two
+// separate calls, and that is the whole point: Open pins this Store to a
+// single connection (SetMaxOpenConns(1)), so a transaction holds that
+// connection from the SELECT to the COMMIT, and no concurrent SetState can
+// land in between. That closes the race negotiation_handler.go's dispatch
+// used to accept in a comment — a termination arriving between the re-read
+// and the INSERT, leaving a stale agreement row for a dead negotiation.
+func (s *Store) CreateAgreementIfNegotiationAgreed(providerPID string, allowedStates []string, a Agreement) (recorded bool, currentState string, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, "", fmt.Errorf("record agreement %s: %w", a.AgreementID, err)
+	}
+	defer tx.Rollback()
+
+	err = tx.QueryRow(`SELECT state FROM negotiations WHERE provider_pid = ?`, providerPID).Scan(&currentState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", fmt.Errorf("record agreement %s: %w", a.AgreementID, err)
+	}
+
+	allowed := false
+	for _, want := range allowedStates {
+		if currentState == want {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return false, currentState, nil
+	}
+
+	if _, err := tx.Exec(
+		`INSERT INTO agreements (agreement_id, dataset_id, consumer_pid, origin, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		a.AgreementID, a.DatasetID, a.ConsumerPID, a.Origin, a.CreatedAt.UTC().Format(timeFormat),
+	); err != nil {
+		return false, currentState, fmt.Errorf("record agreement %s: %w", a.AgreementID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, currentState, fmt.Errorf("record agreement %s: %w", a.AgreementID, err)
+	}
+	return true, currentState, nil
+}
+
 // CreateTransfer persists a new transfer process.
 func (s *Store) CreateTransfer(t TransferProcess) error {
 	_, err := s.db.Exec(

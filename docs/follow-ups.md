@@ -138,45 +138,7 @@ pure move, on its own, *before* that milestone's diff lands — deliberately
 not done in the CN_C fix wave, because folding an 800-line move into the same
 commit range that fixed three data races would have obscured both.
 
-**For the transfer milestone: the consumer never checks that an inbound
-agreement's `target` is the dataset it asked for.** `handleAgreement`
-correlates by consumer pid alone, and `reactToAgreement` resolves policy from
-the stored `DatasetID`, never from the message — so a provider could agree to
-a different target than the one requested and this connector would verify it.
-Harmless today only because nothing downstream reads the agreement. Transfer
-process is exactly where an agreement stops being inert, so this closes there
-or not at all. Same family as §24.6: do not adopt terms you did not ask for.
-
 ## From the transfer process (provider, Phase A) milestone (2026-08)
-
-**That entry above is still open.** Phase A reads an agreement only to answer
-"does a row with this id exist", so a transfer still cannot notice that the
-agreement it cites covers a dataset nobody asked for. It becomes reachable in
-Phase B, where `agreements.dataset_id` decides which bytes get served.
-
-**`POST /agreements` accepts any non-empty `datasetId`, including one this
-connector does not advertise.** The TCK fixture seeds
-`urn:dataset:tck-transfer` and `test/tck/dsbox.yaml` advertises it, but the
-import would have succeeded either way — nothing cross-checks the id against
-`config.Datasets`. Harmless in Phase A, since nothing reads `dataset_id` yet.
-Phase B serves bytes by resolving that id to a configured dataset, so it has
-to decide there whether an unknown dataset is a `400` at import time or a
-failure at pull time. Importing a contract for something this connector cannot
-serve is the same defect family as §25.1, one level down.
-
-**The agreement guard's residual race is recorded only in a comment.** In
-`negotiation_handler.go`'s `outcome.pushAgreement` branch, the negotiation is
-re-read before the agreement row is inserted, so an agreement is not recorded
-for a negotiation that was terminated while the push was still retrying. A
-termination arriving *between* that re-read and the `INSERT` still leaves a
-stale agreement row behind: the negotiation ends `TERMINATED` and the
-agreements table says a contract exists. Knowingly accepted when the guard was
-written — closing it needs one transaction spanning the state write and the
-agreement insert, which is a larger change than that call site should make —
-but a defect tracked only in a code comment is not tracked. The window is
-small and the consequence is bounded today (a transfer could be started under
-an agreement whose negotiation died), and it grows in Phase B, where that row
-is what authorizes serving bytes.
 
 **The 200 ms `transferStepDelay`'s margin is measured for later steps and
 still unmeasured for the first.** The margin question was answered the hard

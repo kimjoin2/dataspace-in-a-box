@@ -469,13 +469,9 @@ func (h negotiationHandler) dispatch(n store.Negotiation, outcome negotiationOut
 		// pushAndStore is void and swallows store.ErrStateChanged, so the
 		// transition above may have been dropped in favour of a newer state —
 		// a termination that arrived while the push was still retrying, for
-		// instance. Re-read before recording: an agreement row is what the
-		// transfer protocol treats as proof a contract exists, so it must
-		// follow the state that actually landed, not the one this branch
-		// intended. A termination arriving between this Get and the INSERT
-		// below is a residual race, accepted rather than closed here — closing
-		// it needs one transaction spanning the state write and the agreement
-		// insert, which is a larger change than this call site should make.
+		// instance. The agreement row is what the transfer protocol treats as
+		// proof a contract exists, so recording it must follow the state that
+		// actually landed, not the one this branch intended.
 		//
 		// AGREED, VERIFIED, and FINALIZED are the only states reachable
 		// through a committed AGREED: handleVerification refuses to move a
@@ -484,40 +480,40 @@ func (h negotiationHandler) dispatch(n store.Negotiation, outcome negotiationOut
 		// three is proof the SetState(AGREED) above actually landed — even
 		// under Store's single connection (SetMaxOpenConns(1)), where a
 		// concurrent verification can win the connection and carry the
-		// negotiation past AGREED before this Get gets its turn. That is
+		// negotiation past AGREED before this check gets its turn. That is
 		// evidence the transition happened, not a reason to doubt it.
 		// TERMINATED stays excluded because it is genuinely ambiguous: it
 		// means either the AGREED write above never landed, or the
 		// negotiation became AGREED and was terminated afterward — and a
 		// transfer must not proceed against a dead negotiation either way,
 		// so both readings agree on skipping the record.
-		current, ok, err := h.store.Get(n.ProviderPID)
+		//
+		// The check and the insert run in one transaction
+		// (CreateAgreementIfNegotiationAgreed), not as a separate re-read
+		// followed by CreateAgreement: that closed a residual race this
+		// comment used to name and accept — a termination landing between the
+		// two, leaving a stale agreement row behind for a dead negotiation.
+		// The id is the one buildAgreementMessage puts on the wire: this
+		// negotiation's provider pid.
+		recorded, currentState, err := h.store.CreateAgreementIfNegotiationAgreed(
+			n.ProviderPID,
+			[]string{StateAgreed, StateVerified, StateFinalized},
+			store.Agreement{
+				AgreementID: n.ProviderPID,
+				DatasetID:   n.DatasetID,
+				ConsumerPID: n.ConsumerPID,
+				Origin:      store.OriginNegotiated,
+				CreatedAt:   time.Now().UTC(),
+			},
+		)
 		if err != nil {
-			slog.Error("re-read negotiation before recording agreement", "provider_pid", n.ProviderPID, "error", err)
-			return
-		}
-		agreementWasIssued := current.State == StateAgreed || current.State == StateVerified || current.State == StateFinalized
-		if !ok || !agreementWasIssued {
-			slog.Warn("negotiation state does not prove its agreement was issued",
-				"provider_pid", n.ProviderPID, "current_state", current.State)
-			return
-		}
-
-		// The agreement this connector just issued becomes a durable record, so
-		// the transfer protocol can answer "does this agreement exist" without
-		// scanning negotiations. The id is the one buildAgreementMessage puts on
-		// the wire: this negotiation's provider pid.
-		if err := h.store.CreateAgreement(store.Agreement{
-			AgreementID: n.ProviderPID,
-			DatasetID:   n.DatasetID,
-			ConsumerPID: n.ConsumerPID,
-			Origin:      store.OriginNegotiated,
-			CreatedAt:   time.Now().UTC(),
-		}); err != nil {
 			// Log and continue. The agreement has already been announced to the
 			// counterparty, so refusing to advance here would leave the two sides
 			// disagreeing about a contract that was in fact made.
 			slog.Error("record agreement", "provider_pid", n.ProviderPID, "error", err)
+		} else if !recorded {
+			slog.Warn("negotiation state does not prove its agreement was issued",
+				"provider_pid", n.ProviderPID, "current_state", currentState)
 		}
 	case outcome.pushTermination:
 		h.pushAndStore(n, StateTerminated, terminationCallbackPath, buildTerminationMessage(n))

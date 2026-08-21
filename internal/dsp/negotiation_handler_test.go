@@ -1079,3 +1079,39 @@ func TestDispatch_PushAgreement_RecordsAgreementWhenAlreadyVerified(t *testing.T
 		t.Errorf("state = %q, want VERIFIED left untouched — pushAndStore's own SetState(REQUESTED->AGREED) should have been dropped as stale", current.State)
 	}
 }
+
+// TestDispatch_PushAgreement_TerminatedLeavesNoAgreement is
+// TestDispatch_PushAgreement_RecordsAgreementWhenAlreadyVerified's negative
+// counterpart: a negotiation observed TERMINATED at the guard's check —
+// meaning either the AGREED write never landed, or it landed and was
+// terminated afterward — must leave no agreement row behind either way. Like
+// its sibling, this seeds the terminal state directly rather than racing
+// into it, for the same reason: there is no seam in production code to pause
+// dispatch between pushAndStore returning and the guard's check.
+func TestDispatch_PushAgreement_TerminatedLeavesNoAgreement(t *testing.T) {
+	fc := newFakeCallback()
+	defer fc.srv.Close()
+	h, st := newTestHandler(t, negotiationTestConfig("https://provider.example.org", config.Dataset{ID: "urn:dataset:a"}))
+
+	now := time.Now()
+	n := store.Negotiation{
+		ProviderPID: "urn:uuid:provider-already-terminated", ConsumerPID: "urn:uuid:consumer-already-terminated",
+		State: StateRequested, DatasetID: "urn:dataset:a", OfferID: "urn:dataset:a" + offerIDSuffix,
+		CallbackAddress: fc.srv.URL, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.Create(n); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := st.SetState(n.ProviderPID, StateRequested, StateTerminated, now); err != nil {
+		t.Fatalf("seed TERMINATED: %v", err)
+	}
+
+	h.dispatch(n, outcomeAgree)
+
+	fc.wait(t, "/agreement")
+	if _, ok, err := st.GetAgreement(n.ProviderPID); err != nil {
+		t.Fatalf("GetAgreement: %v", err)
+	} else if ok {
+		t.Error("GetAgreement: found a row for a negotiation observed TERMINATED — the guard should have skipped it")
+	}
+}

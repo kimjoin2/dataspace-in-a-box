@@ -247,8 +247,14 @@ func decideOfferReaction(onOffer string, unenforceable bool) string {
 // statement that it accepts those terms. It also closes the direct-agreement
 // path (`CN_C:01-04`), where a provider sends an agreement with no offer
 // ever pushed and decideOfferReaction is therefore never consulted.
-func decideAgreementReaction(onAgreement string, unenforceable bool) string {
-	if unenforceable && onAgreement == "verify" {
+//
+// wrongTarget diverts verify the same way unenforceable does: an agreement
+// naming a dataset this connector did not request is a term it did not ask
+// for, the same family §24.6 already names it never adopts — see
+// handleAgreement, which computes wrongTarget by comparing the message's
+// own target against n.DatasetID before this function is ever consulted.
+func decideAgreementReaction(onAgreement string, unenforceable, wrongTarget bool) string {
+	if (unenforceable || wrongTarget) && onAgreement == "verify" {
 		return "reject"
 	}
 	return onAgreement

@@ -1432,6 +1432,86 @@ accessor `isValid` already uses for `ValidityUntil` — and pushes a
 termination instead of the `FINALIZED` event when it is true. The gate is
 65 of 65, no exemptions, as of 2026-08-21.
 
+## 30. Three data-plane integrity gaps closed from `docs/follow-ups.md`
+
+**Decision.** Three items the transfer-process (provider, Phase A) and
+contract-negotiation (consumer) milestones deferred, closed together because
+the second was mostly a re-derivation of a decision the code had already
+made, and the third became live only once the first two were true.
+
+**30.1 A consumer-role agreement whose `target` differs from the dataset this
+connector actually requested is rejected, not verified.**
+`handleAgreement` recorded `msg.Agreement.Target` into the `agreements` row
+while `reactToAgreement` decided verify-or-reject from `n.DatasetID` — what
+this connector itself asked for in `POST /negotiations/initiate` — and the
+two were never compared. Harmless when nothing downstream read the
+agreement; live now that Phase B does (`data_handler.go`'s `datasetFor`) and
+now that `POST /transfers/initiate` starts a transfer from an agreement id
+alone (§25.1's rule, read from the consumer side). A provider that swapped
+the target could get this connector to evaluate the wrong dataset's policy
+and later fetch data under a contract it never meant to hold.
+
+The fix is `decideAgreementReaction`'s existing shape, widened by one bool:
+`unenforceable || wrongTarget` both divert `on_agreement: verify` to
+`reject`, computed in `handleAgreement` as
+`msg.Agreement.Target != n.DatasetID` and passed down alongside
+`unenforceable`, the same way §24.6 already treats "a term this connector
+did not write." The offer path (`handleOffers`/`reactToOffer`) is
+deliberately left alone: accepting an offer sends only an event referencing
+this connector's own state, so a mismatched offer target commits nothing
+durable the way a mismatched agreement target does — there was no matching
+gap to close there.
+
+*Trade-off accepted.* The agreement row still stores the message's true
+`target`, not the requested one — recording what was actually agreed to
+before recording that it was agreed, per §25.2, even on the branch that then
+rejects it. Storing the requested value instead would misrepresent the wire
+content for a debugging session that later needs to see what the provider
+actually sent.
+
+**30.2 `POST /agreements` still accepts any non-empty `datasetId` — no code
+changed, because Phase B had already answered the question the follow-up
+posed.** The follow-up asked whether an unknown `datasetId` should be a
+`400` at import time or a failure at pull time. `data_handler.go`'s
+`datasetFor` already resolves an agreement's dataset id against live
+`config.Datasets` on every pull, and answers "not configured" with a
+distinguishable `409` and its own log line — the same "config is an
+operator declaration, re-read on every request" rule `ValidityUntil`
+already follows, not a value snapshotted at negotiation or import time.
+Rejecting at import time would contradict that rule: an operator can import
+an agreement before the matching dataset is configured, or after it is
+removed and re-added, and none of that is an error either side needs to
+know about until a pull is actually attempted. This section exists to
+record that the decision was already made by existing code, so the
+follow-up entry could close without one being invented.
+
+**30.3 The provider-role agreement guard's residual race is closed by one
+transaction, not left as a documented residual.** `negotiation_handler.go`'s
+`dispatch` used to re-read a negotiation's state and then, in a second call,
+insert its agreement row — a termination landing between the two left a
+stale `agreements` row for a dead negotiation, a gap the code accepted in a
+comment rather than closed, on the reasoning that closing it "needs one
+transaction spanning the state write and the agreement insert, which is a
+larger change than this call site should make."
+
+That transaction turned out to be small: `store.Open` already pins the
+connector to a single `*sql.DB` connection
+(`SetMaxOpenConns(1)`), so a `*sql.Tx` spanning the `SELECT` and the
+`INSERT` holds that one connection from open to commit, and no concurrent
+`SetState` can land in between — the same guarantee the single-connection
+design already gives every other store method, applied across two
+statements instead of one. `Store.CreateAgreementIfNegotiationAgreed`
+replaces the two-call sequence with this one transaction; `dispatch`'s
+`pushAgreement` branch is otherwise unchanged, including which three states
+(`AGREED`, `VERIFIED`, `FINALIZED`) count as proof the agreement was
+issued.
+
+*Trade-off accepted.* None beyond what the single-connection design already
+costs elsewhere: this transaction, like every other store call, briefly
+serializes against the rest of the connector's writes. At this project's
+scale that cost was already being paid; this is the first place it is paid
+across two statements instead of one.
+
 **Rationale.** Two prior accounts of this gap were each half right and
 half wrong, corrected in order rather than by editing either:
 
