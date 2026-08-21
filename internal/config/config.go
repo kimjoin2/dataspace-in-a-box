@@ -168,6 +168,26 @@ type Dataset struct {
 	// transfer_policies is: a real deployment has no reason to advertise a
 	// dataset whose agreements it always terminates.
 	TerminateOnVerify bool `yaml:"terminate_on_verify"`
+
+	// TransferSequence configures this dataset's provider-role autonomous
+	// transfer behavior when no transfer_policies entry names the specific
+	// agreement — the fallback DECISIONS.md section 25.7 said did not exist:
+	// an agreement's dataset_id, unlike its own id, is known before it is
+	// negotiated. Same shape and same legality rules as
+	// TransferPolicy.Sequence: nil means no fallback (every dataset's
+	// behavior before this field existed), an agreement_id-keyed entry in
+	// transfer_policies always wins when both match, and an explicit empty
+	// sequence means accept and stay in REQUESTED, distinct from nil.
+	TransferSequence []string `yaml:"transfer_sequence"`
+
+	// SimulateInterruptAfterBytes truncates a non-Range data pull at this
+	// many bytes and severs the connection, for exercising resumption
+	// against a real interrupted transfer rather than a mocked one. Zero
+	// (default) disables it. A real deployment has no reason to configure
+	// this — the same "test affordance" category TerminateOnVerify and
+	// transfer_policies are already in. A request that carries Range is
+	// never truncated, regardless of this value.
+	SimulateInterruptAfterBytes int64 `yaml:"simulate_interrupt_after_bytes"`
 }
 
 // ConsumerPolicy selects this connector's autonomous reaction to what a
@@ -389,6 +409,16 @@ func (c Config) validate() error {
 		for j, s := range p.Sequence {
 			if !validTransferState[s] {
 				return fmt.Errorf("transfer_policies[%d]: sequence[%d] %q is not one of STARTED, SUSPENDED, COMPLETED, TERMINATED", i, j, s)
+			}
+		}
+	}
+	for i, d := range c.Datasets {
+		if d.SimulateInterruptAfterBytes < 0 {
+			return fmt.Errorf("datasets[%d]: simulate_interrupt_after_bytes must not be negative", i)
+		}
+		for j, s := range d.TransferSequence {
+			if !validTransferState[s] {
+				return fmt.Errorf("datasets[%d]: transfer_sequence[%d] %q is not one of STARTED, SUSPENDED, COMPLETED, TERMINATED", i, j, s)
 			}
 		}
 	}

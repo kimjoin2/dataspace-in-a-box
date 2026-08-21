@@ -576,3 +576,78 @@ func TestSourceFileMustExist(t *testing.T) {
 		t.Errorf("SourceFile = %q", cfg.Datasets[0].SourceFile)
 	}
 }
+
+func TestDatasetTransferSequenceRejectsAnUnknownState(t *testing.T) {
+	data := []byte(
+		"public_url: https://connector.example.org\n" +
+			"dev_mode: true\n" +
+			"require_auth: false\n" +
+			"participant_id: urn:participant:example\n" +
+			"data_dir: ./data\n" +
+			"datasets:\n" +
+			"  - id: urn:dataset:a\n" +
+			"    transfer_sequence: [BOGUS]\n")
+	if _, err := Load(data, func(string) string { return "" }); err == nil {
+		t.Fatal("Load: expected an error for an unknown transfer_sequence state")
+	}
+}
+
+func TestDatasetTransferSequenceAcceptsAKnownState(t *testing.T) {
+	data := []byte(
+		"public_url: https://connector.example.org\n" +
+			"dev_mode: true\n" +
+			"require_auth: false\n" +
+			"participant_id: urn:participant:example\n" +
+			"data_dir: ./data\n" +
+			"datasets:\n" +
+			"  - id: urn:dataset:a\n" +
+			"    transfer_sequence: [STARTED, SUSPENDED, STARTED, COMPLETED]\n")
+	cfg, err := Load(data, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"STARTED", "SUSPENDED", "STARTED", "COMPLETED"}
+	got := cfg.Datasets[0].TransferSequence
+	if len(got) != len(want) {
+		t.Fatalf("TransferSequence = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("TransferSequence = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestDatasetSimulateInterruptAfterBytesRejectsNegative(t *testing.T) {
+	data := []byte(
+		"public_url: https://connector.example.org\n" +
+			"dev_mode: true\n" +
+			"require_auth: false\n" +
+			"participant_id: urn:participant:example\n" +
+			"data_dir: ./data\n" +
+			"datasets:\n" +
+			"  - id: urn:dataset:a\n" +
+			"    simulate_interrupt_after_bytes: -1\n")
+	if _, err := Load(data, func(string) string { return "" }); err == nil {
+		t.Fatal("Load: expected an error for a negative simulate_interrupt_after_bytes")
+	}
+}
+
+func TestDatasetSimulateInterruptAfterBytesAcceptsAPositiveValue(t *testing.T) {
+	data := []byte(
+		"public_url: https://connector.example.org\n" +
+			"dev_mode: true\n" +
+			"require_auth: false\n" +
+			"participant_id: urn:participant:example\n" +
+			"data_dir: ./data\n" +
+			"datasets:\n" +
+			"  - id: urn:dataset:a\n" +
+			"    simulate_interrupt_after_bytes: 2000\n")
+	cfg, err := Load(data, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Datasets[0].SimulateInterruptAfterBytes != 2000 {
+		t.Errorf("SimulateInterruptAfterBytes = %d, want 2000", cfg.Datasets[0].SimulateInterruptAfterBytes)
+	}
+}

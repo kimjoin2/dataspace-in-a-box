@@ -121,6 +121,24 @@ datasets:
     # transfer_policies plays for the transfer protocol.
     # terminate_on_verify: false
 
+    # Optional. Keyed by this dataset, not by an agreement — the fallback
+    # for when no transfer_policies entry below names the specific
+    # agreement, because a negotiated agreement's id does not exist until
+    # the negotiation that produces it is already under way and so cannot
+    # be written into this file ahead of time (DECISIONS.md section 25.7).
+    # Same rules as transfer_policies' own sequence: an agreement_id match
+    # there always wins over this; an explicit empty list here means accept
+    # and stay in REQUESTED, a different thing from leaving this commented
+    # out. Uncomment to try it:
+    # transfer_sequence: [STARTED, SUSPENDED, STARTED, COMPLETED]
+
+    # Optional. Not a policy shape either — a demo/test affordance that
+    # truncates a non-Range pull at this many bytes and severs the
+    # connection, so make demo can prove resumption against a real
+    # interrupted transfer. A request carrying Range is never truncated. A
+    # real deployment has no reason to set this. Uncomment to try it:
+    # simulate_interrupt_after_bytes: 2000
+
 # Optional. Configures this connector's autonomous behavior when it is
 # negotiating as consumer (POST /negotiations/initiate), keyed by the
 # dataset_id it itself requests. An unmatched dataset_id gets every field's
