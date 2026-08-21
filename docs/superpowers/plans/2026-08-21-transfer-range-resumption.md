@@ -1015,7 +1015,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	} else {
 		flag |= os.O_TRUNC
 	}
-	out, err := os.OpenFile(partial, flag, 0o644)
+	out, err := os.OpenFile(partial, flag, 0o600)
 	if err != nil {
 		slog.Error("open download file", "path", partial, "error", err)
 		return
