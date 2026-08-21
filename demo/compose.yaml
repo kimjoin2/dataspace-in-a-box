@@ -16,6 +16,7 @@ services:
       - ./generated/provider.key:/etc/dsbox/participant.key:ro
       - ./generated/roster.json:/etc/dsbox/roster.json:ro
       - ./generated/sample.csv:/etc/dsbox/data/sample.csv:ro
+      - ./generated/sample-resume.csv:/etc/dsbox/data/sample-resume.csv:ro
     ports:
       # Both listeners are published so run.sh can drive this connector from
       # the host. The image is distroless — no shell, no wget — so there is no

@@ -57,6 +57,17 @@ id,city,population
 3,Incheon,2954000
 EOF
 
+# A larger file than sample.csv, generated the same way and for the same
+# reason — proving a transfer, not the presence of a fixture — but large
+# enough that truncating it partway through and resuming is a meaningful
+# exercise rather than a coin flip on three lines.
+: >"$gen/sample-resume.csv"
+i=1
+while [ "$i" -le 500 ]; do
+	echo "$i,row-$i,$((i * 37))" >>"$gen/sample-resume.csv"
+	i=$((i + 1))
+done
+
 echo "==> connectors"
 $compose up -d --build >/dev/null
 
@@ -142,3 +153,67 @@ echo "moved $(wc -c <"$downloaded" | tr -d ' ') bytes from provider to consumer,
 echo "under a negotiated agreement, between authenticated participants."
 echo "  sent:     $gen/sample.csv"
 echo "  received: $downloaded"
+
+echo
+echo "==> negotiate (resume scenario)"
+curl -sf -X POST http://127.0.0.1:9280/2025-1/negotiations/initiate \
+	-H "Authorization: Bearer $operator" \
+	-H 'Content-Type: application/json' \
+	-d '{"providerId":"urn:participant:provider","offerId":"urn:dataset:sample-resume#offer","datasetId":"urn:dataset:sample-resume","connectorAddress":"http://provider:8080/2025-1"}' \
+	>/dev/null
+
+echo "==> waiting for the resume-scenario agreement"
+resume_agreement=""
+i=0
+while [ "$i" -lt 40 ]; do
+	resume_agreement=$(curl -sf http://127.0.0.1:9281/agreements \
+		-H "Authorization: Bearer demo-management-token" 2>/dev/null |
+		sed -n 's/.*"agreementId":"\([^"]*\)","datasetId":"urn:dataset:sample-resume".*/\1/p' | head -1 || true)
+	[ -n "$resume_agreement" ] && break
+	i=$((i + 1))
+	sleep 1
+done
+if [ -z "$resume_agreement" ]; then
+	echo "no resume-scenario agreement was concluded" >&2
+	$compose logs >&2
+	exit 1
+fi
+echo "    agreement $resume_agreement"
+
+echo "==> transfer (resume scenario)"
+curl -sf -X POST http://127.0.0.1:9280/2025-1/transfers/initiate \
+	-H "Authorization: Bearer $operator" \
+	-H 'Content-Type: application/json' \
+	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$resume_agreement\",\"format\":\"HTTP-PULL\",\"connectorAddress\":\"http://provider:8080/2025-1\"}" \
+	>/dev/null
+
+echo "==> waiting for the resumed file"
+i=0
+resume_downloaded=""
+while [ "$i" -lt 60 ]; do
+	resume_downloaded=$(find "$gen/consumer-data/downloads" -type f ! -name '.partial-*' ! -samefile "$downloaded" 2>/dev/null | head -1 || true)
+	[ -n "$resume_downloaded" ] && break
+	i=$((i + 1))
+	sleep 1
+done
+if [ -z "$resume_downloaded" ]; then
+	echo "the resumed file never arrived" >&2
+	$compose logs >&2
+	exit 1
+fi
+
+if ! diff -q "$gen/sample-resume.csv" "$resume_downloaded" >/dev/null; then
+	echo "the resumed file does not match what was sent" >&2
+	diff "$gen/sample-resume.csv" "$resume_downloaded" >&2 || true
+	exit 1
+fi
+
+if ! $compose logs consumer 2>/dev/null | grep -q "resumed transfer data pull"; then
+	echo "the resumed file matched, but the consumer log shows no evidence the resume path actually ran" >&2
+	$compose logs consumer >&2
+	exit 1
+fi
+
+echo
+echo "resumed a deliberately interrupted $(wc -c <"$resume_downloaded" | tr -d ' ')-byte transfer"
+echo "after a real suspend/restart cycle, and the recovered file matches byte for byte."

@@ -1,4 +1,4 @@
-# The provider: advertises one dataset, and has a file behind it.
+# The provider: advertises two datasets, and has a file behind each.
 public_url: http://provider:8080
 dev_mode: true
 participant_id: urn:participant:provider
@@ -15,6 +15,10 @@ data_dir: /home/nonroot/data
 datasets:
   - id: urn:dataset:sample
     source_file: /etc/dsbox/data/sample.csv
+  - id: urn:dataset:sample-resume
+    source_file: /etc/dsbox/data/sample-resume.csv
+    simulate_interrupt_after_bytes: 2000
+    transfer_sequence: [STARTED, SUSPENDED, STARTED, COMPLETED]
 
 # No transfer_policies entry, so this agreement gets the default [STARTED]:
 # accept the request and start. That is the configuration that serves data —
