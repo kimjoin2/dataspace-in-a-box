@@ -132,6 +132,8 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	} else if !ok {
+		slog.Warn("refuse transfer request citing an agreement this connector has no record of",
+			"agreement_id", msg.AgreementID)
 		writeError(w, TransferErrorType, http.StatusBadRequest,
 			"no agreement with id "+msg.AgreementID)
 		return
