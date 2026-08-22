@@ -511,11 +511,12 @@ func (h negotiationHandler) dispatch(n store.Negotiation, outcome negotiationOut
 			n.ProviderPID,
 			[]string{StateAgreed, StateVerified, StateFinalized},
 			store.Agreement{
-				AgreementID: n.ProviderPID,
-				DatasetID:   n.DatasetID,
-				ConsumerPID: n.ConsumerPID,
-				Origin:      store.OriginNegotiated,
-				CreatedAt:   time.Now().UTC(),
+				AgreementID:    n.ProviderPID,
+				DatasetID:      n.DatasetID,
+				ConsumerPID:    n.ConsumerPID,
+				Origin:         store.OriginNegotiated,
+				CounterpartyID: n.CounterpartyID,
+				CreatedAt:      time.Now().UTC(),
 			},
 		)
 		if err != nil {

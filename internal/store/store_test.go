@@ -1044,3 +1044,34 @@ func TestCounterpartyIDRoundTripsOnEveryTable(t *testing.T) {
 		t.Errorf("consumer_transfer_processes: %q, %v", got.CounterpartyID, err)
 	}
 }
+
+func TestAgreementRoundTripsItsCounterparty(t *testing.T) {
+	t.Parallel()
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	want := Agreement{
+		AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
+		Origin: OriginNegotiated, CounterpartyID: "urn:participant:peer",
+		CreatedAt: time.Now().UTC().Truncate(time.Second),
+	}
+	if err := s.CreateAgreement(want); err != nil {
+		t.Fatalf("CreateAgreement: %v", err)
+	}
+	got, ok, err := s.GetAgreement("urn:uuid:a")
+	if err != nil || !ok {
+		t.Fatalf("GetAgreement: %v ok=%t", err, ok)
+	}
+	if got.CounterpartyID != want.CounterpartyID {
+		t.Fatalf("counterparty = %q, want %q", got.CounterpartyID, want.CounterpartyID)
+	}
+	list, err := s.ListAgreements()
+	if err != nil {
+		t.Fatalf("ListAgreements: %v", err)
+	}
+	if len(list) != 1 || list[0].CounterpartyID != want.CounterpartyID {
+		t.Fatalf("ListAgreements gave %+v", list)
+	}
+}

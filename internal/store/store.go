@@ -93,7 +93,16 @@ type Agreement struct {
 	// not happen here.
 	ConsumerPID string
 	Origin      string
-	CreatedAt   time.Time
+	// CounterpartyID is the participant this agreement is with, recorded so a
+	// message citing it can be checked against who sent it. Role-relative like
+	// the same column on the exchange tables: for a negotiated agreement it is
+	// the consumer, for one this connector accepted as consumer it is the
+	// provider, and for an imported one it is whoever the operator named.
+	// Empty means not known — an agreement imported before this column existed,
+	// or one imported without naming a counterparty — and is permitted rather
+	// than refused. See the design spec's section 4.2.
+	CounterpartyID string
+	CreatedAt      time.Time
 }
 
 // How an agreement came to be. Stored rather than inferred: the difference
@@ -156,11 +165,12 @@ CREATE TABLE IF NOT EXISTS consumer_negotiations (
 
 const agreementSchema = `
 CREATE TABLE IF NOT EXISTS agreements (
-    agreement_id TEXT PRIMARY KEY,
-    dataset_id   TEXT NOT NULL,
-    consumer_pid TEXT NOT NULL DEFAULT '',
-    origin       TEXT NOT NULL,
-    created_at   TEXT NOT NULL
+    agreement_id    TEXT PRIMARY KEY,
+    dataset_id      TEXT NOT NULL,
+    consumer_pid    TEXT NOT NULL DEFAULT '',
+    origin          TEXT NOT NULL,
+    counterparty_id TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL
 );`
 
 const transferSchema = `
@@ -283,7 +293,7 @@ func migrate(db *sql.DB) error {
 	// exchanges predate anyone to address.
 	for _, table := range []string{
 		"negotiations", "consumer_negotiations",
-		"transfer_processes", "consumer_transfer_processes",
+		"transfer_processes", "consumer_transfer_processes", "agreements",
 	} {
 		if err := addColumnIfMissing(db, table, "counterparty_id",
 			`ALTER TABLE `+table+` ADD COLUMN counterparty_id TEXT NOT NULL DEFAULT ''`); err != nil {
@@ -545,9 +555,9 @@ func (s *Store) explainNoConsumerUpdate(consumerPID, want string) error {
 // covers.
 func (s *Store) CreateAgreement(a Agreement) error {
 	_, err := s.db.Exec(
-		`INSERT INTO agreements (agreement_id, dataset_id, consumer_pid, origin, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		a.AgreementID, a.DatasetID, a.ConsumerPID, a.Origin,
+		`INSERT INTO agreements (agreement_id, dataset_id, consumer_pid, origin, counterparty_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		a.AgreementID, a.DatasetID, a.ConsumerPID, a.Origin, a.CounterpartyID,
 		a.CreatedAt.UTC().Format(timeFormat),
 	)
 	if err != nil {
@@ -562,9 +572,9 @@ func (s *Store) GetAgreement(agreementID string) (Agreement, bool, error) {
 	var a Agreement
 	var createdAt string
 	err := s.db.QueryRow(
-		`SELECT agreement_id, dataset_id, consumer_pid, origin, created_at
+		`SELECT agreement_id, dataset_id, consumer_pid, origin, counterparty_id, created_at
 		 FROM agreements WHERE agreement_id = ?`, agreementID,
-	).Scan(&a.AgreementID, &a.DatasetID, &a.ConsumerPID, &a.Origin, &createdAt)
+	).Scan(&a.AgreementID, &a.DatasetID, &a.ConsumerPID, &a.Origin, &a.CounterpartyID, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agreement{}, false, nil
 	}
@@ -618,9 +628,9 @@ func (s *Store) CreateAgreementIfNegotiationAgreed(providerPID string, allowedSt
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO agreements (agreement_id, dataset_id, consumer_pid, origin, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		a.AgreementID, a.DatasetID, a.ConsumerPID, a.Origin, a.CreatedAt.UTC().Format(timeFormat),
+		`INSERT INTO agreements (agreement_id, dataset_id, consumer_pid, origin, counterparty_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		a.AgreementID, a.DatasetID, a.ConsumerPID, a.Origin, a.CounterpartyID, a.CreatedAt.UTC().Format(timeFormat),
 	); err != nil {
 		return false, currentState, fmt.Errorf("record agreement %s: %w", a.AgreementID, err)
 	}
@@ -835,7 +845,7 @@ func (s *Store) SetConsumerTransferProviderPID(consumerPID, providerPID string, 
 // agreement list large enough to need paging is a problem worth having first.
 func (s *Store) ListAgreements() ([]Agreement, error) {
 	rows, err := s.db.Query(
-		`SELECT agreement_id, dataset_id, consumer_pid, origin, created_at
+		`SELECT agreement_id, dataset_id, consumer_pid, origin, counterparty_id, created_at
 		 FROM agreements ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list agreements: %w", err)
@@ -846,7 +856,7 @@ func (s *Store) ListAgreements() ([]Agreement, error) {
 	for rows.Next() {
 		var a Agreement
 		var created string
-		if err := rows.Scan(&a.AgreementID, &a.DatasetID, &a.ConsumerPID, &a.Origin, &created); err != nil {
+		if err := rows.Scan(&a.AgreementID, &a.DatasetID, &a.ConsumerPID, &a.Origin, &a.CounterpartyID, &created); err != nil {
 			return nil, fmt.Errorf("list agreements: %w", err)
 		}
 		if a.CreatedAt, err = time.Parse(timeFormat, created); err != nil {

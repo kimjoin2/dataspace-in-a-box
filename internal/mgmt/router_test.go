@@ -5,8 +5,10 @@ package mgmt
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
@@ -220,5 +222,77 @@ func TestPostAgreementsDuplicateIs409(t *testing.T) {
 	}
 	if code := post(); code != http.StatusConflict {
 		t.Errorf("second POST with the same id = %d, want 409", code)
+	}
+}
+
+func TestImportAgreementRecordsAnOptionalCounterparty(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, body, want string }{
+		{"named", `{"agreementId":"urn:uuid:a","datasetId":"urn:dataset:a","counterpartyId":"urn:participant:peer"}`, "urn:participant:peer"},
+		{"omitted", `{"agreementId":"urn:uuid:b","datasetId":"urn:dataset:a"}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.Open(":memory:")
+			if err != nil {
+				t.Fatalf("store.Open: %v", err)
+			}
+			t.Cleanup(func() { st.Close() })
+			h := NewRouter(config.Config{MgmtToken: "t"}, st)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/agreements", strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer t")
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+			}
+			var id string
+			if tc.name == "named" {
+				id = "urn:uuid:a"
+			} else {
+				id = "urn:uuid:b"
+			}
+			a, ok, err := st.GetAgreement(id)
+			if err != nil || !ok {
+				t.Fatalf("GetAgreement: %v ok=%t", err, ok)
+			}
+			if a.CounterpartyID != tc.want {
+				t.Fatalf("counterparty = %q, want %q", a.CounterpartyID, tc.want)
+			}
+		})
+	}
+}
+
+// TestGetAgreementsKeepsAgreementIdAdjacentToDatasetId pins agreementView's
+// JSON field order. demo/run.sh's resume round extracts its agreement id
+// with a sed that requires "agreementId" and "datasetId" to sit back-to-back
+// in the response body:
+//
+//	sed -n 's/.*"agreementId":"\([^"]*\)","datasetId":"...".*/\1/p'
+//
+// Nothing else in this codebase would catch a future reordering of
+// agreementView's fields (such as inserting counterpartyId between them) —
+// the only symptom would be `make demo` failing with "no resume-scenario
+// agreement was concluded", a message that points nowhere near this file.
+func TestGetAgreementsKeepsAgreementIdAdjacentToDatasetId(t *testing.T) {
+	h, st := newTestRouter(t)
+	if err := st.CreateAgreement(store.Agreement{
+		AgreementID: "urn:uuid:order", DatasetID: "urn:dataset:order",
+		Origin: store.OriginImported, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateAgreement: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/agreements", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /agreements = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	matched, err := regexp.MatchString(`"agreementId":"[^"]*","datasetId":"[^"]*"`, rec.Body.String())
+	if err != nil {
+		t.Fatalf("regexp: %v", err)
+	}
+	if !matched {
+		t.Fatalf("agreementId and datasetId are not adjacent in the response body: %s", rec.Body.String())
 	}
 }

@@ -92,8 +92,9 @@ type agreementHandler struct {
 // general management CRUD surface.
 func (h agreementHandler) importAgreement(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		AgreementID string `json:"agreementId"`
-		DatasetID   string `json:"datasetId"`
+		AgreementID    string `json:"agreementId"`
+		DatasetID      string `json:"datasetId"`
+		CounterpartyID string `json:"counterpartyId"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgreementBodyBytes)).Decode(&body); err != nil {
 		http.Error(w, "malformed request body", http.StatusBadRequest)
@@ -105,10 +106,11 @@ func (h agreementHandler) importAgreement(w http.ResponseWriter, r *http.Request
 	}
 
 	err := h.store.CreateAgreement(store.Agreement{
-		AgreementID: body.AgreementID,
-		DatasetID:   body.DatasetID,
-		Origin:      store.OriginImported,
-		CreatedAt:   time.Now().UTC(),
+		AgreementID:    body.AgreementID,
+		DatasetID:      body.DatasetID,
+		Origin:         store.OriginImported,
+		CounterpartyID: body.CounterpartyID,
+		CreatedAt:      time.Now().UTC(),
 	})
 	if err != nil {
 		// A duplicate is the one failure a caller can act on. Everything else
@@ -152,10 +154,11 @@ func (h agreementHandler) listAgreements(w http.ResponseWriter, r *http.Request)
 	out := make([]agreementView, 0, len(agreements))
 	for _, a := range agreements {
 		out = append(out, agreementView{
-			AgreementID: a.AgreementID,
-			DatasetID:   a.DatasetID,
-			Origin:      a.Origin,
-			CreatedAt:   a.CreatedAt.UTC().Format(time.RFC3339Nano),
+			AgreementID:    a.AgreementID,
+			DatasetID:      a.DatasetID,
+			Origin:         a.Origin,
+			CreatedAt:      a.CreatedAt.UTC().Format(time.RFC3339Nano),
+			CounterpartyID: a.CounterpartyID,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -172,4 +175,10 @@ type agreementView struct {
 	DatasetID   string `json:"datasetId"`
 	Origin      string `json:"origin"`
 	CreatedAt   string `json:"createdAt"`
+	// CounterpartyID is declared last, after CreatedAt, on purpose: Go emits
+	// struct fields in declaration order, and demo/run.sh's resume round
+	// extracts its agreement with a sed that requires agreementId and
+	// datasetId to stay adjacent in the JSON body. Putting this field between
+	// them would break that extraction.
+	CounterpartyID string `json:"counterpartyId"`
 }

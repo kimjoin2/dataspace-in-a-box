@@ -264,11 +264,12 @@ func (h negotiationHandler) handleAgreement(w http.ResponseWriter, r *http.Reque
 	// No TCK test covers this path — the TP_C suite cites seeded agreements
 	// and never negotiates one — so its only evidence is a unit test.
 	if err := h.store.CreateAgreement(store.Agreement{
-		AgreementID: msg.Agreement.ID,
-		DatasetID:   msg.Agreement.Target,
-		ConsumerPID: n.ConsumerPID,
-		Origin:      store.OriginAgreed,
-		CreatedAt:   time.Now(),
+		AgreementID:    msg.Agreement.ID,
+		DatasetID:      msg.Agreement.Target,
+		ConsumerPID:    n.ConsumerPID,
+		Origin:         store.OriginAgreed,
+		CounterpartyID: n.CounterpartyID,
+		CreatedAt:      time.Now(),
 	}); err != nil {
 		slog.Error("record accepted agreement",
 			"consumer_pid", n.ConsumerPID, "agreement_id", msg.Agreement.ID, "error", err)
