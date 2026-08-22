@@ -451,7 +451,7 @@ that combination is now a refusal and the test's fixture needs an issuer.
 - [ ] **Step 10: Mutation-test each of the five points**
 
 For each of the five insertion points in turn: delete the check, run
-`go test ./internal/dsp/ -run 'RefusesAStranger'`, confirm a **named** subtest
+`go test ./internal/dsp/ -run 'Stranger'`, confirm a **named** subtest
 fails, restore it. Five deletions, five named failures.
 
 - [ ] **Step 11: Confirm the TCK is unmoved**
