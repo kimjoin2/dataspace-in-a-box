@@ -564,3 +564,27 @@ func TestFinalizedEventLegalFrom(t *testing.T) {
 		}
 	}
 }
+
+// assignee names the party the rights are granted to. Since connector
+// authentication, that party has a verified identity on the negotiation row.
+func TestAgreementAssigneeIsTheVerifiedCounterparty(t *testing.T) {
+	t.Parallel()
+	n := testStoredNegotiation()
+	n.CounterpartyID = testPeer
+	msg := buildAgreementMessage(config.Config{ParticipantID: testSelf}, n)
+	if msg.Agreement.Assignee != testPeer {
+		t.Fatalf("assignee = %q, want %q", msg.Agreement.Assignee, testPeer)
+	}
+}
+
+// With authentication off there is no verified identity, and the field is
+// required to be present. The consumer pid remains the honest placeholder.
+func TestAgreementAssigneeFallsBackWithoutAuth(t *testing.T) {
+	t.Parallel()
+	n := testStoredNegotiation()
+	n.CounterpartyID = ""
+	msg := buildAgreementMessage(config.Config{ParticipantID: testSelf}, n)
+	if msg.Agreement.Assignee != n.ConsumerPID {
+		t.Fatalf("assignee = %q, want %q", msg.Agreement.Assignee, n.ConsumerPID)
+	}
+}

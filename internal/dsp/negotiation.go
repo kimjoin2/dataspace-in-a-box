@@ -317,14 +317,15 @@ type OfferMessage struct {
 // rejected an Agreement missing them with "required property 'assignee' not
 // found, required property 'assigner' not found"). assigner is this
 // connector's own config.Config.ParticipantID — the party granting the
-// rights. assignee is the counterparty being granted them, but v1's
-// negotiation messages carry no participant identifier for the consumer
+// rights. assignee is the counterparty being granted them. v1's negotiation
+// messages still carry no participant identifier for the consumer
 // (ContractRequestMessage has only consumerPid, offer, callbackAddress —
-// checked against the TCK's own contract-request-message-schema.json), and
-// negotiation is unauthenticated in v1 same as the catalog protocol, so
-// there is no participant identity to put here even from a trust boundary.
-// n.ConsumerPID is the best available per-negotiation identifier for "this
-// specific consumer" and is used as an honest placeholder.
+// checked against the TCK's own contract-request-message-schema.json), but
+// since connector authentication (DECISIONS.md section 27) the identity is
+// available from the transport: the request that opened the negotiation was
+// verified against the roster and its issuer is on the row. n.ConsumerPID
+// survives only as the fallback for a connector running with authentication
+// off, where there is no verified identity to name.
 type Agreement struct {
 	ID         string       `json:"@id"`
 	Type       string       `json:"@type"`
@@ -435,6 +436,14 @@ func buildOfferMessage(cfg config.Config, n store.Negotiation) OfferMessage {
 // n.DatasetID's own ValidityUntil, the same accessor isValid uses.
 func buildAgreementMessage(cfg config.Config, n store.Negotiation) AgreementMessage {
 	ds, _ := findConfiguredDataset(cfg, n.DatasetID)
+	// The party the rights are granted to. Since connector authentication
+	// (DECISIONS.md section 27) that party has a verified identity on the
+	// negotiation row; with authentication off there is none, and the consumer
+	// pid remains the placeholder it always was.
+	assignee := n.CounterpartyID
+	if assignee == "" {
+		assignee = n.ConsumerPID
+	}
 	return AgreementMessage{
 		Context:     []string{ContextURL},
 		ID:          newMessageID(),
@@ -447,7 +456,7 @@ func buildAgreementMessage(cfg config.Config, n store.Negotiation) AgreementMess
 			Target:     n.DatasetID,
 			Permission: buildPermission(ds.ValidityUntil),
 			Assigner:   cfg.ParticipantID,
-			Assignee:   n.ConsumerPID,
+			Assignee:   assignee,
 			Timestamp:  time.Now().UTC().Format(time.RFC3339),
 		},
 		CallbackAddress: cfg.PublicURL + VersionPath,
