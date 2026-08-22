@@ -37,11 +37,13 @@ type Negotiation struct {
 	// negotiation_handler.go's handleReRequest doc comment for the rule
 	// this field enforces.
 	Rerequested bool
-	// CounterpartyID is the participant this row is with, recorded so an
-	// outbound message can be addressed to them. It comes from the
-	// authenticated request that created the row, or from the initiate call
-	// that started it — the only two honest sources. Empty on rows written
-	// before authentication existed.
+	// CounterpartyID is the participant this row is with. It comes from the
+	// verified issuer of the authenticated request that created the row, which
+	// makes it two things rather than one: the address an outbound message is
+	// sent to, and the anchor an inbound message about this exchange is
+	// authorized against (auth_middleware.go's refuseIfNotParty, and
+	// DECISIONS.md section 32.3). Empty on rows written before authentication
+	// existed.
 	CounterpartyID string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -65,10 +67,11 @@ type ConsumerNegotiation struct {
 	DatasetID       string
 	OfferID         string
 	// CounterpartyID is the participant this row is with, recorded so an
-	// outbound message can be addressed to them. It comes from the
-	// authenticated request that created the row, or from the initiate call
-	// that started it — the only two honest sources. Empty on rows written
-	// before authentication existed.
+	// outbound message can be addressed to them. Addressing only: it comes
+	// from the providerId of an operator's own initiate call, a string the
+	// caller chose rather than an identity this connector verified, so nothing
+	// authorizes an inbound request against it — DECISIONS.md section 32.3.
+	// Empty on rows written before authentication existed.
 	CounterpartyID string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -88,9 +91,13 @@ type ConsumerNegotiation struct {
 type Agreement struct {
 	AgreementID string
 	DatasetID   string
-	// ConsumerPID is the counterparty of a negotiated agreement. An imported
-	// agreement may have none, because the negotiation that produced it did
-	// not happen here.
+	// ConsumerPID is the consumer pid of the negotiation that produced this
+	// agreement — an internal correlation id, not a participant. Who the
+	// agreement is with is CounterpartyID below; before that column existed
+	// this field was the closest thing to it, which is why it used to be
+	// described as the counterparty. An imported agreement may have no
+	// consumer pid, because the negotiation that produced it did not happen
+	// here.
 	ConsumerPID string
 	Origin      string
 	// CounterpartyID is the participant this agreement is with, recorded so a
@@ -128,11 +135,13 @@ type TransferProcess struct {
 	State           string
 	CallbackAddress string
 	Format          string
-	// CounterpartyID is the participant this row is with, recorded so an
-	// outbound message can be addressed to them. It comes from the
-	// authenticated request that created the row, or from the initiate call
-	// that started it — the only two honest sources. Empty on rows written
-	// before authentication existed.
+	// CounterpartyID is the participant this row is with. It comes from the
+	// verified issuer of the authenticated request that created the row, which
+	// makes it two things rather than one: the address an outbound message is
+	// sent to, and the anchor an inbound message about this exchange is
+	// authorized against (auth_middleware.go's refuseIfNotParty, and
+	// DECISIONS.md section 32.3). Empty on rows written before authentication
+	// existed.
 	CounterpartyID string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -735,10 +744,11 @@ type ConsumerTransfer struct {
 	Format          string
 	State           string
 	// CounterpartyID is the participant this row is with, recorded so an
-	// outbound message can be addressed to them. It comes from the
-	// authenticated request that created the row, or from the initiate call
-	// that started it — the only two honest sources. Empty on rows written
-	// before authentication existed.
+	// outbound message can be addressed to them. Addressing only: it comes
+	// from the providerId of an operator's own initiate call, a string the
+	// caller chose rather than an identity this connector verified, so nothing
+	// authorizes an inbound request against it — DECISIONS.md section 32.3.
+	// Empty on rows written before authentication existed.
 	CounterpartyID string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time

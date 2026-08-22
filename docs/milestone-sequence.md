@@ -11,8 +11,13 @@ dependency order — is what sets the sequence.
 
 ## What has been done since this was written
 
-Milestones 1 and 2 are complete, and both confirmed the reasoning that put
-them in this order.
+**All four milestones below are complete, and three more shipped that this
+document never listed.** That is the reason to correct it in place: the section
+after this one is still the argument that ordered the work, and it should not
+keep reading as the current plan.
+
+Milestones 1 and 2 came first, and both confirmed the reasoning that put them
+in this order.
 
 **1. Connector authentication** (2026-08-19). Every DSP route except the
 version document requires an EdDSA credential from a roster participant.
@@ -36,8 +41,65 @@ anyone. The data endpoint's authorization is now three checks against a
 credential that already existed, and it needed no second token type precisely
 because authentication came first.
 
-Milestones 3 and 4 are unchanged and still ahead. What follows is the original
-argument, kept as written.
+**3. Policy constraints** (2026-08-19). `DECISIONS.md` §26. A dataset's
+`validity_until` became a real ODRL constraint on its offer and its agreement,
+and the data plane re-checks it on every pull rather than once at `AGREED`. The
+prediction below — that the TCK would be a regression guard rather than
+evidence, because the CN suites negotiate unconstrained offers — held, with one
+correction §26.5 records: three CN tests already used an expired dataset, so
+they were the first ever to see a constraint this connector put on the wire,
+and they had to be re-run for that specifically rather than covered by the
+aggregate count.
+
+**4. `CN:02-07`** (2026-08-21). `DECISIONS.md` §29. The last exemption closed
+and the gate reached 65 of 65 with none tracked. It also cost more than "a
+single exempted test" below implies: the test was failing on a config gap
+unrelated to termination, and finding that meant decompiling the pinned image's
+own test methods (§29.2).
+
+Three more shipped that this document did not plan, listed because a sequence
+document that omits shipped work stops being usable as one.
+
+**Roster signing and `did:web` resolution** (2026-08-20, `DECISIONS.md` §27).
+Milestone 1 left the roster trusted only because it sat on the right disk. §27
+signs it and adds a real resolver. It belongs on this list rather than inside
+milestone 1: that milestone's own spec named it as the prerequisite for
+distributing a roster at all, and deferred it.
+
+**Transfer `Range` and resumption** (2026-08-21, `DECISIONS.md` §31). An
+interrupted pull resumes instead of starting over. Verified by a second `make
+demo` round rather than by the TCK — the same "no test moves a byte" finding
+that shaped milestone 2, arriving a second time.
+
+**Exchange authorization** (2026-08-23, `DECISIONS.md` §32). Authentication
+settled *that* a caller is admitted; this settled *which* exchange an admitted
+caller may act on. It could not have come earlier — it compares an inbound
+request against a verified identity, and there was no verified identity to
+compare against until milestone 1 — which is the same "do the step that makes
+the next one safe, first" argument arriving at its own consequence.
+
+**Its verification situation is milestone 1's, not milestone 2's, and that is
+worth being exact about.** No TCK test sends a message about another
+participant's exchange, so the suite never sees a refusal: `make tck` is a
+regression gate, and the evidence is unit tests — milestone 3's framing,
+milestone 1's shape ("unauthenticated rejection is the half the TCK cannot
+show"). What it is not is milestone 2's situation, which needed a new harness
+built as part of the milestone; this one needed none, because a suite that
+already exists covers the pass side.
+
+That pass-side coverage is uneven, though, which is worth saying rather than
+rounding off. The five exchange checks and the refusal to serve as provider
+under a consumer-role agreement are exercised on every run. The agreement's
+counterparty comparison is not exercised at all: the twelve agreements
+`test/tck/run.sh` seeds carry no owner, so the suite only ever takes that
+check's empty-permitted branch, and `make demo` is the only thing that puts a
+matching non-empty counterparty through it.
+
+The regression risk was concrete enough to specify before writing: a check
+placed on the wrong side of the transfer lookup's consumer branch compiles,
+reads correctly, and silently refuses all fifteen `TP_C` results.
+
+What follows is the original argument, kept as written.
 
 ## Where this stood when this was written
 
@@ -94,7 +156,7 @@ from unit tests.
 
 ## The order
 
-### 1. Connector authentication
+### 1. Connector authentication — done, `DECISIONS.md` §§9-10, 27
 
 First, for three reasons that point the same way.
 
@@ -138,7 +200,7 @@ Still open: whether outbound authentication ships in the same milestone.
 The TCK's mock endpoints do not verify what this connector sends, so that half
 is untestable by the harness and rests on unit tests either way.
 
-### 2. The data plane (Phase B, HTTP-PULL)
+### 2. The data plane (Phase B, HTTP-PULL) — done, `DECISIONS.md` §§25-26, 31
 
 Second, because it is the milestone that turns a protocol implementation into
 something that does the thing a dataspace is for — and because it is much
@@ -160,7 +222,7 @@ Also settle what a `dataAddress` contains and how long its authorization
 lives, which is where milestone 1's credential design gets extended rather
 than reinvented.
 
-### 3. Policy constraints
+### 3. Policy constraints — done, `DECISIONS.md` §26
 
 Third. It can technically be built at any point, because constraint
 evaluation happens during negotiation and is observable without a data plane.
@@ -172,7 +234,7 @@ Doing it third also means the enforcement point already exists, so "evaluated"
 and "enforced" can be the same change rather than two milestones apart — which
 is what `CLAUDE.md`'s rule actually asks for.
 
-### 4. `CN:02-07`
+### 4. `CN:02-07` — done, `DECISIONS.md` §29
 
 Last, and optional. It is a single exempted test, tracked with its reason in
 `cmd/tckgate/main.go` and `docs/follow-ups.md`. Closing it takes the gate to

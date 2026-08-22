@@ -366,8 +366,9 @@ func (h negotiationHandler) handleGetNegotiation(w http.ResponseWriter, r *http.
 	writeError(w, ContractNegotiationErrorType, http.StatusNotFound, "no negotiation with id "+id)
 }
 
-// lookup resolves {id} to a stored *provider-role* negotiation, writing the
-// appropriate error response and returning ok=false if it cannot.
+// lookup resolves {id} to a stored *provider-role* negotiation, refuses a
+// caller that is not party to it, and writes the appropriate error response,
+// returning ok=false in either case.
 //
 // After this milestone's role-dispatch routing, only handleReRequest and
 // handleVerification use it. Those two serve the messages DSP sends
@@ -377,7 +378,9 @@ func (h negotiationHandler) handleGetNegotiation(w http.ResponseWriter, r *http.
 // consumer table before concluding {id} is unknown, so each does its own
 // two-table lookup and dispatches on which one answered (see handleEvent's
 // doc comment). handleOffers and handleAgreement are consumer-role only and
-// call GetConsumer directly.
+// call GetConsumer directly — and carry no ownership check, deliberately: a
+// row they resolve can only be consumer-role, whose counterparty this
+// connector never verified (DECISIONS.md section 32.3).
 func (h negotiationHandler) lookup(w http.ResponseWriter, r *http.Request) (store.Negotiation, bool, error) {
 	providerPID := r.PathValue("id")
 	n, ok, err := h.store.Get(providerPID)

@@ -120,13 +120,16 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// The agreement is looked up by its id alone. An imported agreement
-	// deliberately carries no consumer pid — the negotiation that produced it
-	// did not happen here (store.Agreement's own doc comment) — so also
-	// requiring the request's consumerPid to match would reject every
-	// imported agreement, which is exactly the case this endpoint exists to
-	// serve. An unknown id is a 400: this connector does not start a transfer
-	// under a contract it has no record of.
+	// The agreement is resolved by its id and then checked twice below: it must
+	// not be one this connector holds as consumer, and, when it names a
+	// counterparty, that counterparty must be who sent this request
+	// (DECISIONS.md section 32). What is still not required is the request's
+	// consumerPid. An imported agreement deliberately carries no consumer pid
+	// — the negotiation that produced it did not happen here
+	// (store.Agreement's own doc comment) — so requiring it to match would
+	// reject every imported agreement, which is exactly the case this endpoint
+	// exists to serve. An unknown id is a 400: this connector does not start a
+	// transfer under a contract it has no record of.
 	a, ok, err := h.store.GetAgreement(msg.AgreementID)
 	if err != nil {
 		slog.Error("get agreement", "agreement_id", msg.AgreementID, "error", err)
@@ -157,6 +160,17 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 	// takes it optionally, and the TCK seeds twelve without one — so an
 	// unnamed owner has to keep meaning "not known" rather than "nobody". That
 	// leaves imports without a named counterparty exactly as open as they were.
+	//
+	// Removing the a.CounterpartyID != "" clause is not a tightening, it is a
+	// 15-test failure: test/tck/run.sh seeds those twelve through
+	// POST /agreements with no counterpartyId, and every TP transfer request
+	// cites one of them. Fifteen and not thirty, because this is the
+	// provider-role intake — in TP_C this connector is the consumer and the
+	// TCK never posts here. Thirty is the cost of a different mistake:
+	// dropping the seeded rows entirely, or a deny-on-empty general enough to
+	// also reach handleTransferInitiate's agreement gate, which is the one
+	// TP_C goes through. Spelled out so the consequence does not have to be
+	// rediscovered by deleting the clause.
 	if issuer := issuerFrom(r); h.cfg.AuthRequired() && a.CounterpartyID != "" && issuer != a.CounterpartyID {
 		slog.Warn("refuse transfer request citing an agreement with another participant",
 			"agreement_id", msg.AgreementID, "issuer", issuer, "expected", a.CounterpartyID)
@@ -564,13 +578,24 @@ func (r resolvedTransfer) id() string {
 	return r.ProviderPID
 }
 
-// lookup resolves {id} to a stored transfer in either role, writing the
-// appropriate error response and returning ok=false if it cannot.
+// lookup resolves {id} to a stored transfer in either role, refuses a caller
+// that is not party to a provider-role one, and writes the appropriate error
+// response, returning ok=false in either case.
 //
-// The consumer table is tried first, which is the order handleEvent,
-// handleTermination, and handleGetNegotiation already established for
-// negotiations. Both id spaces are independently generated UUIDs, so a row
-// can only be in one of them.
+// The consumer table is tried first. That is this function's own order and not
+// a shared convention: the three negotiation handlers that dispatch on role —
+// handleEvent, handleTermination, handleGetNegotiation — try the *provider*
+// table first. Either order is correct, because both id spaces are
+// independently generated UUIDs and a row can only be in one of them; this
+// comment used to claim the order was shared, which it never was.
+//
+// The refusal is placed after GetTransfer succeeds, which is after the
+// consumer branch above has already returned. That placement is the whole of
+// it: resolvedTransfer carries CounterpartyID for consumer rows too, so the
+// same comparison written against the value this function returns would
+// compile, read correctly, and refuse every consumer-role transfer the TCK
+// drives. See refuseIfNotParty's doc comment and DECISIONS.md section 32.3 for
+// why a consumer-role counterparty is not something to authorize against.
 //
 // {id} is a pid this connector generated itself — the provider pid it
 // returned in the acknowledgment to POST /transfers/request, or the consumer

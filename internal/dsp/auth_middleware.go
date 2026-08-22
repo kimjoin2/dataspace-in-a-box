@@ -90,8 +90,8 @@ func cutBearer(header string) (string, bool) {
 // 403, not 404: DECISIONS.md section 25.1 makes every DSP rejection
 // [400, 500) and never 404, because the counterparty's client checks for 404
 // before it checks whether an error was expected and aborts the whole
-// exchange on one. This is the same answer, and the same wording, the data
-// endpoint already gives.
+// exchange on one. This is the same answer, and the same register, the data
+// endpoint already gives — its own string is "this transfer is not yours".
 //
 // No empty-stored clause, matching handleData: a row with no counterparty
 // predates authentication and is served to nobody. The agreement check in

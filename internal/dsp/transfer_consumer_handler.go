@@ -38,11 +38,16 @@ type transferInitiateBody struct {
 // blocking the response on a network call would make the hook's latency
 // depend on the counterparty.
 //
-// Unauthenticated, on the public listener, exactly like
-// /negotiations/initiate and for the reason that endpoint's doc comment
-// gives: this is the TCK-shaped hook, not a management feature. Until a real
-// management trigger exists, it is also this connector's only way to start a
-// transfer as consumer.
+// On the public listener, exactly like /negotiations/initiate and for the
+// reason that endpoint's doc comment gives: this is the TCK-shaped hook, not a
+// management feature. It is not exempt from authentication — §27 put every DSP
+// route but the version document behind a participant credential — so with
+// require_auth on it is reachable by any roster participant, and only with it
+// off by anyone. It still gets no ownership check of its own, and
+// DECISIONS.md section 32.3 records why: its caller is this connector's own
+// operator, and the only values there are to compare are ones nobody
+// verified. Until a real management trigger exists, it is also this
+// connector's only way to start a transfer as consumer.
 func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.Request) {
 	var body transferInitiateBody
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes))
@@ -56,9 +61,10 @@ func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.R
 		return
 	}
 	// The rejection reason is logged, not echoed — validateOutgoingCallback
-	// reports which address a hostname resolved to, and this endpoint is open
-	// to anonymous callers, so returning that text would make it a
-	// name-resolution oracle for the network this connector sits on.
+	// reports which address a hostname resolved to, and this endpoint is
+	// reachable by any roster participant (by anyone with require_auth off),
+	// so returning that text would make it a name-resolution oracle for the
+	// network this connector sits on.
 	if err := validateOutgoingCallback(body.ConnectorAddress); err != nil {
 		slog.Warn("reject transfer initiate", "connector_address", body.ConnectorAddress, "error", err)
 		writeError(w, TransferErrorType, http.StatusBadRequest,

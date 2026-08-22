@@ -657,8 +657,8 @@ choice with a cost on the other side. Recorded here because reintroducing a
 large value by copying an upstream sample number without checking its unit
 is an easy mistake to make twice.
 
-**23.11 Negotiation endpoints stay unauthenticated in v1, and the provider
-pid is accepted as the only thing protecting a negotiation.** §10's
+**23.11 Negotiation endpoints ship unauthenticated (until §27), and the
+provider pid is accepted as the only thing protecting a negotiation.** §10's
 connector-to-connector JWT is specified but not yet enforced on the DSP
 listener, so every endpoint this milestone adds is open, exactly as the
 catalog endpoints are. That posture was settled for a *read-only* protocol.
@@ -683,6 +683,13 @@ against such a check — spending that verified state on a defense nobody asked
 for is the wrong trade at this milestone. Both consequences are future work,
 and both are properly closed by enforcing §10's connector-to-connector JWT on
 this listener, not by patching the handlers one field at a time.
+
+**Corrected by §32: that prediction was tested and was wrong.** The JWT
+shipped in §27 and narrowed the attacker set from anyone on the network to any
+roster participant, which closed neither consequence — a roster is shared by
+strangers. The handlers were checked one field at a time after all. The rest of
+this section, including the reason the cross-check was not spent at this
+milestone, stands as written.
 
 **23.12 State transitions are compare-and-swap, but the push still happens
 *before* the state is written, not after.** Two halves, and the second one is
@@ -752,9 +759,9 @@ needed a consumer-table twin rather than being reused — it hard-codes a
 lookup against `negotiations`, and sharing it would have made a failed
 consumer-side update report the wrong table's state.
 
-**24.2 `POST /negotiations/initiate` is an unauthenticated, TCK-shaped
-trigger hook on the *public* listener, and a real management-API trigger is
-deliberately not built in this milestone.** `DspSystemLauncher.start()`
+**24.2 `POST /negotiations/initiate` is a TCK-shaped trigger hook on the
+*public* listener, unauthenticated until §27, and a real management-API
+trigger is deliberately not built in this milestone.** `DspSystemLauncher.start()`
 requires `dataspacetck.dsp.connector.negotiation.initiate.url`
 unconditionally, and the TCK's own client POSTs plain JSON (not JSON-LD:
 `{providerId, offerId, datasetId, connectorAddress}`, confirmed from the
@@ -774,6 +781,15 @@ POSTs to an address the caller chose. §23.6's SSRF guard
 that reason, and §23.11's closing note applies unchanged: the real fix is
 enforcing §10's connector-to-connector JWT on this listener, not patching
 this handler.
+
+**Corrected by §32, in both halves.** "Open to anonymous callers" stopped being
+true at §27, which put every DSP route but the version document behind a
+participant credential: with `require_auth` on this endpoint is reachable by
+any roster participant, and only with it off by anyone. And the closing note
+inherited from §23.11 does not apply unchanged — the JWT shipped and did not
+close what §23.11 predicted it would. What §32 does *not* change is this
+endpoint's lack of an ownership check of its own; §32.3 records why it gets
+none.
 
 **24.3 The initial outbound `ContractRequestMessage` is sent once, with no
 retry — the only outbound call in this connector that is not routed through
@@ -959,11 +975,17 @@ is in the wire contract's §1.6
 (`docs/superpowers/specs/2026-08-16-transfer-process-tck-wire-contract.md`),
 and this milestone's plan carries it as a constraint.
 
-The agreement is matched by id alone. Also requiring the request's
-`consumerPid` to match would reject every imported agreement, since an
-imported agreement deliberately carries no consumer pid — the negotiation that
-produced it did not happen here — and imported agreements are exactly the case
-the import path exists to serve.
+The agreement is matched by id alone — **until §32, which makes that
+conditional.** The reason for not requiring the request's `consumerPid` to
+match is unchanged and still holds: that would reject every imported
+agreement, since an imported agreement deliberately carries no consumer pid —
+the negotiation that produced it did not happen here — and imported agreements
+are exactly the case the import path exists to serve. What §32 adds are two
+conditions that are not the consumer pid. The agreement must not be one this
+connector holds as consumer (§32.4), and, *when it names a counterparty*, that
+counterparty must be the verified issuer of the request (§32.2). Both leave
+this paragraph's case intact: an imported agreement with no named owner is
+still matched by id alone.
 
 *Trade-off accepted.* The TCK sends a random UUID as `agreementId` unless a
 fixture pins one, so this decision is what forces the harness to seed
@@ -972,18 +994,24 @@ harness is more complicated than it would otherwise be. A connector that
 skipped the check would need no seeding at all. It would also start transfers
 under contracts that do not exist.
 
-**25.2 An agreement is a row in `agreements`, with exactly two writers, and
-not a list in the config file.** The two writers are negotiation — reaching
-`AGREED` writes the row, because that is the moment this connector issues the
-agreement document — and import through the management API, which records an
-agreement concluded elsewhere with `origin = 'imported'`. An earlier draft put
-externally-concluded agreements in configuration instead, and the way that was
-wrong is worth keeping: **an agreement is runtime state, not a static
-declaration of what this connector advertises.** Putting it in the config file
-creates a second source of truth for one concept and makes "edit a YAML file,
-restart" the way contracts come into being. The tell was that the design
-needed a warning attached to that list — *writing an id here creates a
-contract* — and a design that needs a warning is usually the wrong design.
+**25.2 An agreement is a row in `agreements`, with exactly three writers, and
+not a list in the config file.** Two at this milestone, **three since §24**:
+negotiation reaching `AGREED` in the provider role, because that is the moment
+this connector issues the agreement document; import through the management
+API, which records an agreement concluded elsewhere with
+`origin = 'imported'`; and a consumer-role negotiation accepting a remote
+provider's `ContractAgreementMessage`, with `origin = 'agreed'`. The third
+arrived with the consumer role after this section was written, and
+`store.Agreement`'s own doc comment has said three since. §32.4 turns that
+third origin into an authorization fact rather than only a provenance record.
+An earlier draft put externally-concluded agreements in configuration instead,
+and the way that was wrong is worth keeping: **an agreement is runtime state,
+not a static declaration of what this connector advertises.** Putting it in
+the config file creates a second source of truth for one concept and makes
+"edit a YAML file, restart" the way contracts come into being. The tell was
+that the design needed a warning attached to that list — *writing an id here
+creates a contract* — and a design that needs a warning is usually the wrong
+design.
 
 That boundary is the general rule, and it is stated here so a later milestone
 does not have to re-derive it: **runtime state goes in the database, static
@@ -1010,6 +1038,13 @@ auth model for the first time — a config field with its own validation, a
 constant-time bearer check, a router that now takes config and store, and the
 wiring in `cmd/dsbox`.
 
+"And nothing more" is now true of the endpoint rather than of the API. The
+data-plane milestone added a read side, `GET /agreements`, because an operator
+otherwise had no way to learn the agreement id a transfer has to cite — and
+§32.5 put the counterparty into it, because an operator who cannot see who an
+agreement is with cannot audit a check that depends on it. It reads and does
+not write, so the rule in the trade-off below is unchanged.
+
 The alternative weighed was a CLI subcommand writing to the store directly,
 which needs no auth, no HTTP surface, and no config field. The management API
 was chosen because §11 had already committed to it and an operator importing
@@ -1019,7 +1054,8 @@ an agreement is a real need rather than a harness convenience.
 message now exists, and its blast radius is bounded by a rule rather than by
 the code: **this is not the start of a general management CRUD surface.** A
 later milestone that wants one argues for it on its own merits. The concrete
-guard is that `POST /agreements` takes two strings and writes one immutable
+guard is that `POST /agreements` takes two required strings and one optional
+one — §32.5's `counterpartyId` — and writes one immutable
 row — there is no update path and no delete path anywhere in this connector,
 which is also what makes the duplicate-detection re-query in
 `importAgreement` sound, and what that function's comment says will stop
@@ -1650,3 +1686,235 @@ stray random-named temp file could already leak on an unclean process
 exit); this milestone makes the leaked file larger and its name
 predictable. Tracked in `docs/follow-ups.md` rather than solved here: it
 needs a retention policy this project has none of yet.
+
+## 32. An agreement records who it is with, and the exchange endpoints check it
+
+**Decision.** §27 settled *that* a caller is admitted. It did not settle
+*which* row an admitted caller may touch — that check existed at exactly one
+endpoint, the data endpoint, and everywhere else an admitted participant could
+act on any exchange whose id it knew. This milestone makes the identity §27
+established load-bearing: five provider-role resolvers refuse a message about
+an exchange the sender is not party to, `agreements` gains a counterparty
+column so an agreement can be checked at all, and serving data as provider
+under an agreement this connector holds as *consumer* is refused outright.
+
+This section supersedes §23.11's closing prediction, and §24.2's by reference.
+§23.11 recorded the gap and said how it would close:
+
+> Both consequences are future work, and both are properly closed by enforcing
+> §10's connector-to-connector JWT on this listener, not by patching the
+> handlers one field at a time.
+
+**The JWT shipped in §27 and did not close it.** It narrowed the attacker set
+from anyone on the network to any roster participant, which is not closure: a
+roster is shared by parties who are strangers to each other, and that is the
+boundary this protocol exists to keep. This section is the thing §23.11 said
+would not be needed — the handlers, checked one at a time — and it is here
+because the prediction was tested and was wrong. A superseding section rather
+than an edit, for the same reason §26, §28, and §30 are: §23.11's judgment at
+its own milestone was defensible on what was known then, and only its forecast
+is overturned. Both sections carry a pointer here; neither is rewritten.
+
+Severity was high, not critical. Every path needed a roster credential, and
+impersonating another participant needs their private key. There is no release
+(`git tag` is empty) and no deployment known beyond this repository's own
+harnesses. The design spec is
+`docs/superpowers/specs/2026-08-23-exchange-authorization-design.md`.
+
+**32.1 A refusal is `403`, never `404`, and the ownership check runs before the
+state check.** §25.1 already made "never `404`" a standing rule of this
+connector, on the ground that the counterparty's own client checks for `404`
+before it consults whether an error was expected, so a `404` aborts the
+exchange instead of being read as the refusal it is. The TCK enforces the same
+— a `404` is fatal on every path, including ones that expect an error — and
+`403` is what this connector already answered for exactly this condition at the
+data endpoint. One helper, `refuseIfNotParty` in
+`internal/dsp/auth_middleware.go`, writes all five, in the same register the
+data endpoint's own "this transfer is not yours" already used.
+
+`403` is an existence oracle: it distinguishes "not yours" from `404`'s "no
+such id". Accepted rather than solved. The sibling oracle already exists — a
+transfer request citing an unknown agreement gets a distinguishable `400` — and
+collapsing this one into `404` would break the rule above.
+
+The ordering is part of the decision. The ownership check runs *before* the
+state check, so a prober learns nothing about an exchange's progress from the
+refusal. `handleData` already made that choice and a test already pins it; the
+five new checks are placed to match.
+
+**32.2 An empty counterparty means "not known", and is permitted — on the
+agreement check only.** `counterparty_id` defaults to `''`, and the exchange
+tables have carried it that way since §27 for rows that predate anyone to
+address. Refusing on empty would be the safer-sounding choice and it is not
+available: `test/tck/run.sh` seeds twelve agreements through `POST /agreements`
+with no owner, so a deny fails all fifteen `TP` and all fifteen `TP_C` results.
+The same holds for any operator who imports an agreement today. So the
+agreement comparison is `stored != "" && issuer != stored`.
+
+The exchange checks keep the stricter form, with no empty clause — the form
+`handleData` already used. Two reasons for the asymmetry. Nothing forces the
+permissive form on exchange rows, since every one the TCK creates carries a
+verified issuer, and permissiveness should be bought only where it is required.
+And `handleData` must not be refactored through a helper that acquires the
+empty clause: a transfer row with an empty counterparty is refused to everyone
+today, and adding the clause would serve it to any roster participant.
+`refuseIfNotParty` is therefore written *beside* that check rather than
+extracted from it, and the existing test that pins `handleData`'s behavior is
+left alone.
+
+**32.3 Compare only against a counterparty that came from a verified issuer.**
+`counterparty_id` has two sources. Provider-role rows take it from the verified
+issuer of the request that created them. Consumer-role rows take it from the
+`providerId` field of an operator's own initiate call — a string the caller
+chose. Only the first is an identity, and comparing against the second is
+comparing against an unverified assertion, which is not authorization.
+
+It also breaks immediately. The TCK harness authenticates as
+`urn:participant:tck` while hardcoding `TCK_PARTICIPANT` as the `providerId` in
+its initiate hook, so consumer-role rows in the harness hold a string no
+inbound request will ever present: enforcing there loses all fifteen `TP_C`
+results and all but one of `CN_C`, 65 − 30 = 35. The rule is not a carve-out
+for the harness — **a row's counterparty is an authorization anchor only where
+this connector verified it** — but the harness is what demonstrates it.
+
+So five points carry the check, all provider-role: `transferHandler.lookup`
+(after `GetTransfer` succeeds, where the consumer branch has already returned),
+`negotiationHandler.lookup`, `handleProviderAcceptedEvent`,
+`handleProviderTermination`, and `handleGetNegotiation`'s provider branch.
+`handleOffers` and `handleAgreement` resolve only through `GetConsumer` and are
+deliberately unguarded; they are named here because anyone enumerating
+resolvers will find them and must know the omission is a decision rather than
+an oversight.
+
+Two consequences stay open, recorded rather than discovered. The consumer
+role's inbound messages are unauthorized, which needs `providerId` validated
+against the roster at initiate time — a separate change with its own
+compatibility question. And that same unverified `providerId` becomes the
+*audience* of a credential this connector signs, addressed to a caller-chosen
+endpoint: an impersonation primitive against a third participant, reachable
+through `POST /negotiations/initiate` with no agreement at all. Nothing here
+creates it, and it is the sharpest reason the initiate hooks deserve a
+milestone of their own.
+
+**32.4 Serving data as provider under a consumer-role agreement is refused, and
+that is where the forging path closes.** A roster participant can initiate a
+negotiation naming itself as provider, read this connector's own consumer pid
+out of the request that arrives, post a `ContractAgreementMessage` to it, and
+cite the resulting row in a transfer request. `handleAgreement` writes the body
+verbatim, so the row is real, and every ownership check above passes on that
+path because the forger is the honest owner of what it forged. Ownership checks
+around a mintable agreement produce confidence, not security.
+
+The fix needs no new state. `store.Agreement` already records `Origin`, and it
+answers the question directly: `OriginNegotiated` means this connector is the
+provider — serve; `OriginImported` means an operator asserted it — serve;
+`OriginAgreed` means this connector is the **consumer** — never serve as
+provider. One predicate, `servableAsProvider`, gates all four provider-role
+readers of an agreement (`handleTransferRequest`, `datasetFor`, `hasSourceFor`,
+`driveTransfer`) so each is testable on its own rather than protected only
+transitively.
+
+That closes the forged path's **byte exit** completely: `transfer_processes`
+has exactly one writer and this check sits in front of it. A forged agreement
+can only ever be recorded with `OriginAgreed` — `handleAgreement` is its sole
+writer, and the attacker cannot reach `OriginImported`, which is behind the
+management token on a localhost listener, or `OriginNegotiated`, which carries
+an id this connector generates.
+
+**Why the fix is at consumption rather than intake.** The forged message is not
+detectably forged: it is exactly what an honest provider sends in a negotiation
+the attacker legitimately owns. `assigner` matches, because the attacker named
+itself as provider at initiate. "Must arrive from the participant the
+negotiation is with" matches, for the same reason. §30.1's `wrongTarget` does
+not help either — it compares against the negotiation's own dataset id, which
+the forger also chose, and it is not an intake check at all: the row is written
+before it is computed. The defect is role confusion at consumption, so
+consumption is where it is caught.
+
+Two statuses, deliberately. `handleTransferRequest` refuses with `403` — a
+request to open a transfer under someone else's role is a refusal, and it
+belongs in the same family as the other two refusals that endpoint now makes.
+`datasetFor` returns the same not-found it returns for "nothing configured
+behind this dataset", and so answers `409` at the data endpoint: reshaping its
+signature to carry a reason was not worth the ripple for a path only a
+pre-existing `transfer_processes` row can reach. What distinguishes the two
+`409`s is a log line written for that purpose.
+
+**32.5 A third column-add does not earn a migration tool.** §23.1 left that
+open — "a second schema change is what decides whether a real migration tool
+earns its place". The answer is no, and the way this column actually landed is
+the sharper support for that rather than an argument against it.
+
+`counterparty_id` is one column on five tables, added by one loop in
+`migrate`. On `agreements` it is in the `CREATE TABLE` literal *and* in that
+loop. On the other four it is in the loop and in no `CREATE` literal at all —
+so a fresh database creates those four without the column and immediately
+alters them to add it, which is not the sequence `migrate`'s own comment
+describes; that fresh-database case now holds only for `agreements`. Both
+routes converge on the same schema, because the check-and-add is idempotent
+either way, and nothing has ever failed on it.
+
+That inconsistency is exactly the pairing §23.1's trade-off warned nothing
+enforces, and it is still unenforced. What it is not is a failure a tool would
+have caught: it produces no wrong schema and no wrong query, only two
+different routes to one column. A versioned tool buys ordering, history, and
+down-migrations, none of which this connector has needed across three
+column-adds, at the price of a dependency and a version table. So: no.
+
+The column is role-relative, matching the convention the four exchange tables
+already use: for a negotiated agreement it is the consumer, for one accepted as
+consumer it is the provider, and for an imported one it is whoever the operator
+named. Both negotiation writers set it. `POST /agreements` gains an
+**optional** `counterpartyId` — optional because required would break
+`test/tck/run.sh` and every existing operator import in lockstep, and 32.2
+already fixes what empty means. `GET /agreements` exposes it, because an
+operator who cannot see who an agreement is with cannot audit a check that
+depends on it, and it is declared **last** in that view's struct: Go emits
+fields in declaration order and `demo/run.sh` extracts an agreement with a
+`sed` that requires `agreementId` and `datasetId` to stay adjacent.
+
+*Trade-offs accepted.* Four. The first two are what 32.2 and 32.5 cost, the
+third is what 32.4 does not reach, and the fourth is a behaviour change rather
+than a gap.
+
+**An imported agreement with no owner stays exactly as open as it was.** 32.2's
+empty clause means an agreement imported without a `counterpartyId` is servable
+to any roster participant that knows its id — the pre-milestone posture,
+unchanged. The agreement half of this work is partial by construction, and the
+twelve seeds in `test/tck/run.sh` are why. It closes for an operator who names
+the counterparty on import, and for every negotiated agreement automatically;
+it does not close for the imports that already exist.
+
+**Naming the wrong participant on import has no correction.** §25.3 guarantees
+there is no update path and no delete path, so an operator who imports an
+agreement against the wrong `counterpartyId` has locked the real counterparty
+out of it, with no recourse but concluding the agreement again under a new id.
+Adding a correction path means adding a write path, which §25.3 bounds by a
+rule rather than by code — a later milestone that wants one argues for it on
+its own merits, and this section is not that argument.
+
+**The residuals 32.4 leaves.** The forged row survives, so four things remain
+true. An id written first is permanently unimportable by its rightful owner,
+because `CreateAgreement` refuses duplicates and there is no delete path. That
+duplicate refusal is itself an existence oracle, and it leaves a row behind on
+every miss. The forged row is indistinguishable from a real one in
+`GET /agreements`, which is the operator's only audit surface. And
+`handleTransferInitiate`'s own agreement gate is satisfiable by a minted id,
+which makes it the sanity check it already was rather than an authorization
+decision. Closing these needs the consumer-role agreement id space separated
+from the provider-role one — a second table, or an `(agreement_id, origin)`
+key — which reopens the "one table, one rule" argument `store.Agreement`'s
+own doc comment makes, and is not attempted here.
+
+**A connector initiating against its own public address is now refused
+outright.** Recorded so it is not rediscovered as a regression. Pointed at its
+own `public_url`, this connector negotiates with itself, and §23.12's
+push-before-state ordering decides how that lands: the self-addressed
+`ContractAgreementMessage` reaches `handleAgreement` first and writes the
+agreement row with `OriginAgreed`, and `dispatch`'s own
+`CreateAgreementIfNegotiationAgreed` then loses the primary key to it and logs
+the collision. The single surviving row says this connector is the consumer, so
+32.4 now refuses every transfer request citing it with `403`. It half-worked
+before by accident, not by design, and §23.6 already rejects a loopback
+callback — so this shape needs a connector's real public address and is a
+self-test, not a deployment.

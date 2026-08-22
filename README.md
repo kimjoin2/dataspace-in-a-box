@@ -40,8 +40,9 @@ HTTP-PULL to a counterparty holding a started transfer, and a consumer that
 receives a `dataAddress` fetches it and writes it down. The data endpoint sits
 behind the same participant credential as everything else and adds three
 checks: the transfer must exist, be `STARTED`, and belong to the participant
-asking. A `dataAddress` is an address rather than a capability — possessing
-one grants nothing.
+asking — the third of which is no longer a rule this one endpoint invented for
+itself, see below. A `dataAddress` is an address rather than a capability —
+possessing one grants nothing.
 
 The TCK cannot verify any of that. No test in either transfer suite sends,
 receives, or asserts a byte, so a green suite is not evidence that data moves.
@@ -58,6 +59,19 @@ version document requires a JWT signed EdDSA over Ed25519 by a participant in
 this connector's roster and addressed to it, and every call this connector
 makes carries one (DECISIONS.md sections 9 and 10). The suite above runs with
 that on; removing the harness's credential fails 63 of the 65.
+
+And an authenticated caller is now held to the exchanges it is actually party
+to. That used to be one endpoint's check and is now a property of the
+connector (`DECISIONS.md` section 32): a message about a negotiation or a
+transfer is refused `403` unless it comes from the participant that exchange is
+with, an agreement records who it is with and a transfer request citing it is
+checked against that, and this connector will not serve data as provider under
+an agreement it holds as consumer. What it does not close is recorded there
+rather than hidden: an agreement imported without naming a counterparty stays
+open to any roster participant that knows its id, and messages arriving about
+this connector's *consumer-role* exchanges are still unchecked, because the
+only identity available for them is one an operator typed rather than one this
+connector verified.
 
 Two limits are worth stating plainly rather than leaving to be discovered.
 `did:web` resolution exists (`dsops resolve <did:web:...>`) but is not part

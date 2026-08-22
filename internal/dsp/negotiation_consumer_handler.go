@@ -44,8 +44,11 @@ func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// The rejection reason is logged, not echoed. validateOutgoingCallback
-	// reports which address a hostname resolved to, and §24.2 keeps this
-	// endpoint open to anonymous callers — returning that text would make it
+	// reports which address a hostname resolved to, and this endpoint is
+	// reachable by any roster participant — §24.2 called it "open to anonymous
+	// callers", which stopped being true at §27, when every DSP route but the
+	// version document went behind a participant credential; with require_auth
+	// off it is open to anyone. Either way, returning that text would make it
 	// a name-resolution oracle for the network this connector sits on. The
 	// provider role's equivalent rejection (pushAndStore) logs for the same
 	// reason.
