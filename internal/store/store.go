@@ -18,13 +18,6 @@ import (
 // through it and a single Store is safe for concurrent use. Without that,
 // database/sql's connection pool would open multiple physical connections
 // and every one of them would need its own locking story.
-//
-// TEMPORARY DIAGNOSTIC: journal_mode is DELETE, not WAL, while investigating
-// a CI-only bug (writes that report success and are invisible to a later
-// read, same process, same connection, only in GitHub Actions). WAL needs
-// no queuing story here regardless — with exactly one connection there is
-// only ever one writer — but it does need a working shared-memory (-shm)
-// mmap, which DELETE mode does not.
 type Store struct {
 	db *sql.DB
 }
@@ -234,9 +227,9 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA journal_mode=DELETE"); err != nil {
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("set journal_mode on %s: %w", path, err)
+		return nil, fmt.Errorf("enable WAL on %s: %w", path, err)
 	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
