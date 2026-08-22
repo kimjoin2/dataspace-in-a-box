@@ -132,8 +132,15 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	} else if !ok {
+		// TEMPORARY, for the CI-only failure investigation: dump what the
+		// store actually holds at the moment of refusal.
+		all, listErr := h.store.ListAgreements()
+		ids := make([]string, len(all))
+		for i, a := range all {
+			ids[i] = a.AgreementID
+		}
 		slog.Warn("refuse transfer request citing an agreement this connector has no record of",
-			"agreement_id", msg.AgreementID)
+			"agreement_id", msg.AgreementID, "store_has", ids, "list_err", listErr)
 		writeError(w, TransferErrorType, http.StatusBadRequest,
 			"no agreement with id "+msg.AgreementID)
 		return
