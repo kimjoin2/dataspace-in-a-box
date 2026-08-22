@@ -26,6 +26,15 @@ chmod 777 "$gen/consumer-data"
 provider_pub=$("$gen/dsops" keygen -out "$gen/provider.key")
 consumer_pub=$("$gen/dsops" keygen -out "$gen/consumer.key")
 operator_pub=$("$gen/dsops" keygen -out "$gen/operator.key")
+# keygen writes 0600 (correct for a real operator's own long-lived key), but
+# provider.key and consumer.key are bind-mounted into their containers below,
+# which run as the distroless nonroot image's UID 65532 — a different UID
+# than whatever generated these files. A real Linux Docker host enforces
+# that mismatch as a permission error at container startup; Docker Desktop's
+# macOS VM does not, which is why this only ever failed in CI. Relaxed here,
+# not in keygen itself: these files are regenerated every run and deleted
+# with $gen afterward, unlike a real operator's key.
+chmod 644 "$gen/provider.key" "$gen/consumer.key"
 cat >"$gen/roster.json" <<EOF
 {
   "participants": [

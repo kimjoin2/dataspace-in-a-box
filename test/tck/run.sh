@@ -38,6 +38,15 @@ mkdir -p "$identity"
 connector_pub=$("$identity/dsops" keygen -out "$identity/connector.key")
 tck_pub=$("$identity/dsops" keygen -out "$identity/tck.key")
 operator_pub=$("$identity/dsops" keygen -out "$identity/operator.key")
+# keygen writes 0600 (correct for a real operator's own long-lived key), but
+# connector.key is bind-mounted into the dsbox container below, which runs as
+# the distroless nonroot image's UID 65532 — a different UID than whatever
+# generated this file. A real Linux Docker host enforces that mismatch as a
+# permission error at container startup; Docker Desktop's macOS VM does not,
+# which is why this only ever failed in CI. Relaxed here, not in keygen
+# itself: this file is regenerated every run and deleted with $identity
+# afterward, unlike a real operator's key.
+chmod 644 "$identity/connector.key"
 cat >"$identity/roster.json" <<EOF
 {
   "participants": [
