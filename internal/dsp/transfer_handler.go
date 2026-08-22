@@ -509,6 +509,7 @@ func (h transferHandler) applyTransition(w http.ResponseWriter, r *http.Request,
 			ProviderPID:     t.ProviderPID,
 			ProviderBaseURL: t.ProviderBaseURL,
 			AgreementID:     t.AgreementID,
+			CounterpartyID:  t.CounterpartyID,
 			Format:          t.Format,
 			State:           to,
 		}, to)
