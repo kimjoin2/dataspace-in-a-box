@@ -113,6 +113,50 @@ func TestDataPullRefusals(t *testing.T) {
 	}
 }
 
+// TestDataPullRefusesAnAgreementHeldAsConsumer pins datasetFor's own copy of
+// the servableAsProvider gate. transfer_handler.go's handleTransferRequest
+// refuses to create a transfer under an OriginAgreed agreement at all, but
+// that is a separate check on a separate call site: nothing stops a row from
+// existing in the transfers table under such an agreement's id (a row
+// written before this gate existed, or reached through a path this test
+// doesn't need to name), and datasetFor is what handleData asks regardless
+// of how the row got there. Without its own check here, that transfer would
+// still serve bytes.
+func TestDataPullRefusesAnAgreementHeldAsConsumer(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	path := filepath.Join(t.TempDir(), "a.csv")
+	if err := os.WriteFile(path, []byte(servedBytes), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	ds := config.Dataset{ID: "urn:dataset:a", SourceFile: path}
+	cfg := config.Config{ParticipantID: testSelf, Datasets: []config.Dataset{ds}}
+
+	now := time.Now()
+	if err := st.CreateAgreement(store.Agreement{AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
+		Origin: store.OriginAgreed, CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgreement: %v", err)
+	}
+	if err := st.CreateTransfer(store.TransferProcess{ProviderPID: "p1", ConsumerPID: "c1",
+		AgreementID: "urn:uuid:a", State: TransferStarted, CallbackAddress: "http://x", Format: "HTTP-PULL",
+		CounterpartyID: testPeer, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+	h := dataHandler{cfg: cfg, store: st}
+
+	rec := pullAs(t, h, "p1", testPeer)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("got %d, want %d", rec.Code, http.StatusConflict)
+	}
+	if rec.Body.String() == servedBytes {
+		t.Error("served the file under an agreement this connector holds as consumer")
+	}
+}
+
 // The three refusals are distinguishable, which is what lets an operator read
 // a log and know which one happened.
 func TestDataPullUnknownTransferIs404(t *testing.T) {

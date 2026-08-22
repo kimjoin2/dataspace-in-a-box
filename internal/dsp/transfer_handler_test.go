@@ -1244,3 +1244,68 @@ func TestTransferLookupDoesNotCheckConsumerRows(t *testing.T) {
 		t.Fatalf("status = %d, want %d — a consumer row must not be checked", rec.Code, http.StatusOK)
 	}
 }
+
+// An agreement this connector accepted as consumer never authorizes it to
+// serve as provider. That is the only exit a forged agreement has to bytes:
+// handleAgreement is the sole writer of OriginAgreed, and an attacker cannot
+// reach the other two origins.
+func TestTransferRequestRefusesAConsumerRoleAgreement(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	if err := st.CreateAgreement(store.Agreement{
+		AgreementID: "urn:agreement:forged", DatasetID: "urn:dataset:a",
+		Origin: store.OriginAgreed, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateAgreement: %v", err)
+	}
+	h := transferHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + TransferRequestMessageType +
+		`","consumerPid":"c1","agreementId":"urn:agreement:forged",` +
+		`"format":"HTTP-PULL","callbackAddress":"http://consumer"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/transfers/request", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+	h.handleTransferRequest(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+// The two origins this connector may serve under are unaffected.
+func TestTransferRequestAcceptsProviderRoleAgreements(t *testing.T) {
+	t.Parallel()
+	for _, origin := range []string{store.OriginNegotiated, store.OriginImported} {
+		t.Run(origin, func(t *testing.T) {
+			st, err := store.Open(":memory:")
+			if err != nil {
+				t.Fatalf("store.Open: %v", err)
+			}
+			t.Cleanup(func() { st.Close() })
+			if err := st.CreateAgreement(store.Agreement{
+				AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
+				Origin: origin, CreatedAt: time.Now(),
+			}); err != nil {
+				t.Fatalf("CreateAgreement: %v", err)
+			}
+			h := transferHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+			body := `{"@context":["` + ContextURL + `"],"@type":"` + TransferRequestMessageType +
+				`","consumerPid":"c1","agreementId":"urn:uuid:a",` +
+				`"format":"HTTP-PULL","callbackAddress":"http://consumer"}`
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/transfers/request", strings.NewReader(body))
+			req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+			h.handleTransferRequest(rec, req)
+
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+			}
+		})
+	}
+}

@@ -127,7 +127,8 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 	// imported agreement, which is exactly the case this endpoint exists to
 	// serve. An unknown id is a 400: this connector does not start a transfer
 	// under a contract it has no record of.
-	if _, ok, err := h.store.GetAgreement(msg.AgreementID); err != nil {
+	a, ok, err := h.store.GetAgreement(msg.AgreementID)
+	if err != nil {
 		slog.Error("get agreement", "agreement_id", msg.AgreementID, "error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -141,6 +142,13 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 			"agreement_id", msg.AgreementID)
 		writeError(w, TransferErrorType, http.StatusBadRequest,
 			"no agreement with id "+msg.AgreementID)
+		return
+	}
+	if !servableAsProvider(a) {
+		slog.Warn("refuse transfer request citing an agreement this connector holds as consumer",
+			"agreement_id", msg.AgreementID, "origin", a.Origin)
+		writeError(w, TransferErrorType, http.StatusForbidden,
+			"this connector is not the provider on that agreement")
 		return
 	}
 
@@ -263,7 +271,7 @@ func (h transferHandler) driveTransfer(t store.TransferProcess) {
 	datasetID := ""
 	if a, ok, err := h.store.GetAgreement(t.AgreementID); err != nil {
 		slog.Error("get agreement for transfer sequence", "agreement_id", t.AgreementID, "error", err)
-	} else if ok {
+	} else if ok && servableAsProvider(a) {
 		datasetID = a.DatasetID
 	}
 	for _, state := range resolveTransferSequence(h.cfg, t.AgreementID, datasetID) {
@@ -645,6 +653,23 @@ func writeTransferStateUpdateError(w http.ResponseWriter, id string, err error) 
 	w.WriteHeader(http.StatusInternalServerError)
 }
 
+// servableAsProvider reports whether this connector may serve data as the
+// provider under a. OriginAgreed means the opposite of what a transfer
+// request asks for: this connector accepted that agreement as the *consumer*,
+// from a counterparty's ContractAgreementMessage, so serving bytes under it
+// would be role confusion regardless of who asked.
+//
+// It is also the only exit a forged agreement has. handleAgreement writes the
+// message body verbatim and is the sole writer of OriginAgreed, so a peer that
+// initiates a negotiation naming itself as provider can mint a row — but it
+// cannot reach OriginImported, which is behind the management token on a
+// localhost listener, or OriginNegotiated, whose id this connector generates.
+// The forged row itself is not detectably forged: it is exactly the message an
+// honest provider sends in a negotiation the peer legitimately owns.
+func servableAsProvider(a store.Agreement) bool {
+	return a.Origin != store.OriginAgreed
+}
+
 // hasSourceFor reports whether the dataset behind an agreement has bytes
 // configured. It is the same resolution dataHandler does, and it is asked
 // here so a start message advertises an address only when a pull would
@@ -652,6 +677,9 @@ func writeTransferStateUpdateError(w http.ResponseWriter, id string, err error) 
 func (h transferHandler) hasSourceFor(agreementID string) bool {
 	a, ok, err := h.store.GetAgreement(agreementID)
 	if err != nil || !ok {
+		return false
+	}
+	if !servableAsProvider(a) {
 		return false
 	}
 	for _, d := range h.cfg.Datasets {

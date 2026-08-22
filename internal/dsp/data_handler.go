@@ -204,6 +204,18 @@ func (h dataHandler) datasetFor(agreementID string) (config.Dataset, bool) {
 		}
 		return config.Dataset{}, false
 	}
+	if !servableAsProvider(a) {
+		// Deliberately the same not-ok return, and so the same 409 at
+		// handleData, as the "nothing configured behind the dataset" case
+		// below: reshaping datasetFor's signature to carry a reason is not
+		// worth the ripple for a path only a pre-existing transfer_processes
+		// row can reach (handleTransferRequest now refuses to create one
+		// under an OriginAgreed agreement). This log line is what lets an
+		// operator tell the two 409s apart.
+		slog.Warn("data pull for an agreement this connector holds as consumer",
+			"agreement_id", agreementID, "origin", a.Origin)
+		return config.Dataset{}, false
+	}
 	for _, d := range h.cfg.Datasets {
 		if d.ID == a.DatasetID {
 			return d, true
