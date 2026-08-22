@@ -157,3 +157,93 @@ transfer terminated, which today is a different code path
 (`handleTransferTermination`/`handleTransferCompletion`) than the one writing the file
 (`pullTransferData`), and wiring the two together is a design decision, not
 a cleanup.
+
+## From the policy cross-check (2026-08)
+
+Found while checking whether a use-count constraint could be enforced, not by
+building it. All three predate that work. They are recorded together because
+they compose: each is reachable by any roster participant, and two of the three
+end in bytes.
+
+Severity is high, not critical. Every path below needs a roster credential —
+the operator has to have put your public key in `roster.json` and re-signed it,
+and impersonating someone else needs their private key. This is not open to the
+internet. It is, however, exactly the boundary a dataspace exists not to
+collapse: two participants share a roster precisely because they are strangers.
+
+**An authenticated request may act on an exchange it is not party to.**
+`issuerFrom` (`internal/dsp/auth_middleware.go:22`) recovers the verified
+counterparty of every DSP request, and exactly one handler compares it to the
+row it acts on: `handleData` (`internal/dsp/data_handler.go:77`). Everything
+else resolves by path id alone. On the transfer side that is
+`transferHandler.lookup` (`internal/dsp/transfer_handler.go:558`), feeding
+`applyTransition` (`:459` — start, completion, suspension, termination) and
+`handleGetTransfer` (`:414`). On the negotiation side it is seven resolvers,
+not one: `negotiationHandler.lookup` (`internal/dsp/negotiation_handler.go:372`)
+serves only `handleReRequest` and `handleVerification`, while `handleEvent`
+(`:180`), `handleTermination` (`:288`), `handleGetNegotiation` (`:339`),
+`handleOffers` and `handleAgreement`
+(`internal/dsp/negotiation_consumer_handler.go:120`, `:231`) each do their own
+two-table lookup. Suspending or terminating someone else's transfer answers
+`200`; so does driving their negotiation to ACCEPTED or TERMINATED.
+
+Closing it needs no schema change. All four exchange tables already carry
+`counterparty_id`, populated from the verified issuer
+(`internal/store/store.go:284-291`), and the field is already trusted for
+outbound addressing. What it needs is the comparison, in seven places rather
+than the obvious two, and a decision on the refusal status — `403`, per §25.1's
+standing rule that a DSP rejection is never `404` because the counterparty's
+client aborts on one, and matching the "this transfer is not yours" this
+connector already answers at the data endpoint.
+
+**`agreements` cannot say whose agreement it is, and that ends in bytes.** The
+table (`internal/store/store.go:157`) holds `consumer_pid`, empty for imported
+agreements by design, and no participant id. `handleTransferRequest` therefore
+looks an agreement up by id alone and explains why it must
+(`internal/dsp/transfer_handler.go:123-129`). A roster participant that knows
+another's agreement id opens a transfer under it, becomes that transfer's
+counterparty at `:167`, and then passes `handleData`'s ownership check. The
+default transfer sequence starts the transfer without any further message
+(`:219`), so the sequence is two requests and a `GET`.
+
+Id secrecy is the only guard, and it is weaker than it looks: `:141` answers a
+wrong guess with a distinguishable `400`, and imported agreement ids are
+operator-chosen rather than random — this repository's own fixtures use
+`urn:uuid:tck-tp-01-01` (`test/tck/dsbox.yaml`) and `urn:uuid:example-agreement`
+(`config.example.yaml`). Closing it needs an owner column set from the verified
+issuer, plus a way to name one on import. Note the constraint that shape must
+satisfy: `test/tck/run.sh` seeds twelve agreements with no owner, so an empty
+owner has to keep meaning "not known" and stay permitted, or all thirty TP and
+TP_C results fail. That makes the fix partial by construction — imports without
+a named owner stay exactly as open as they are today.
+
+**A participant can forge an agreement against itself and then read the data.**
+The worst of the three, and the one an owner column does not help with.
+`handleAgreement` (`internal/dsp/negotiation_consumer_handler.go:266-277`)
+writes an agreement row straight from the message body — id and target both
+taken verbatim — with no check that the target is a dataset this connector
+would serve. It computes `wrongTarget` at `:291` and uses it only to choose the
+reaction, after the row is already written, so even a rejecting policy leaves
+the row behind. Since `POST /negotiations/initiate` is reachable by any roster
+participant and discloses this connector's own consumer pid to the address the
+caller supplied, the whole sequence is: initiate a negotiation naming yourself
+as provider, read the consumer pid out of the request that arrives, post a
+forged agreement to it, then open a transfer citing that agreement and pull.
+
+Every ownership check above passes on that path, because the forger is the
+honest owner of what it forged. Closing it is a different fix: refuse to record
+a consumer-role agreement whose target is not a dataset this connector
+requested, and refuse a provider-role transfer request citing an agreement this
+connector holds as a consumer — serving data as provider under a contract where
+this connector is the consumer is role confusion regardless.
+
+**Three stale claims to correct alongside any of the above.** `DECISIONS.md`
+§23.11 predicted all of this was "properly closed by enforcing §10's
+connector-to-connector JWT on this listener, not by patching the handlers one
+field at a time"; the JWT shipped (§27) and narrowed the attacker set without
+closing anything, and §24.2 inherits the same posture by reference. §25.2 says
+`agreements` has "exactly two writers" — `internal/store/store.go:78` already
+says three. And `internal/dsp/negotiation_consumer_handler.go:47-51` and
+`internal/dsp/transfer_consumer_handler.go:41-45` still describe the two
+initiate hooks as "open to anonymous callers", which is false with
+`require_auth` on and understates who can reach them.
