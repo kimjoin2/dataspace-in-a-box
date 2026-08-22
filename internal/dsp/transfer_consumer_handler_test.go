@@ -287,6 +287,115 @@ func TestConsumerDriverStopsAtAnIllegalStep(t *testing.T) {
 	}
 }
 
+// Everything this connector sends as consumer carries a credential, and that
+// credential names the participant it is addressed to. applyTransition builds
+// a store.ConsumerTransfer by hand at both of its consumer-role dispatches —
+// the pull a start with an address releases, and the after-STARTED sequence —
+// and a CounterpartyID missing from either one sends an unaddressed message.
+//
+// Nothing else holds those two field assignments in place. The TCK passes 65
+// of 65 either way, because its mock endpoints accept whatever arrives without
+// inspecting the header, and the regression's only symptom in a real run is
+// four warning lines. That is how one of the two came to be missing in the
+// first place (commit 2522191).
+func TestConsumerFollowUpsAreAddressedToTheCounterparty(t *testing.T) {
+	const counterparty = "urn:participant:the-provider"
+
+	// A pure function of its argument, so the assignment below is the only
+	// write and the audience is readable straight off the wire. The default
+	// minter returns "" and attaches no header at all, which is why
+	// TestConsumerPullsWhenTheStartCarriesAnAddress can assert only that the
+	// pull happened.
+	restore := mintOutboundCredential
+	mintOutboundCredential = func(aud string) string { return "Bearer aud=" + aud }
+	t.Cleanup(func() { mintOutboundCredential = restore })
+
+	// Buffered and non-blocking, because pushCallback retries: the first
+	// arrival is the one under test and later attempts must not block the
+	// server goroutine.
+	pullAuth := make(chan string, 1)
+	pushAuth := make(chan string, 1)
+	record := func(into chan string, r *http.Request) {
+		select {
+		case into <- r.Header.Get("Authorization"):
+		default:
+		}
+	}
+
+	data := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		record(pullAuth, r)
+		_, _ = w.Write([]byte("some-bytes"))
+	}))
+	defer data.Close()
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		record(pushAuth, r)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	dir := t.TempDir()
+	h, st := newTestTransferHandler(t, config.Config{
+		DataDir: dir,
+		ConsumerTransferPolicies: []config.ConsumerTransferPolicy{
+			{AgreementID: "urn:uuid:a", After: TransferStarted, Sequence: []string{TransferTerminated}},
+		},
+	})
+
+	now := time.Now()
+	const id = "urn:uuid:c-audience"
+	if err := st.CreateConsumerTransfer(store.ConsumerTransfer{
+		ConsumerPID: id, ProviderPID: "urn:uuid:p-1", ProviderBaseURL: provider.URL,
+		AgreementID: "urn:uuid:a", Format: "HTTP-PULL", State: TransferRequested,
+		CounterpartyID: counterparty, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
+
+	// One inbound start releases both dispatches: the address triggers the
+	// pull, and reaching STARTED triggers the sequence.
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + TransferStartMessageType + `",` +
+		`"providerPid":"urn:uuid:p-1","consumerPid":"` + id + `",` +
+		`"dataAddress":{"@type":"DataAddress","endpointType":"https://w3id.org/idsa/v4.1/HTTP",` +
+		`"endpoint":"` + data.URL + `"}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, VersionPath+"/transfers/"+id+"/start", strings.NewReader(body))
+	req.SetPathValue("id", id)
+	h.handleTransferStart(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inbound start: got %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	want := "Bearer aud=" + counterparty
+	for _, c := range []struct {
+		name string
+		ch   chan string
+	}{
+		{"the data pull", pullAuth},
+		{"the after-STARTED push", pushAuth},
+	} {
+		select {
+		case got := <-c.ch:
+			if got != want {
+				t.Errorf("%s carried Authorization %q, want %q — the counterparty is the audience of everything this connector sends",
+					c.name, got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s never arrived", c.name)
+		}
+	}
+
+	// Both goroutines are finished before the store closes: the file is the
+	// pull's last act, and TERMINATED is the sequence's.
+	waitForFile(t, filepath.Join(dir, downloadDir, id))
+	deadline := time.Now().Add(2 * time.Second)
+	for currentTransferState(t, st, id, true) != TransferTerminated {
+		if !time.Now().Before(deadline) {
+			t.Fatal("the driven sequence never recorded TERMINATED")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // pullPartialPath is the deterministic name pullTransferData now uses,
 // exposed here so tests can seed and inspect it directly.
 func pullPartialPath(dir, consumerPID string) string {

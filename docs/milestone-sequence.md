@@ -99,6 +99,58 @@ The regression risk was concrete enough to specify before writing: a check
 placed on the wrong side of the transfer lookup's consumer branch compiles,
 reads correctly, and silently refuses all fifteen `TP_C` results.
 
+## What is next: authorizing the initiate hooks
+
+**Every milestone above reads done, and until this section this document had no
+forward entry at all** — which is the exact failure a sequencing document exists
+to prevent. The design spec behind §32 names it as owed and §32.3 says so
+again, so it is recorded here with the ordering argument that is this
+document's whole job.
+
+**The milestone.** `POST /negotiations/initiate` and `POST /transfers/initiate`
+are the two endpoints §32.3 deliberately left unauthorized. Both take
+`providerId` from the request body, record it as the exchange's counterparty,
+and hand it to `mintOutboundCredential` as the audience of a token this
+connector signs — sent to a `connectorAddress` the same caller chose. Neither
+value is checked against the roster, and both endpoints are on the public
+listener. `docs/follow-ups.md` carries the two consequences in full: an
+impersonation primitive against a third participant, and consumer-role inbound
+messages that cannot be authorized at all, because a row whose counterparty was
+never verified is not something to compare an inbound request against.
+
+**Why it goes after §32 rather than inside it.** §32 closed five exchange
+resolvers and an agreement check with comparisons against data already on disk
+— no wire change, no contract change, each step independently shippable. This
+one cannot be built that way: it has to decide what an initiate call is
+*allowed to say*, which changes the endpoint's contract rather than adding a
+check behind it. Bundling the two would have produced a milestone whose steps
+could not ship separately, and it would have put a compatibility argument in
+front of six checks that needed none. This is the same rule that put
+authentication before the data plane and §32 after authentication: do the step
+that makes the next one safe, first.
+
+**Why it should not wait long.** §32 spent a whole milestone making a verified
+identity load-bearing. The initiate hooks are now the one place a caller can
+still supply an *un*verified identity and have this connector act on it, so
+every future authorization decision built on `counterparty_id` inherits a value
+that is trustworthy in one role and not in the other. That asymmetry already
+has to be explained in seven places — `refuseIfNotParty`, both `lookup` doc
+comments, `handleTransferInitiate`, the `CounterpartyID` doc comments on
+`store.ConsumerNegotiation` and `store.ConsumerTransfer`, and §32.3 — and every
+new reader of that column has to learn it before touching anything.
+
+**What can verify it, and this is the finding to specify against.** The TCK is
+worse than neutral here: it is a constraint on the design rather than evidence
+for it. The harness authenticates as `urn:participant:tck` while hardcoding
+`TCK_PARTICIPANT` as the `providerId` it sends, so a roster check written the
+obvious way loses all fifteen `TP_C` results — the same 35-of-65 outcome §32
+measured before writing a line. Evidence therefore comes from unit tests plus
+`make demo`, the only harness where the two names agree, and even there it
+agrees by fixture rather than by rule. **Settle before starting:** what an
+initiate call may name when the roster does not list it. Refusing outright is
+what breaks the harness, so that question is the milestone, not a detail inside
+it.
+
 What follows is the original argument, kept as written.
 
 ## Where this stood when this was written

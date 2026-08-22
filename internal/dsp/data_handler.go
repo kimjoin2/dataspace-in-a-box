@@ -74,6 +74,16 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 
 	// Whose transfer it is. Checked before state, so a counterparty probing
 	// someone else's transfer learns nothing about that transfer's progress.
+	//
+	// The third of this connector's three comparison forms, and hand-rolled
+	// rather than shared on purpose. refuseIfNotParty
+	// (auth_middleware.go) carries this identical rule for the five exchange
+	// resolvers, and handleTransferRequest's agreement check
+	// (transfer_handler.go) carries it with an empty-permitted clause added.
+	// This one must never acquire that clause: a transfer row with no
+	// counterparty is refused to everyone today, and permitting empty here
+	// would serve it to any roster participant. Factoring the three together
+	// is what would hand it over — see DECISIONS.md section 32.2.
 	if issuer := issuerFrom(r); h.cfg.AuthRequired() && issuer != t.CounterpartyID {
 		slog.Warn("refuse data pull from a participant this transfer is not with",
 			"provider_pid", providerPID, "issuer", issuer)

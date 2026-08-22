@@ -1017,6 +1017,47 @@ func TestNegotiationReachingAgreedRecordsTheAgreement(t *testing.T) {
 	}
 }
 
+// The counterparty a negotiated agreement is with is the verified issuer of
+// the request that opened the negotiation, carried from the negotiation row
+// onto the agreement row by dispatch's pushAgreement branch.
+//
+// Nothing else pins that one field, and its absence is silent. The TCK seeds
+// its twelve agreements through POST /agreements with no owner, so a whole run
+// only ever takes the empty-permitted branch of handleTransferRequest's
+// ownership check (DECISIONS.md section 32.2) — drop this assignment and every
+// negotiated agreement becomes ownerless, that check's empty clause starts
+// meaning "permit everyone" for the primary path, and the suite still reports
+// 65 of 65.
+func TestNegotiatedAgreementRecordsTheVerifiedCounterparty(t *testing.T) {
+	fc := newFakeCallback()
+	defer fc.srv.Close()
+	h, st := newTestHandler(t, negotiationTestConfig("https://provider.example.org", config.Dataset{ID: "urn:dataset:a"}))
+
+	// Not postJSON: this test is about a value that only exists when the
+	// request carries a verified issuer, so it builds the request itself to
+	// put one there.
+	body, err := json.Marshal(requestMessageBody("urn:uuid:consumer-1", "urn:dataset:a"+offerIDSuffix, "urn:dataset:a", fc.srv.URL))
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/negotiations/request", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+	rr := httptest.NewRecorder()
+	h.handleContractRequest(rr, req)
+
+	var doc NegotiationStateDocument
+	if err := json.Unmarshal(rr.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	fc.wait(t, "/agreement")
+	got := waitForAgreement(t, st, doc.ProviderPID)
+	if got.CounterpartyID != testPeer {
+		t.Errorf("agreement CounterpartyID = %q, want the verified issuer %q — an agreement recorded with no owner is servable to any roster participant that knows its id",
+			got.CounterpartyID, testPeer)
+	}
+}
+
 // TestDispatch_PushAgreement_RecordsAgreementWhenAlreadyVerified pins the
 // broadened guard directly: dispatch's pushAgreement branch must record the
 // agreement when its post-push re-read observes VERIFIED, not only AGREED,

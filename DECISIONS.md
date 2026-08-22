@@ -1877,13 +1877,42 @@ fields in declaration order and `demo/run.sh` extracts an agreement with a
 third is what 32.4 does not reach, and the fourth is a behaviour change rather
 than a gap.
 
-**An imported agreement with no owner stays exactly as open as it was.** 32.2's
-empty clause means an agreement imported without a `counterpartyId` is servable
-to any roster participant that knows its id — the pre-milestone posture,
-unchanged. The agreement half of this work is partial by construction, and the
-twelve seeds in `test/tck/run.sh` are why. It closes for an operator who names
-the counterparty on import, and for every negotiated agreement automatically;
-it does not close for the imports that already exist.
+**An agreement with no recorded owner stays exactly as open as it was, and one
+subset of those can never be given one.** 32.2's empty clause means an agreement
+whose `counterparty_id` is empty is servable to any roster participant that
+knows its id — the pre-milestone posture, unchanged. The agreement half of this
+work is partial by construction, and the twelve seeds in `test/tck/run.sh` are
+why.
+
+This paragraph used to end "it closes for an operator who names the counterparty
+on import, and for every negotiated agreement automatically". The second half was
+false and is corrected here rather than left as the flattering reading: it holds
+only for rows written after this milestone. Three subsets stay open.
+
+*Imports that name nobody* — the ones that already exist, and any future one, since
+`counterpartyId` is optional. An operator can close these, but only by concluding
+the agreement again under a new id; see the next trade-off for why there is no
+correction in place.
+
+*Negotiated agreements recorded between §27 and this milestone.* The negotiation
+row carries the verified counterparty and the agreement row defaulted to `''`,
+because the column did not exist yet. Recoverable in principle by a backfill, and
+deliberately not recovered: an `UPDATE agreements` is precisely the update path
+§25.3 says this connector has nowhere, `importAgreement`'s duplicate re-query
+depends on that clause, and buying back a handful of rows is not worth falsifying
+an invariant the rest of the connector reasons from. Stating the gap was judged
+the better trade than closing it.
+
+*Every agreement concluded while `require_auth` was false — unrecoverable.*
+`issuerFrom` returns `""` when authentication is off, so both writers record an
+empty counterparty and **nothing anywhere holds the identity**; no later migration
+can reconstruct what was never captured. This is not a hypothetical corner.
+`config.example.yaml` documents that flag as existing for exactly this migration —
+"switching a running connector from anonymous to authenticated is otherwise a flag
+day for every counterparty at once" — so a connector taking the upgrade path this
+repository recommends walks into it, and every agreement it concluded before
+flipping the flag stays open to any roster participant that knows its id, for as
+long as that agreement exists.
 
 **Naming the wrong participant on import has no correction.** §25.3 guarantees
 there is no update path and no delete path, so an operator who imports an

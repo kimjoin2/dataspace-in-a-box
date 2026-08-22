@@ -627,6 +627,10 @@ func TestCreateAgreementIfNegotiationAgreedRecordsWhenStateMatches(t *testing.T)
 	}
 
 	a := testAgreement()
+	// Set here rather than on the shared fixture: this is the one INSERT
+	// carrying counterparty_id that nothing else round-trips, and a zero value
+	// would leave the assertion below vacuous.
+	a.CounterpartyID = "urn:participant:peer"
 	recorded, currentState, err := s.CreateAgreementIfNegotiationAgreed(n.ProviderPID, []string{"AGREED", "VERIFIED", "FINALIZED"}, a)
 	if err != nil {
 		t.Fatalf("CreateAgreementIfNegotiationAgreed: %v", err)
@@ -647,6 +651,13 @@ func TestCreateAgreementIfNegotiationAgreedRecordsWhenStateMatches(t *testing.T)
 	}
 	if got.DatasetID != a.DatasetID {
 		t.Errorf("DatasetID = %q, want %q", got.DatasetID, a.DatasetID)
+	}
+	// The second of the two INSERTs into agreements, and until now the
+	// uncovered one: CreateAgreement's counterparty round trip is pinned by
+	// TestAgreementRoundTripsItsCounterparty, and dropping the column from
+	// this statement alone failed nothing.
+	if got.CounterpartyID != a.CounterpartyID {
+		t.Errorf("CounterpartyID = %q, want %q", got.CounterpartyID, a.CounterpartyID)
 	}
 }
 
@@ -995,11 +1006,18 @@ func TestSetConsumerTransferProviderPID(t *testing.T) {
 	}
 }
 
-// The counterparty is who the row is with, and every table carries it so an
-// outbound message can be addressed. A column added to the SELECT without a
-// matching Scan target compiles cleanly and fails only at runtime, so each
-// table gets a round trip.
-func TestCounterpartyIDRoundTripsOnEveryTable(t *testing.T) {
+// The counterparty is who the row is with, and every exchange table carries
+// it so an outbound message can be addressed. A column added to the SELECT
+// without a matching Scan target compiles cleanly and fails only at runtime,
+// so each table gets a round trip.
+//
+// Four tables, not five: agreements carries the same column and is covered by
+// TestAgreementRoundTripsItsCounterparty (CreateAgreement, GetAgreement,
+// ListAgreements) and by
+// TestCreateAgreementIfNegotiationAgreedRecordsWhenStateMatches (the second
+// INSERT). This test's old name said "EveryTable" while excluding it, which
+// is how that second INSERT stayed uncovered.
+func TestCounterpartyIDRoundTripsOnEveryExchangeTable(t *testing.T) {
 	s, err := Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)

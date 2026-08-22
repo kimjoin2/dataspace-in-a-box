@@ -1310,6 +1310,94 @@ func TestTransferRequestAcceptsProviderRoleAgreements(t *testing.T) {
 	}
 }
 
+// servableAsProvider's second call site. driveTransfer resolves the dataset
+// behind a transfer's agreement only when that agreement is one this connector
+// may serve under, and its own check is what makes that true — spec section
+// 4.4 and DECISIONS.md section 32.4 extracted the shared predicate precisely so
+// each of the four readers is testable on its own rather than protected only
+// by handleTransferRequest refusing to create the row.
+//
+// The dataset-keyed sequence is the observable. Resolving the dataset picks it
+// up; refusing to resolve leaves resolveTransferSequence on its [STARTED]
+// default, which is one push instead of two.
+func TestDriveTransferIgnoresTheDatasetOfAnAgreementHeldAsConsumer(t *testing.T) {
+	fc := newFakeTransferConsumer(t)
+	h, st := newTestTransferHandler(t, config.Config{Datasets: []config.Dataset{
+		{ID: "urn:dataset:a", TransferSequence: []string{TransferStarted, TransferSuspended}},
+	}})
+	now := time.Now()
+	if err := st.CreateAgreement(store.Agreement{
+		AgreementID: "urn:agreement:held-as-consumer", DatasetID: "urn:dataset:a",
+		Origin: store.OriginAgreed, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAgreement: %v", err)
+	}
+	tp := store.TransferProcess{
+		ProviderPID: "urn:uuid:tp-agreed", ConsumerPID: "urn:uuid:tc-agreed",
+		AgreementID: "urn:agreement:held-as-consumer", State: TransferRequested,
+		CallbackAddress: fc.srv.URL, Format: "HTTP-PULL", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.CreateTransfer(tp); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+
+	// Called directly rather than with `go`, as production always does (see
+	// driveTransfer's doc comment), so every push it makes has been made by
+	// the time it returns.
+	h.driveTransfer(tp)
+
+	got := fc.waitFor(t, 1)
+	if len(got) != 1 || got[0].msgType != TransferStartMessageType {
+		t.Fatalf("pushed %v, want exactly one start — a dataset reached through an agreement this connector holds as consumer must not configure the provider role's sequence", got)
+	}
+}
+
+// servableAsProvider's fourth call site, and the one furthest from any
+// refusal: hasSourceFor decides whether a start message advertises a data
+// address at all. Its own check is what keeps an agreement this connector
+// holds as consumer from advertising the provider role's bytes.
+//
+// The two positive rows are the control. Without them a false here would be
+// as consistent with "no dataset configured" as with the origin check, which
+// is the reading that let this call site survive with no test.
+func TestHasSourceForRefusesAnAgreementHeldAsConsumer(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		origin string
+		want   bool
+	}{
+		{"held as consumer", store.OriginAgreed, false},
+		{"negotiated here", store.OriginNegotiated, true},
+		{"imported by the operator", store.OriginImported, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.Open(":memory:")
+			if err != nil {
+				t.Fatalf("store.Open: %v", err)
+			}
+			t.Cleanup(func() { st.Close() })
+			if err := st.CreateAgreement(store.Agreement{
+				AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
+				Origin: tc.origin, CreatedAt: time.Now(),
+			}); err != nil {
+				t.Fatalf("CreateAgreement: %v", err)
+			}
+			// The store is built directly rather than through
+			// newTestTransferHandler: hasSourceFor makes no outbound call, so
+			// nothing here needs that helper's package-var stub, and avoiding
+			// it is what lets this test run in parallel.
+			h := transferHandler{cfg: config.Config{Datasets: []config.Dataset{
+				{ID: "urn:dataset:a", SourceFile: "testdata/a.csv"},
+			}}, store: st}
+
+			if got := h.hasSourceFor("urn:uuid:a"); got != tc.want {
+				t.Fatalf("hasSourceFor = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 // A transfer request must be refused when it cites an agreement recorded as
 // belonging to a different participant — otherwise knowing an agreement id
 // is enough to open a transfer under someone else's contract. An agreement

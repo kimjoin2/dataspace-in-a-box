@@ -743,3 +743,44 @@ func TestHandleAgreement_RecordsTheAgreement(t *testing.T) {
 		t.Errorf("ConsumerPID = %q, want %q", got.ConsumerPID, n.ConsumerPID)
 	}
 }
+
+// The counterparty of an agreement this connector accepted as consumer is the
+// provider — the column is role-relative (store.Agreement's doc comment) —
+// and it comes off the negotiation row this message arrived on.
+//
+// Its own test, because nothing else would notice it missing.
+// TestHandleAgreement_RecordsTheAgreement above asserts every other field of
+// the same row and would stay green, and the TCK never reaches this writer at
+// all: the TP_C suite cites seeded agreements and never negotiates one.
+func TestHandleAgreement_RecordsTheProviderAsCounterparty(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	n := testConsumerNegotiationAt(provider.URL)
+	n.State = StateAccepted
+	// Set here rather than on the shared fixture: negotiation_test.go's
+	// assignee test asserts against a fixture whose CounterpartyID is empty.
+	n.CounterpartyID = "urn:participant:the-provider"
+	h, st := newConsumerHandlerWithNegotiation(t, config.Config{}, n)
+
+	req := httptest.NewRequest("POST", "/x", strings.NewReader(agreementMessageJSON(n)))
+	req.SetPathValue("id", n.ConsumerPID)
+	w := httptest.NewRecorder()
+	h.handleAgreement(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	got, ok, err := st.GetAgreement(n.ProviderPID)
+	if err != nil {
+		t.Fatalf("GetAgreement: %v", err)
+	}
+	if !ok {
+		t.Fatal("no agreement row was written")
+	}
+	if got.CounterpartyID != n.CounterpartyID {
+		t.Errorf("CounterpartyID = %q, want the negotiation's counterparty %q", got.CounterpartyID, n.CounterpartyID)
+	}
+}

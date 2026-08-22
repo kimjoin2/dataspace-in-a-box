@@ -105,9 +105,19 @@ type Agreement struct {
 	// the same column on the exchange tables: for a negotiated agreement it is
 	// the consumer, for one this connector accepted as consumer it is the
 	// provider, and for an imported one it is whoever the operator named.
-	// Empty means not known — an agreement imported before this column existed,
-	// or one imported without naming a counterparty — and is permitted rather
-	// than refused. See the design spec's section 4.2.
+	// Empty means not known, and is permitted rather than refused (see the
+	// design spec's section 4.2). Three kinds of row reach that state, and
+	// only the first is about imports. An agreement imported before this
+	// column existed, or imported without naming a counterparty. A negotiated
+	// agreement recorded before this column existed, whose counterparty
+	// survives on the negotiation row but was never copied here — recoverable
+	// in principle, and deliberately not recovered, because a backfill would
+	// be the update path DECISIONS.md section 25.3 says this connector has
+	// nowhere. And, permanently, any agreement concluded while require_auth
+	// was false: issuerFrom returned "" and there was no verified identity to
+	// record anywhere, so nothing can reconstruct it later. That last subset
+	// is why the gap this column closes does not close for every negotiated
+	// agreement — see DECISIONS.md section 32's first trade-off.
 	CounterpartyID string
 	CreatedAt      time.Time
 }
@@ -236,9 +246,10 @@ var (
 )
 
 // Open opens (creating if necessary) the SQLite file at path, sets its
-// journal mode, ensures the schema exists, and applies the one schema
-// migration this project has (see migrate). path may be ":memory:" for
-// tests —
+// journal mode, ensures the schema exists, and applies this project's schema
+// migrations (see migrate). Not "the one migration this project has", which
+// this line claimed until the counterparty column landed: it is now six
+// column-adds across five tables. path may be ":memory:" for tests —
 // DECISIONS.md section 8 reserves that for tests only, never a runtime path.
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
@@ -288,9 +299,17 @@ func Open(path string) (*Store, error) {
 // created — it opens without complaint and then fails on the first query
 // naming the new column. `pragma_table_info` is SQLite's table-valued form of
 // `PRAGMA table_info(negotiations)`, one row per column with the column's
-// name in `name`. On a fresh database the CREATE above already made the
-// column, so the check finds it and nothing runs; on an older one the column
-// is added. Idempotent either way.
+// name in `name`. On an older database the column is added, always. On a fresh
+// one the answer now depends on which column, and that is worth stating rather
+// than left to be inferred from the CREATE literals above. `rerequested` and
+// `agreements.counterparty_id` are both declared there, so the CREATE already
+// makes them and the check finds nothing to do — the case this comment used to
+// describe as the only one. The other four counterparty_id columns appear in no
+// CREATE literal at all and exist solely because the loop below adds them, so a
+// fresh database creates those four tables without the column and immediately
+// alters them to add it. Both routes converge on the same schema, because the
+// check-and-add is idempotent either way, and DECISIONS.md section 32.5 records
+// why that inconsistency still does not earn a migration tool.
 func migrate(db *sql.DB) error {
 	if err := addColumnIfMissing(db, "negotiations", "rerequested",
 		`ALTER TABLE negotiations ADD COLUMN rerequested INTEGER NOT NULL DEFAULT 0`); err != nil {

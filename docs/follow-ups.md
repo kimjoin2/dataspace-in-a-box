@@ -162,8 +162,49 @@ a cleanup.
 
 The policy cross-check's three entries are gone: `DECISIONS.md` §32 closed
 them, and the three stale claims recorded alongside them are corrected in
-place. What follows is the part of the third entry that §32 did not close, kept
-because the reasoning for deferring it is worth more than the finding was.
+place. What follows is what §32 did not close — the two consequences §32.3
+defers, and the part of the third cross-check entry whose reasoning is worth
+more than the finding was.
+
+**A caller-chosen `providerId` becomes the audience of a credential this
+connector signs.** `POST /negotiations/initiate` and `POST /transfers/initiate`
+both take `providerId` out of the request body, record it as the exchange's
+counterparty, and hand it to `mintOutboundCredential` as the audience of a
+token this connector signs — delivered to the `connectorAddress` the same
+caller chose. Neither value is checked against the roster. Both endpoints are on
+the public listener, so this is reachable today by any roster participant, and
+by anyone at all with `require_auth` off.
+
+That is an impersonation primitive against a third participant: name the victim
+as `providerId`, point `connectorAddress` at yourself, and collect a credential
+this connector signed naming that victim as its audience. It needs no
+agreement, no negotiation state, and no second request.
+
+**This is the highest-severity item in this file**, and higher than the entry
+below it, which ends in a database row rather than in a signed credential. It
+is recorded rather than fixed because the fix is not local. Validating
+`providerId` against the roster changes what an initiate call is *allowed to
+say*, which is a compatibility question of its own, and the TCK harness
+demonstrates the cost of getting it wrong: it authenticates as
+`urn:participant:tck` while hardcoding `TCK_PARTICIPANT` as the `providerId` it
+sends, so a roster check written the obvious way loses all fifteen `TP_C`
+results. §32.3 records the same fact from the other side — a row's counterparty
+is an authorization anchor only where this connector verified it. This belongs
+to the initiate-hook milestone `docs/milestone-sequence.md` now names.
+
+**The consumer role's inbound messages stay unauthorized.** `handleOffers` and
+`handleAgreement` resolve only through `GetConsumer`, and §32.3 leaves them
+deliberately unguarded for the reason above: the only counterparty a
+consumer-role row carries is that same unverified `providerId`, and comparing
+against it is not authorization. So a roster participant that learns one of this
+connector's consumer pids can still push an offer or an agreement into that
+negotiation — which is the intake half of the forged-row entry below, and the
+reason that entry's fix had to sit at consumption instead.
+
+Listed separately from the entry above because they are opposite harms with one
+cause: the first is damage this connector can be made to do to a third party,
+the second is damage done to this connector. Both close with the same verified
+`providerId` work, and neither closes without it.
 
 **A forged consumer-role agreement row survives, and four things follow from
 that.** §32.4 refuses to serve data as provider under an agreement this

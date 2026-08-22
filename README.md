@@ -66,12 +66,22 @@ connector (`DECISIONS.md` section 32): a message about a negotiation or a
 transfer is refused `403` unless it comes from the participant that exchange is
 with, an agreement records who it is with and a transfer request citing it is
 checked against that, and this connector will not serve data as provider under
-an agreement it holds as consumer. What it does not close is recorded there
-rather than hidden: an agreement imported without naming a counterparty stays
-open to any roster participant that knows its id, and messages arriving about
-this connector's *consumer-role* exchanges are still unchecked, because the
-only identity available for them is one an operator typed rather than one this
-connector verified.
+an agreement it holds as consumer.
+
+What it does not close is recorded there rather than hidden. An agreement with
+no recorded owner stays open to any roster participant that knows its id, and
+that is not only the imports that name nobody. An agreement concluded while
+`require_auth` was off has no owner and can never be given one: authentication
+being off is what makes the identity absent, so there is nothing to recover —
+and that flag exists for the migration from anonymous to authenticated, which
+is the upgrade path this repository documents. Agreements negotiated before
+this work have the same empty owner; those are recoverable in principle and
+deliberately not recovered, because this connector has no update path by
+design. And messages arriving about this connector's *consumer-role* exchanges
+are still unchecked, because the only identity available for them is one an
+operator typed rather than one this connector verified — the same unverified
+value it then signs credentials against, which is the sharpest of the open
+items in `docs/follow-ups.md`.
 
 Two limits are worth stating plainly rather than leaving to be discovered.
 `did:web` resolution exists (`dsops resolve <did:web:...>`) but is not part
