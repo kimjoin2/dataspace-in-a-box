@@ -68,6 +68,9 @@ EOF
 export DSBOX_ROSTER_SIGNER="$operator_pub"
 
 $compose up -d --build dsbox
+# Recorded so the check after the TCK run can prove this is still the
+# container that gets seeded below. See that check for what it guards.
+connector_id=$($compose ps -q dsbox)
 
 printf 'waiting for the connector'
 i=0
@@ -150,6 +153,28 @@ printf '\ndataspacetck.dsp.connector.http.headers.authorization=Bearer %s\n' \
 # network alias by default (only `up` does), so without this flag the
 # connector's callback pushes to http://tck:8083 fail DNS resolution with
 # "no such host" the moment any test (first hit: CN:02-01) needs one.
-$compose run --rm --use-aliases tck >"$output" 2>&1 || true
+#
+# --no-deps: `run` otherwise brings up the `depends_on` service, and Compose
+# is free to *recreate* a dependency it considers out of date rather than
+# leave the running one alone. That replaces the connector container — and
+# with it the whole database, since data_dir is not a volume — throwing away
+# the twelve agreements seeded above and failing all 30 TP/TP_C tests with
+# "no agreement with id". dsbox is already up from the `up -d` above and
+# already carries its network alias from that, so there is nothing here for
+# Compose to start. Whether it recreates is version-dependent, which is why
+# this only ever failed in CI: Docker Desktop's Compose left the container
+# alone and the runner's did not.
+$compose run --rm --no-deps --use-aliases tck >"$output" 2>&1 || true
+
+# The connector has to be the same container that was seeded, or the run
+# proved nothing: a connector that never received the agreements and one that
+# rejects them answer identically. Checked rather than trusted, because the
+# failure it guards against was silent for four days and looked like a
+# protocol bug in the output.
+if [ "$($compose ps -q dsbox)" != "$connector_id" ]; then
+	echo "the connector container was replaced during the run; the seeded agreements went to a container that no longer exists" >&2
+	exit 1
+fi
+
 echo "TCK output written to $output"
 echo "connector log will be written to $connector_log"

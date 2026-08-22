@@ -104,11 +104,6 @@ func (h agreementHandler) importAgreement(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// TEMPORARY, for the CI-only investigation: prove the handler is reached
-	// at all, and that the write is visible on this same connection
-	// immediately after it returns.
-	slog.Warn("DIAG import agreement: handler entered", "agreement_id", body.AgreementID)
-
 	err := h.store.CreateAgreement(store.Agreement{
 		AgreementID: body.AgreementID,
 		DatasetID:   body.DatasetID,
@@ -133,18 +128,6 @@ func (h agreementHandler) importAgreement(w http.ResponseWriter, r *http.Request
 		slog.Error("import agreement", "agreement_id", body.AgreementID, "error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
-	}
-
-	// TEMPORARY, for the CI-only investigation: re-query on the same *Store
-	// (same single connection) immediately after the insert, before
-	// responding, to see whether the write is visible to a read that happens
-	// as soon as possible after it.
-	if _, found, getErr := h.store.GetAgreement(body.AgreementID); getErr != nil || !found {
-		slog.Warn("DIAG import agreement: immediate re-read after insert did not find it",
-			"agreement_id", body.AgreementID, "found", found, "get_err", getErr)
-	} else {
-		slog.Warn("DIAG import agreement: immediate re-read after insert found it",
-			"agreement_id", body.AgreementID)
 	}
 
 	slog.Info("imported agreement", "agreement_id", body.AgreementID, "dataset_id", body.DatasetID)
