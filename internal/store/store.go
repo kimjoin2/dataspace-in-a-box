@@ -16,9 +16,15 @@ import (
 // persistence. Open pins the underlying *sql.DB to a single connection
 // (SetMaxOpenConns(1)), so database/sql itself serializes every query
 // through it and a single Store is safe for concurrent use. Without that,
-// database/sql's connection pool opens multiple physical connections, and
-// since SQLite's WAL mode allows only one writer at a time, a second writer
-// gets an immediate SQLITE_BUSY instead of queuing behind the first.
+// database/sql's connection pool would open multiple physical connections
+// and every one of them would need its own locking story.
+//
+// TEMPORARY DIAGNOSTIC: journal_mode is DELETE, not WAL, while investigating
+// a CI-only bug (writes that report success and are invisible to a later
+// read, same process, same connection, only in GitHub Actions). WAL needs
+// no queuing story here regardless — with exactly one connection there is
+// only ever one writer — but it does need a working shared-memory (-shm)
+// mmap, which DELETE mode does not.
 type Store struct {
 	db *sql.DB
 }
@@ -217,9 +223,10 @@ var (
 	ErrStateChanged = errors.New("record changed concurrently")
 )
 
-// Open opens (creating if necessary) the SQLite file at path, enables WAL
-// mode, ensures the schema exists, and applies the one schema migration this
-// project has (see migrate). path may be ":memory:" for tests —
+// Open opens (creating if necessary) the SQLite file at path, sets its
+// journal mode, ensures the schema exists, and applies the one schema
+// migration this project has (see migrate). path may be ":memory:" for
+// tests —
 // DECISIONS.md section 8 reserves that for tests only, never a runtime path.
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
@@ -227,9 +234,9 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	if _, err := db.Exec("PRAGMA journal_mode=DELETE"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("enable WAL on %s: %w", path, err)
+		return nil, fmt.Errorf("set journal_mode on %s: %w", path, err)
 	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
