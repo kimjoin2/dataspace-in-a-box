@@ -152,6 +152,19 @@ func (h transferHandler) handleTransferRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// The empty clause is what the exchange checks deliberately lack. An
+	// imported agreement may legitimately have no owner — POST /agreements
+	// takes it optionally, and the TCK seeds twelve without one — so an
+	// unnamed owner has to keep meaning "not known" rather than "nobody". That
+	// leaves imports without a named counterparty exactly as open as they were.
+	if issuer := issuerFrom(r); h.cfg.AuthRequired() && a.CounterpartyID != "" && issuer != a.CounterpartyID {
+		slog.Warn("refuse transfer request citing an agreement with another participant",
+			"agreement_id", msg.AgreementID, "issuer", issuer, "expected", a.CounterpartyID)
+		writeError(w, TransferErrorType, http.StatusForbidden,
+			"that agreement is not yours")
+		return
+	}
+
 	// The provider pid is this connector's own identifier for the transfer.
 	// It goes out in the acknowledgment below and comes back as the {id} of
 	// every subsequent request about this transfer.

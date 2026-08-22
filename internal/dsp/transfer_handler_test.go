@@ -1309,3 +1309,52 @@ func TestTransferRequestAcceptsProviderRoleAgreements(t *testing.T) {
 		})
 	}
 }
+
+// A transfer request must be refused when it cites an agreement recorded as
+// belonging to a different participant — otherwise knowing an agreement id
+// is enough to open a transfer under someone else's contract. An agreement
+// with no recorded owner is unaffected: POST /agreements takes the
+// counterparty optionally, and an unnamed owner means "not known", not
+// "nobody".
+func TestTransferRequestChecksAgreementOwnership(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		owner  string
+		issuer string
+		want   int
+	}{
+		{"the party", testPeer, testPeer, http.StatusCreated},
+		{"a stranger", testPeer, "urn:participant:stranger", http.StatusForbidden},
+		{"no owner recorded", "", "urn:participant:anyone", http.StatusCreated},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.Open(":memory:")
+			if err != nil {
+				t.Fatalf("store.Open: %v", err)
+			}
+			t.Cleanup(func() { st.Close() })
+			if err := st.CreateAgreement(store.Agreement{
+				AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
+				Origin: store.OriginImported, CounterpartyID: tc.owner,
+				CreatedAt: time.Now(),
+			}); err != nil {
+				t.Fatalf("CreateAgreement: %v", err)
+			}
+			h := transferHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+			body := `{"@context":["` + ContextURL + `"],"@type":"` + TransferRequestMessageType +
+				`","consumerPid":"c1","agreementId":"urn:uuid:a",` +
+				`"format":"HTTP-PULL","callbackAddress":"http://consumer"}`
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/transfers/request", strings.NewReader(body))
+			req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, tc.issuer))
+			h.handleTransferRequest(rec, req)
+
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.want)
+			}
+		})
+	}
+}
