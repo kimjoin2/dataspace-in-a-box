@@ -1,6 +1,7 @@
 package dsp
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -1149,5 +1150,97 @@ func TestGetTransferResolvesAConsumerRow(t *testing.T) {
 	}
 	if doc["consumerPid"] != id {
 		t.Errorf("consumerPid = %v, want %s", doc["consumerPid"], id)
+	}
+}
+
+// A roster participant that is not party to a transfer may not move it. The
+// credential admits them to the connector; it does not admit them to someone
+// else's exchange.
+func TestTransferLookupRefusesAStranger(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now()
+	if err := st.CreateTransfer(store.TransferProcess{
+		ProviderPID: "p1", ConsumerPID: "c1", AgreementID: "urn:uuid:a",
+		State: TransferStarted, CallbackAddress: "http://x", Format: "HTTP-PULL",
+		CounterpartyID: testPeer, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+	h := transferHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/transfers/p1", nil)
+	req.SetPathValue("id", "p1")
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, "urn:participant:stranger"))
+	h.handleGetTransfer(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+// The party itself is unaffected.
+func TestTransferLookupAllowsTheParty(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now()
+	if err := st.CreateTransfer(store.TransferProcess{
+		ProviderPID: "p1", ConsumerPID: "c1", AgreementID: "urn:uuid:a",
+		State: TransferStarted, CallbackAddress: "http://x", Format: "HTTP-PULL",
+		CounterpartyID: testPeer, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+	h := transferHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/transfers/p1", nil)
+	req.SetPathValue("id", "p1")
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+	h.handleGetTransfer(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// A consumer-role row is never compared: its counterparty came from an
+// operator's initiate body, not from a credential this connector verified.
+// The TCK depends on this — it authenticates as urn:participant:tck while
+// naming itself TCK_PARTICIPANT in that body.
+func TestTransferLookupDoesNotCheckConsumerRows(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now()
+	if err := st.CreateConsumerTransfer(store.ConsumerTransfer{
+		ConsumerPID: "c1", ProviderPID: "p1", ProviderBaseURL: "http://provider",
+		AgreementID: "urn:uuid:a", Format: "HTTP-PULL", State: TransferStarted,
+		CounterpartyID: "SOME_OTHER_NAME", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
+	h := transferHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/transfers/c1", nil)
+	req.SetPathValue("id", "c1")
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+	h.handleGetTransfer(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d — a consumer row must not be checked", rec.Code, http.StatusOK)
 	}
 }

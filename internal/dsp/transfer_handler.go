@@ -592,6 +592,9 @@ func (h transferHandler) lookup(w http.ResponseWriter, r *http.Request) (resolve
 		writeError(w, TransferErrorType, http.StatusNotFound, "no transfer with id "+id)
 		return resolvedTransfer{}, false
 	}
+	if refuseIfNotParty(w, r, TransferErrorType, t.CounterpartyID, h.cfg.AuthRequired()) {
+		return resolvedTransfer{}, false
+	}
 	return resolvedTransfer{TransferProcess: t}, true
 }
 

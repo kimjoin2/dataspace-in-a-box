@@ -2,6 +2,7 @@ package dsp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -1113,5 +1114,57 @@ func TestDispatch_PushAgreement_TerminatedLeavesNoAgreement(t *testing.T) {
 		t.Fatalf("GetAgreement: %v", err)
 	} else if ok {
 		t.Error("GetAgreement: found a row for a negotiation observed TERMINATED — the guard should have skipped it")
+	}
+}
+
+// The four provider-role negotiation resolvers each refuse a stranger. They
+// are listed individually because three of them do their own two-table
+// dispatch and are not reached through lookup.
+func TestNegotiationResolversRefuseAStranger(t *testing.T) {
+	t.Parallel()
+	const stranger = "urn:participant:stranger"
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		call   func(h negotiationHandler, w http.ResponseWriter, r *http.Request)
+	}{
+		{"get", http.MethodGet, "/negotiations/p1",
+			func(h negotiationHandler, w http.ResponseWriter, r *http.Request) { h.handleGetNegotiation(w, r) }},
+		{"events", http.MethodPost, "/negotiations/p1/events",
+			func(h negotiationHandler, w http.ResponseWriter, r *http.Request) { h.handleEvent(w, r) }},
+		{"termination", http.MethodPost, "/negotiations/p1/termination",
+			func(h negotiationHandler, w http.ResponseWriter, r *http.Request) { h.handleTermination(w, r) }},
+		{"re-request", http.MethodPost, "/negotiations/p1/request",
+			func(h negotiationHandler, w http.ResponseWriter, r *http.Request) { h.handleReRequest(w, r) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.Open(":memory:")
+			if err != nil {
+				t.Fatalf("store.Open: %v", err)
+			}
+			t.Cleanup(func() { st.Close() })
+			now := time.Now()
+			if err := st.Create(store.Negotiation{
+				ProviderPID: "p1", ConsumerPID: "c1", State: StateOffered,
+				DatasetID: "urn:dataset:a", OfferID: "urn:dataset:a#offer",
+				CallbackAddress: "http://x", CounterpartyID: testPeer,
+				CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			h := negotiationHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader("{}"))
+			req.SetPathValue("id", "p1")
+			req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, stranger))
+			tc.call(h, rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+		})
 	}
 }

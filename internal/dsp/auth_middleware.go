@@ -75,3 +75,34 @@ func cutBearer(header string) (string, bool) {
 	token := strings.TrimSpace(header[len(scheme):])
 	return token, token != ""
 }
+
+// refuseIfNotParty writes a 403 and reports true when the authenticated
+// caller is not the participant this row is with. Callers return immediately
+// on true.
+//
+// stored must come from a counterparty this connector verified — a
+// provider-role row, filled from issuerFrom at creation. A consumer-role row's
+// counterparty came from the request body of an operator's own initiate call,
+// which is a string the caller chose; comparing against it is not
+// authorization, and the DSP TCK demonstrates why (it authenticates as
+// urn:participant:tck while naming itself TCK_PARTICIPANT in that body).
+//
+// 403, not 404: DECISIONS.md section 25.1 makes every DSP rejection
+// [400, 500) and never 404, because the counterparty's client checks for 404
+// before it checks whether an error was expected and aborts the whole
+// exchange on one. This is the same answer, and the same wording, the data
+// endpoint already gives.
+//
+// No empty-stored clause, matching handleData: a row with no counterparty
+// predates authentication and is served to nobody. The agreement check in
+// handleTransferRequest deliberately differs — see the design spec's section
+// 4.2.
+func refuseIfNotParty(w http.ResponseWriter, r *http.Request, errType, stored string, authRequired bool) bool {
+	if issuer := issuerFrom(r); authRequired && issuer != stored {
+		slog.Warn("refuse a message about an exchange the sender is not party to",
+			"issuer", issuer, "expected", stored, "path", r.URL.Path)
+		writeError(w, errType, http.StatusForbidden, "this exchange is not yours")
+		return true
+	}
+	return false
+}

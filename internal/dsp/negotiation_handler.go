@@ -201,6 +201,9 @@ func (h negotiationHandler) handleEvent(w http.ResponseWriter, r *http.Request) 
 // handleProviderAcceptedEvent is handleEvent's provider-role branch —
 // unchanged behavior from before this milestone.
 func (h negotiationHandler) handleProviderAcceptedEvent(w http.ResponseWriter, r *http.Request, n store.Negotiation) {
+	if refuseIfNotParty(w, r, ContractNegotiationErrorType, n.CounterpartyID, h.cfg.AuthRequired()) {
+		return
+	}
 	var msg struct {
 		Context   []string `json:"@context"`
 		Type      string   `json:"@type"`
@@ -310,6 +313,9 @@ func (h negotiationHandler) handleTermination(w http.ResponseWriter, r *http.Req
 // unchanged behavior from before this milestone. It is rejected from
 // FINALIZED (CN:03-01) and from an already TERMINATED negotiation.
 func (h negotiationHandler) handleProviderTermination(w http.ResponseWriter, r *http.Request, n store.Negotiation) {
+	if refuseIfNotParty(w, r, ContractNegotiationErrorType, n.CounterpartyID, h.cfg.AuthRequired()) {
+		return
+	}
 	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
 	var msg envelope
 	if err := json.NewDecoder(body).Decode(&msg); err != nil {
@@ -343,6 +349,9 @@ func (h negotiationHandler) handleGetNegotiation(w http.ResponseWriter, r *http.
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	} else if ok {
+		if refuseIfNotParty(w, r, ContractNegotiationErrorType, n.CounterpartyID, h.cfg.AuthRequired()) {
+			return
+		}
 		writeJSON(w, http.StatusOK, buildNegotiationStateDocument(n))
 		return
 	}
@@ -379,6 +388,9 @@ func (h negotiationHandler) lookup(w http.ResponseWriter, r *http.Request) (stor
 	}
 	if !ok {
 		writeError(w, ContractNegotiationErrorType, http.StatusNotFound, "no negotiation with id "+providerPID)
+		return store.Negotiation{}, false, nil
+	}
+	if refuseIfNotParty(w, r, ContractNegotiationErrorType, n.CounterpartyID, h.cfg.AuthRequired()) {
 		return store.Negotiation{}, false, nil
 	}
 	return n, true, nil
