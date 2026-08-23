@@ -253,27 +253,43 @@ func (h transferHandler) maybeDriveConsumerTransfer(t store.ConsumerTransfer, re
 // to get wrong, and this milestone gains nothing from it.
 const downloadDir = "downloads"
 
-// contentRangeFirstByte parses a 206 response's Content-Range header and
-// returns its first-byte-pos. RFC 7233 §4.2's shape for a single range is
-// "bytes <first>-<last>/<complete-length>" — the same shape this
-// connector's own provider emits (data_handler.go's 206 branch). Anything
-// else — the header absent, or not in that shape — is reported via the
-// bool rather than guessed at.
-func contentRangeFirstByte(header string) (int64, bool) {
+// parseContentRange parses a Content-Range header, reporting the
+// first-byte-pos and the complete length separately because either can be
+// absent independently.
+//
+// RFC 9110 section 14.4's shape for a satisfied range is
+// "bytes <first>-<last>/<complete-length>", and the same section permits
+// "*" in place of the complete length when the total is not known, and in
+// place of the range itself on a 416. Each half therefore reports its own
+// presence: an unknown total must reach the caller as unknown rather than as
+// a parse failure, or a resume that works today starts failing.
+func parseContentRange(header string) (first int64, hasFirst bool, complete int64, hasComplete bool) {
 	const prefix = "bytes "
 	if !strings.HasPrefix(header, prefix) {
-		return 0, false
+		return 0, false, 0, false
 	}
 	rest := strings.TrimPrefix(header, prefix)
-	dash := strings.IndexByte(rest, '-')
-	if dash < 0 {
-		return 0, false
+
+	slash := strings.LastIndexByte(rest, '/')
+	if slash < 0 {
+		return 0, false, 0, false
 	}
-	first, err := strconv.ParseInt(rest[:dash], 10, 64)
-	if err != nil || first < 0 {
-		return 0, false
+	rangePart, completePart := rest[:slash], rest[slash+1:]
+
+	if completePart != "*" {
+		if n, err := strconv.ParseInt(completePart, 10, 64); err == nil && n >= 0 {
+			complete, hasComplete = n, true
+		}
 	}
-	return first, true
+
+	if rangePart != "*" {
+		if dash := strings.IndexByte(rangePart, '-'); dash > 0 {
+			if n, err := strconv.ParseInt(rangePart[:dash], 10, 64); err == nil && n >= 0 {
+				first, hasFirst = n, true
+			}
+		}
+	}
+	return first, hasFirst, complete, hasComplete
 }
 
 // pullTransferData fetches what a dataAddress points at and writes it under
@@ -352,8 +368,8 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			// wrong Content-Range is not proof the provider's file
 			// changed, just a different-shaped answer to investigate.
 			contentRange := resp.Header.Get("Content-Range")
-			first, ok := contentRangeFirstByte(contentRange)
-			if !ok || first != existingSize {
+			first, hasFirst, _, _ := parseContentRange(contentRange)
+			if !hasFirst || first != existingSize {
 				slog.Error("206 response's Content-Range does not start where this connector's partial download left off; leaving the partial download in place",
 					"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "content_range", contentRange, "had_bytes", existingSize)
 				return

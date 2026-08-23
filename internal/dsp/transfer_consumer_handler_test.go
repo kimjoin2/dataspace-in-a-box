@@ -636,3 +636,71 @@ func TestPullTransferData_ConcurrentCallsForTheSameTransferDoNotRace(t *testing.
 	close(release)
 	waitForFile(t, filepath.Join(dir, downloadDir, consumerTransfer.ConsumerPID))
 }
+
+func TestParseContentRange(t *testing.T) {
+	tests := []struct {
+		name        string
+		header      string
+		first       int64
+		hasFirst    bool
+		complete    int64
+		hasComplete bool
+	}{
+		{
+			name:   "a complete single range yields both values",
+			header: "bytes 2000-4095/4096",
+			first:  2000, hasFirst: true,
+			complete: 4096, hasComplete: true,
+		},
+		{
+			// RFC 9110 section 14.4 permits an unknown complete length. This
+			// parses today because the total is discarded; a single ok would
+			// make it read as failure and break a resume that works.
+			name:   "an unknown complete length is unknown, not a failure",
+			header: "bytes 2000-4095/*",
+			first:  2000, hasFirst: true,
+			complete: 0, hasComplete: false,
+		},
+		{
+			name:   "an absent header yields nothing",
+			header: "",
+			first:  0, hasFirst: false,
+			complete: 0, hasComplete: false,
+		},
+		{
+			name:   "a unit other than bytes yields nothing",
+			header: "items 1-2/3",
+			first:  0, hasFirst: false,
+			complete: 0, hasComplete: false,
+		},
+		{
+			name:   "an unsatisfied-range form carries the total and no first byte",
+			header: "bytes */4096",
+			first:  0, hasFirst: false,
+			complete: 4096, hasComplete: true,
+		},
+		{
+			name:   "a malformed range part does not invalidate a well-formed total",
+			header: "bytes -1-5/10",
+			first:  0, hasFirst: false,
+			complete: 10, hasComplete: true,
+		},
+		{
+			name:   "a malformed total is rejected without losing the first byte",
+			header: "bytes 0-5/abc",
+			first:  0, hasFirst: true,
+			complete: 0, hasComplete: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first, hasFirst, complete, hasComplete := parseContentRange(tt.header)
+			if hasFirst != tt.hasFirst || (hasFirst && first != tt.first) {
+				t.Errorf("first = (%d, %v), want (%d, %v)", first, hasFirst, tt.first, tt.hasFirst)
+			}
+			if hasComplete != tt.hasComplete || (hasComplete && complete != tt.complete) {
+				t.Errorf("complete = (%d, %v), want (%d, %v)", complete, hasComplete, tt.complete, tt.hasComplete)
+			}
+		})
+	}
+}
