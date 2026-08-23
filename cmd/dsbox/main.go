@@ -102,7 +102,8 @@ func run() error {
 	defer st.Close()
 
 	// pulls counts the data pulls the router has in flight. Waited on at
-	// shutdown, below, because each one writes to the store on its way out.
+	// shutdown, below, so a pull that has not yet recorded what it expects,
+	// or has not yet placed its file, gets the chance to.
 	dspHandler, pulls := dsp.NewRouter(cfg, st, roster, signKey)
 
 	// These timeouts bound how long a connection can sit idle at each phase,
@@ -180,16 +181,25 @@ func run() error {
 	}
 	wg.Wait()
 
-	// In-flight pulls write to the store on their way out, so they have to
-	// finish before the deferred st.Close() above. Bounded: a pull that is
-	// still going after this loses its record, which is better than holding
-	// shutdown open indefinitely.
+	// In-flight pulls touch the store, so they have to finish before the
+	// deferred st.Close() above. What that protects is narrower than it may
+	// look, and DECISIONS.md section 33.6 has the detail: a pull records
+	// expected_bytes as soon as the response headers arrive — its first
+	// store act, not its last — so only a pull still waiting on that
+	// response could lose the write. Past it the wait is holding the door
+	// for the copy and the rename, and a pull writes nothing else. It
+	// becomes last-act protection if a pull ever records its outcome at the
+	// end.
+	//
+	// Bounded rather than indefinite: a pull still going after this is
+	// abandoned mid-copy, which is better than a connector that will not
+	// shut down while a counterparty keeps dribbling at it.
 	pullsDone := make(chan struct{})
 	go func() { pulls.Wait(); close(pullsDone) }()
 	select {
 	case <-pullsDone:
 	case <-time.After(5 * time.Second):
-		slog.Warn("shutting down with data pulls still in flight; their outcome will not be recorded")
+		slog.Warn("shutting down with data pulls still in flight; their downloads are abandoned and will restart from the partial file on the next start message")
 	}
 	return err
 }

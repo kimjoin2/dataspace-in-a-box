@@ -491,8 +491,11 @@ mutation as this repository does elsewhere: delete the check, confirm a
 - The recorded failure names the idle timeout, not `context canceled` — the
   cancel-cause sentinel of §1.3.
 - A counterparty that accepts the connection and never sends headers is
-  refused at `ResponseHeaderTimeout`. Every other stall case here stalls
-  *after* headers; this is the one that tests the other bound.
+  refused at the timer armed around `Do` — see §1.3's supersession note; the
+  bullet originally said `ResponseHeaderTimeout`, which the implementation
+  does not set. Every other stall case here stalls *after* headers; this is
+  the one that tests the other bound.
+  (`TestPullRefusesAConnectionThatNeverSendsHeaders`.)
 
 **The provider**
 
