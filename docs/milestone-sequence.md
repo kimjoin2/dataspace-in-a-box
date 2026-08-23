@@ -18,9 +18,16 @@ which says nothing about a licence or a metrics endpoint and so silently
 excluded everything it could not phrase as safety. The rule stated in the
 paragraph above — order by *what can still verify the work* — is the general
 one, and it does reach those axes. `docs/goal-gap-analysis.md` measures all
-four promises against the goal and proposes an order across them; this
-document remains the authority for the protocol and authorization axis inside
-that order.
+four promises against the goal and proposes an order across them.
+
+**It also disputes this document, and not only its coverage.** That document's
+second item argues the next milestone below is framed around the wrong
+question — that before asking what an initiate call may name, the question is
+which listener it belongs on, because moving those hooks to the management
+listener makes validating `providerId` unnecessary rather than difficult.
+Read it before starting the milestone, not after. Nothing here has been
+rewritten to match, because the two arguments should be settled by whoever
+starts the work rather than by whoever noticed the conflict.
 
 ## What has been done since this was written
 
@@ -113,6 +120,10 @@ placed on the wrong side of the transfer lookup's consumer branch compiles,
 reads correctly, and silently refuses all fifteen `TP_C` results.
 
 ## What is next: authorizing the initiate hooks
+
+> The framing of this section is disputed — see the note above and
+> `docs/goal-gap-analysis.md`'s second ordered item. What follows is the
+> argument as it stood before that dispute.
 
 **Every milestone above reads done, and until this section this document had no
 forward entry at all** — which is the exact failure a sequencing document exists

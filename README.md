@@ -22,8 +22,8 @@ the gaps are named rather than left to be found.
 
 | DSP protocol | TCK suite | Status |
 |---|---|---|
-| Version metadata | `MET` | gated in CI |
-| Catalog | `CAT` | gated in CI |
+| Version metadata | `MET` (served only) | gated in CI |
+| Catalog | `CAT` (served only) | gated in CI |
 | Contract negotiation | `CN` (provider role) | gated in CI, 15 of 15 |
 | Contract negotiation | `CN_C` (consumer role) | gated in CI, 16 of 16 |
 | Transfer process | `TP` (provider role) | gated in CI, 15 of 15 |
@@ -122,11 +122,20 @@ one a signature scheme answers by itself.
 that gets interrupted resumes from where it left off on the next restart —
 the provider answers `Range: bytes=N-` with `206` and the remaining bytes,
 or `416` if its file is no longer at least that long, which is also the
-whole of the integrity check: a same-size content replacement between
-attempts is not caught. An orphaned partial download from a transfer that
-never restarts is not cleaned up either. The write timeout still bounds how
-large a single uninterrupted fetch can finish before this connector's own
-role in the interruption starts to matter.
+whole of the integrity check: a replacement that leaves the file at least
+as long as the offset already fetched is appended to rather than refused,
+so neither a same-size nor a longer substitution is caught. There is no
+expected size and no digest. An orphaned partial download from a transfer
+that never restarts is not cleaned up either.
+
+**And a pull is capped at ten seconds, which is not a policy.** The
+consumer fetches through the same client it uses for callback pushes, whose
+ten-second timeout covers the response body — so a transfer that cannot
+finish inside it is severed, at roughly 12 MB on a 10 Mbit/s link, with no
+operator retry. The provider's thirty-second write timeout is the looser of
+the two. Neither is configurable, `make demo` moves kilobytes, and the TCK
+moves no bytes at all, so nothing here measures the size this connector can
+actually carry.
 
 Everything else known and unfixed is in [`docs/follow-ups.md`](docs/follow-ups.md),
 with the reasoning for each, and the order the remaining milestones should be

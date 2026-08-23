@@ -18,9 +18,9 @@ API, and an embedded web UI.
 
 ## How this was checked
 
-Every claim below was verified against the repository by four independent
-readers instructed to refute rather than confirm. Claims that survived carry a
-file and line. Three claims did not survive and are recorded under
+Every claim below was re-read against the source adversarially — the aim was
+to refute each one, not to confirm it — and what survived carries a file and
+line so you can check it rather than trust this. What did not survive is under
 "Corrections" rather than deleted, because a gap analysis that quietly drops
 its own errors cannot be audited either.
 
@@ -55,8 +55,11 @@ authentication profile that DSP does not specify and this project invented
 (roster plus self-signed JWT, `DECISIONS.md` §10), **the only counterparties
 this connector can transact with today are another `dsbox` and the TCK.**
 
-Done looks like: a catalog client, and a coverage table in `README.md` that
-names the role each protocol is implemented in.
+Done looks like: a catalog client, and a `README.md` table that names the
+role for every protocol. It already names roles for `CN`/`CN_C` and
+`TP`/`TP_C` and omits them for `MET` and `CAT` — which is exactly the two rows
+where a role is missing in the code, so the table reads as symmetric at the
+one place it is not.
 
 ### P2. It moves the right bytes, and keeps no record that it did
 
@@ -133,9 +136,10 @@ This is the promise "dataspace" makes, and no milestone owns it.
   it). `consumer_transfer_policies` is missing there too. The example config
   is the only onboarding document that exists, and it does not describe how
   to turn the product on.
-- **"Ten minutes" has never been defined.** The phrase appears five times
-  across `README.md`, `CLAUDE.md`, `DECISIONS.md`, and `docs/follow-ups.md`,
-  always as motivation, never as a condition anything tests. Whether
+- **"Ten minutes" has never been defined.** "ten minutes" appears once each
+  in `README.md`, `CLAUDE.md`, `DECISIONS.md`, and `docs/follow-ups.md`, and
+  `DECISIONS.md` reaches for "the ten-minute promise" twice more — always as
+  motivation, never as a condition anything tests. Whether
   "working" means the process boots or two independent participants exchanged
   a file is not written down, so the claim cannot be true or false.
 
@@ -174,9 +178,11 @@ documentation alone, bootstrap, revoke, and discover.
   embedded via `go:embed`" — and uses it inside the one-binary argument, and
   §19 hangs a test layer on it. This is documentation asserting a fact about
   the code that is not true, not merely an unbuilt feature.
-- **`SECURITY.md` is absent while `docs/follow-ups.md` publishes a working
-  exploit** in prose, on a public repository, with no coordinated disclosure
-  channel. This costs something every day it stands.
+- **Coordinated disclosure was missing and is now the one P4 item closed.**
+  `docs/follow-ups.md` publishes a working exploit in prose on a public
+  repository; until `SECURITY.md` landed there was no private channel to
+  report anything back. That file, and GitHub private vulnerability reporting
+  behind it, were added immediately after this document first named the gap.
 - **The FSL clock has not started.** `LICENSE.md` converts each version two
   years after it is made available and §16 says tags carry licensing meaning;
   there are no tags and no version in the binary, so `README.md`'s conversion
@@ -210,12 +216,11 @@ be presented, repeatedly, to the victim it names. The victim verifies issuer
 against its own roster and audience against its own id, both of which pass.
 Nothing rate-limits minting a fresh one.
 
-§32's ownership checks give **zero** mitigation here. They ask whether a
-caller is the verified issuer stored on an existing row; an attacker holding
-a valid `dsbox` token verifies identically to `dsbox`, and a *new* exchange
-has no prior row to check. `handleContractRequest` records
-`CounterpartyID: issuerFrom(r)` honestly — as `dsbox` — and every later
-check on that row then passes for the attacker.
+§32's ownership checks give **zero** mitigation here, and the reason is
+structural rather than a flaw in them: they compare a caller against the
+verified issuer already stored on a row, and a token that verifies as `dsbox`
+is indistinguishable from `dsbox` at every one of them. §32.3 scopes itself to
+that comparison and says so.
 
 So three separately-filed items compose: §32.3's unvalidated audience, §28's
 declined replay defense, and an absence of rate limiting that is filed
@@ -224,9 +229,12 @@ nowhere at all.
 **2. Tagging a release is a legal act, and doing it before the above is
 fixed is irreversible.** §16 records that tags start the FSL clock. A first
 tag cut today permanently records, as a released version, the item
-`docs/follow-ups.md` calls the highest-severity entry in the file. Nothing in
-the repository connects the release decision to the security decision. It
-should.
+`docs/follow-ups.md` calls the highest-severity entry in the file. When this
+was first written nothing in the repository connected the release decision to
+the security decision; `SECURITY.md` now does, and names the first tag as the
+point where publishing unfixed gaps stops being defensible. The ordering
+constraint below follows from that, and it is the reason the release item sits
+where it does.
 
 ## The order, and why
 
@@ -241,10 +249,10 @@ special case of it that holds for security work, promoted to a slogan; the
 promotion is what pushed three of the four promises out of the document.
 
 0. **Give the artifact an identity, and stop the documentation drift.** A
-   `-version` flag and a build stamp, `SECURITY.md`, `source_file` and
+   `-version` flag and a build stamp, `source_file` and
    `consumer_transfer_policies` in `config.example.yaml`, role columns in
    `README.md`'s protocol table. Cheap, blocks nothing, and everything below
-   needs to name a build. `SECURITY.md` is charging rent today.
+   needs to name a build. `SECURITY.md` was the fifth item here and is done.
 
 1. **The data path** — split the pull off `callbackHTTPClient`, verify what
    arrives, `Sync()` it, record it, make it queryable, log the served
@@ -319,3 +327,17 @@ terms have since stopped holding.
   concluded while `require_auth` was off has no recoverable owner, and that
   flag is the migration path this repository documents. Fixing the hooks does
   not close it.
+
+Found on a second pass, after this document was committed:
+
+- **The "ten minutes" count was wrong.** It said five occurrences; there are
+  four of "ten minutes" and two more of "ten-minute". The point stands and the
+  arithmetic did not.
+- **It went stale in four minutes.** The P4 bullet saying `SECURITY.md` is
+  absent was true when written and false by the next commit, which added it.
+  A document that measures a moving repository dates from its commit, not from
+  its reasoning.
+- **It claimed a role-labeled protocol table was missing.** `README.md` has
+  one; it labels `CN`/`CN_C` and `TP`/`TP_C` and omits `MET` and `CAT`. An
+  inconsistent table is a different defect from an absent one, and the
+  inconsistency happens to fall exactly where the missing code is.
