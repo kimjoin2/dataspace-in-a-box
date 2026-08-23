@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kimjoin2/dataspace-in-a-box/internal/auth"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
@@ -1238,5 +1239,105 @@ func TestDataPullClientIsNotTheCallbackClient(t *testing.T) {
 	}
 	if tr.TLSHandshakeTimeout <= 0 {
 		t.Error("TLSHandshakeTimeout is unset — a bare transport literal rather than a clone of the default")
+	}
+}
+
+// TestShutdownWaitCoversAnInFlightPull is the covering test for the
+// WaitGroup NewRouter returns. It exercises the guarantee rather than the
+// plumbing: a pull that is still streaming when the handler returns must
+// still be running when Wait is entered, and must have finished — file
+// placed, bytes complete — by the time Wait returns.
+//
+// That ordering is the whole assertion, and it is why the check sits after
+// Wait rather than polling for the file the way the other pull tests do.
+// Polling would pass whether or not anything waited. Only asserting
+// immediately after Wait, with no sleep and no retry, can tell the two
+// apart.
+//
+// Both halves of the wiring are covered because both make Wait return
+// early: dropping `pulls: pulls` from NewRouter's transferHandler leaves the
+// handler's field nil so nothing is ever counted, and dropping the
+// Add/Done pair at the dispatch site leaves the group at zero. Either way
+// Wait returns while the provider below is still sleeping, and the file is
+// not there yet.
+//
+// The router is built through NewRouter rather than newTestTransferHandler
+// on purpose: the field this pins is populated there, and a handler built
+// by hand would skip the line the mutation removes. Building the config as
+// a struct literal skips config.Load, so both data bounds are set here for
+// the reason testMaxDownloadBytes's comment gives.
+func TestShutdownWaitCoversAnInFlightPull(t *testing.T) {
+	const payload = "id,value\n1,still-arriving\n"
+	// Long enough that the pull is unambiguously in flight when the handler
+	// returns, short enough not to slow the suite.
+	const bodyDelay = 200 * time.Millisecond
+
+	dir := t.TempDir()
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Headers first, then a pause, then the body: this is a response
+		// that has started and not finished, which is the state the
+		// WaitGroup exists to keep the store open for.
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.WriteHeader(http.StatusOK)
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		time.Sleep(bodyDelay)
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer provider.Close()
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	origValidate := validateOutgoingCallback
+	validateOutgoingCallback = func(string) error { return nil }
+	t.Cleanup(func() { validateOutgoingCallback = origValidate })
+
+	cfg := config.Config{
+		PublicURL:        "http://connector.example.org",
+		ParticipantID:    testSelf,
+		DataDir:          dir,
+		DataIdleTimeout:  testDataIdleTimeout,
+		MaxDownloadBytes: testMaxDownloadBytes,
+		DevMode:          true,
+		RequireAuth:      new(bool),
+	}
+	handler, pulls := NewRouter(cfg, st, auth.Roster{}, nil)
+
+	id := seedConsumerTransferFor(t, st, TransferRequested, "urn:uuid:a-wait", "http://provider.example.org")
+
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + TransferStartMessageType + `",` +
+		`"providerPid":"urn:uuid:p-1","consumerPid":"` + id + `",` +
+		`"dataAddress":{"@type":"DataAddress","endpointType":"https://w3id.org/idsa/v4.1/HTTP",` +
+		`"endpoint":"` + provider.URL + `"}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, VersionPath+"/transfers/"+id+"/start", strings.NewReader(body))
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inbound start: got %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	final := filepath.Join(dir, downloadDir, id)
+	// The handler has returned and the provider is still sleeping, so the
+	// pull cannot have finished. If this file already exists, the delay
+	// above is not doing its job and everything below would pass for the
+	// wrong reason.
+	if _, err := os.Stat(final); err == nil {
+		t.Fatal("the pull finished before Wait was entered; this test proves nothing about waiting")
+	}
+
+	pulls.Wait()
+
+	// No poll and no sleep: Wait is what must have made this true.
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("Wait returned before the in-flight pull placed its file: %v", err)
+	}
+	if string(got) != payload {
+		t.Errorf("downloaded %q, want %q", got, payload)
 	}
 }

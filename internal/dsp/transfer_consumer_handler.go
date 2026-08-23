@@ -344,10 +344,6 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		}
 		defer h.pulling.Delete(t.ConsumerPID)
 	}
-	if h.pulls != nil {
-		h.pulls.Add(1)
-		defer h.pulls.Done()
-	}
 	if addr == nil || addr.Endpoint == "" {
 		return
 	}

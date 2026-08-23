@@ -537,14 +537,29 @@ func (h transferHandler) applyTransition(w http.ResponseWriter, r *http.Request,
 		// from the body that was just accepted rather than re-decoded: the
 		// address is only meaningful on the message that delivered it.
 		if to == TransferStarted && msg.DataAddress != nil {
-			go h.pullTransferData(store.ConsumerTransfer{
-				ConsumerPID:    t.ConsumerPID,
-				ProviderPID:    t.ProviderPID,
-				AgreementID:    t.AgreementID,
-				CounterpartyID: t.CounterpartyID,
-				State:          to,
-				ExpectedBytes:  t.ExpectedBytes,
-			}, msg.DataAddress)
+			// Add before the goroutine starts, never inside it: a Wait that
+			// ran in the window between `go` and the goroutine's first line
+			// would return with this pull unregistered, which is precisely
+			// the lost store write the counter exists to prevent. Done stays
+			// inside, so the pair is balanced by the wrapper rather than by
+			// pullTransferData — which seventeen tests call directly, and
+			// which would decrement a counter nothing had incremented.
+			if h.pulls != nil {
+				h.pulls.Add(1)
+			}
+			go func() {
+				if h.pulls != nil {
+					defer h.pulls.Done()
+				}
+				h.pullTransferData(store.ConsumerTransfer{
+					ConsumerPID:    t.ConsumerPID,
+					ProviderPID:    t.ProviderPID,
+					AgreementID:    t.AgreementID,
+					CounterpartyID: t.CounterpartyID,
+					State:          to,
+					ExpectedBytes:  t.ExpectedBytes,
+				}, msg.DataAddress)
+			}()
 		}
 		h.maybeDriveConsumerTransfer(store.ConsumerTransfer{
 			ConsumerPID:     t.ConsumerPID,
