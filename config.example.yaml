@@ -38,10 +38,15 @@ data_dir: ./data
 # The ceiling on a single data pull, in bytes. Optional, default 8589934592
 # (8 GiB). DSBOX_MAX_DOWNLOAD_BYTES overrides it.
 #
-# A counterparty that states a Content-Length is bounded by it. One that
-# streams chunked states nothing, and with no overall client timeout this is
-# what bounds it instead — as well as being the only backstop against a
-# transfer that never goes idle because it dribbles.
+# This caps every pull, whatever the counterparty states. A response
+# declaring a Content-Length larger than this is cut at the ceiling exactly
+# like a chunked one, so a dataset bigger than this value does not transfer
+# until you raise it — set it against the largest dataset you intend to
+# serve, not against a worst case you never expect to reach.
+#
+# Two things it is uniquely: the only bound at all when a counterparty
+# states no length, and the only backstop against a transfer that never
+# goes idle because it dribbles.
 # max_download_bytes: 8589934592
 
 # This participant's identifier, as it appears in every catalog this connector

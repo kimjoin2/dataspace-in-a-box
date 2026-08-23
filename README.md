@@ -131,13 +131,18 @@ that states no length at all is checked only by the byte ceiling. There is
 no digest. An orphaned partial download from a transfer that never restarts
 is not cleaned up either.
 
-**A transfer is now bounded by progress, not by the clock.** Both sides give
-up only after `data_idle_timeout` passes with no bytes moving, so a transfer
-of any size finishes as long as it keeps moving. `max_download_bytes` is the
-ceiling for a counterparty that states no length, and the only backstop
-against one that dribbles slowly enough never to go idle. What still has no
-measurement is size: `make demo` moves kilobytes and the TCK moves no bytes,
-so nothing here proves how large a transfer this can actually carry.
+**A transfer is bounded by progress and by size, not by the clock.** Both
+sides give up only after `data_idle_timeout` passes with no bytes moving, so
+elapsed time no longer decides what fits. Size is bounded separately, and
+unconditionally: `max_download_bytes` caps every pull, cutting a counterparty
+that states a `Content-Length` at exactly the same ceiling as one that streams
+chunked, so a dataset larger than it does not transfer until an operator
+raises it. Two things it is *uniquely*, which is what makes it worth setting
+deliberately — it is the only bound at all when a counterparty states no
+length, and the only backstop against one that dribbles slowly enough never
+to go idle. What still has no measurement is size: `make demo` moves kilobytes
+and the TCK moves no bytes, so nothing here proves how large a transfer this
+can actually carry.
 
 Everything else known and unfixed is in [`docs/follow-ups.md`](docs/follow-ups.md),
 with the reasoning for each, and the order the remaining milestones should be
