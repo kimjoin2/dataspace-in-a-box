@@ -79,11 +79,10 @@ func pullAs(t *testing.T, h dataHandler, id, issuer string) *httptest.ResponseRe
 	return rec
 }
 
-// pullInterrupting is pullAs against a dataset whose bytes are cut short by
-// the simulated-interrupt knob, writing into a caller-supplied
-// ResponseWriter so the response headers can be read back. The source file is
-// fileSize bytes of filler: this exercises response shape, not content.
-func pullInterrupting(t *testing.T, w http.ResponseWriter, fileSize int64, interruptAfter int64) {
+// interruptFixture is dataFixture for a dataset whose bytes are cut short by
+// the simulated-interrupt knob. The source file is fileSize bytes of filler:
+// the tests built on it exercise response shape, not content.
+func interruptFixture(t *testing.T, fileSize int64, interruptAfter int64) (dataHandler, string) {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -109,10 +108,29 @@ func pullInterrupting(t *testing.T, w http.ResponseWriter, fileSize int64, inter
 		t.Fatalf("CreateTransfer: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/p1", nil)
-	req.SetPathValue("id", "p1")
+	return dataHandler{cfg: cfg, store: st}, "p1"
+}
+
+// pullInterrupting is pullAs against an interruptFixture, writing into a
+// caller-supplied ResponseWriter so the response headers can be read back.
+func pullInterrupting(t *testing.T, w http.ResponseWriter, fileSize int64, interruptAfter int64) {
+	t.Helper()
+	h, id := interruptFixture(t, fileSize, interruptAfter)
+	req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/"+id, nil)
+	req.SetPathValue("id", id)
 	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
-	dataHandler{cfg: cfg, store: st}.handleData(w, req)
+	h.handleData(w, req)
+}
+
+// dataFixtureWithContent is dataFixture with a source file of the caller's
+// choosing, for the tests that care about a size rather than a value.
+func dataFixtureWithContent(t *testing.T, content string) (dataHandler, string) {
+	t.Helper()
+	h, id := dataFixture(t, TransferStarted, testPeer, true)
+	if err := os.WriteFile(h.cfg.Datasets[0].SourceFile, []byte(content), 0o600); err != nil {
+		t.Fatalf("rewrite source: %v", err)
+	}
+	return h, id
 }
 
 func TestDataPullServesTheConfiguredFile(t *testing.T) {
@@ -482,7 +500,7 @@ func TestDataPullSimulatedInterruptTruncatesAndSeversTheConnection(t *testing.T)
 		t.Fatalf("write source: %v", err)
 	}
 	ds := config.Dataset{ID: "urn:dataset:a", SourceFile: path, SimulateInterruptAfterBytes: 20}
-	cfg := config.Config{ParticipantID: testSelf, Datasets: []config.Dataset{ds}}
+	cfg := config.Config{ParticipantID: testSelf, Datasets: []config.Dataset{ds}, DataIdleTimeout: testDataIdleTimeout}
 	now := time.Now()
 	if err := st.CreateAgreement(store.Agreement{AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
 		Origin: store.OriginImported, CreatedAt: now}); err != nil {
@@ -693,36 +711,52 @@ func (c *countingDeadlineRecorder) SetWriteDeadline(d time.Time) error {
 // nothing else notices if handleData goes back to io.Copy: a recorder has no
 // deadline to exceed, so every other test in this file passes either way
 // while a real transfer is silently capped at the server's WriteTimeout
-// again. Counting the pushes is what makes that visible.
+// again.
+//
+// The large rows are what make that visible. A count of "at least one push"
+// is satisfied by set-the-deadline-once-then-io.Copy, which is the original
+// bug exactly — one deadline, then one sendfile the handler is parked in. A
+// source larger than copyBufSize forces a correct loop to read more than
+// once, and it pushes the deadline on every pass, so only the loop clears
+// two.
 func TestDataPullRollsTheWriteDeadlineOnBothStreamingPaths(t *testing.T) {
+	small := servedBytes
+	large := strings.Repeat("x", copyBufSize+copyBufSize/2)
 	for _, c := range []struct {
-		name        string
-		rangeHeader string
-		want        int
-		wantBody    string
+		name         string
+		content      string
+		rangeHeader  string
+		wantCode     int
+		wantBody     string
+		minDeadlines int
 	}{
-		{"full 200", "", http.StatusOK, servedBytes},
-		{"partial 206", "bytes=3-", http.StatusPartialContent, servedBytes[3:]},
+		{"full 200", small, "", http.StatusOK, small, 1},
+		{"partial 206", small, "bytes=3-", http.StatusPartialContent, small[3:], 1},
+		{"full 200 past the copy buffer", large, "", http.StatusOK, large, 2},
+		{"partial 206 past the copy buffer", large, "bytes=3-", http.StatusPartialContent, large[3:], 2},
 	} {
-		h, id := dataFixture(t, TransferStarted, testPeer, true)
-		req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/"+id, nil)
-		req.SetPathValue("id", id)
-		req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
-		if c.rangeHeader != "" {
-			req.Header.Set("Range", c.rangeHeader)
-		}
-		rec := &countingDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
-		h.handleData(rec, req)
+		t.Run(c.name, func(t *testing.T) {
+			h, id := dataFixtureWithContent(t, c.content)
+			req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/"+id, nil)
+			req.SetPathValue("id", id)
+			req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+			if c.rangeHeader != "" {
+				req.Header.Set("Range", c.rangeHeader)
+			}
+			rec := &countingDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+			h.handleData(rec, req)
 
-		if rec.Code != c.want {
-			t.Fatalf("%s: got %d, want %d: %s", c.name, rec.Code, c.want, rec.Body)
-		}
-		if rec.deadlines == 0 {
-			t.Errorf("%s: streamed without ever pushing the write deadline — io.Copy is back, and the transfer is bounded by the server's WriteTimeout again", c.name)
-		}
-		if got := rec.Body.String(); got != c.wantBody {
-			t.Errorf("%s: body = %q, want %q — nothing was streamed, so the deadline the handler set was refused", c.name, got, c.wantBody)
-		}
+			if rec.Code != c.wantCode {
+				t.Fatalf("got %d, want %d: %s", rec.Code, c.wantCode, rec.Body)
+			}
+			if rec.deadlines < c.minDeadlines {
+				t.Errorf("pushed the write deadline %d times, want at least %d — a single push before an io.Copy is the sendfile bug this replaced, and the transfer is bounded by the server's WriteTimeout again",
+					rec.deadlines, c.minDeadlines)
+			}
+			if got := rec.Body.String(); got != c.wantBody {
+				t.Errorf("body = %d bytes, want %d — nothing was streamed, so the deadline the handler set was refused", len(got), len(c.wantBody))
+			}
+		})
 	}
 }
 
@@ -775,5 +809,57 @@ func TestCopyUnderRollingDeadlineRollsBeforeTheFirstWrite(t *testing.T) {
 	}
 	if len(got) != 64<<10 {
 		t.Errorf("got %d bytes, want %d", len(got), 64<<10)
+	}
+}
+
+// TestDataPullSimulatedInterruptSeversPastTheSniffThreshold covers the branch
+// this milestone's own Content-Length made reachable by sendfile. The
+// existing real-server interrupt test cuts at 20 bytes, which stays inside
+// (*http.response).ReadFrom's 512-byte sniff and so never reaches
+// *net.TCPConn.ReadFrom; the 2000-byte case runs on a recorder, which has no
+// ReadFrom at all. Between them the newly-live path was untested in both
+// directions. This cuts well past 512 against a real server, so a regression
+// to io.CopyN here streams under one sendfile call.
+func TestDataPullSimulatedInterruptSeversPastTheSniffThreshold(t *testing.T) {
+	const fileSize, interruptAfter = 8000, 4000
+	h, id := interruptFixture(t, fileSize, interruptAfter)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.SetPathValue("id", id)
+		r = r.WithContext(context.WithValue(r.Context(), issuerContextKey{}, testPeer))
+		h.handleData(w, r)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + VersionPath + "/data/" + id)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Length"); got != strconv.Itoa(fileSize) {
+		t.Errorf("Content-Length = %q, want %d", got, fileSize)
+	}
+
+	got, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		t.Fatalf("read: got no error, and %d bytes — the connection should have been severed before the full %d arrived", len(got), fileSize)
+	}
+	if len(got) != interruptAfter {
+		t.Errorf("read %d bytes before the error, want exactly the configured %d", len(got), interruptAfter)
+	}
+}
+
+// TestDataPullSimulatedInterruptRollsTheWriteDeadline is the wiring test for
+// the third path that writes dataset bytes. It is separate from the truncation
+// test above because truncation happens either way: io.CopyN cuts at the same
+// byte, so only the deadline pushes tell the two implementations apart.
+func TestDataPullSimulatedInterruptRollsTheWriteDeadline(t *testing.T) {
+	rec := &countingDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	pullInterrupting(t, rec, 3*copyBufSize, 2*copyBufSize)
+
+	if rec.deadlines < 2 {
+		t.Errorf("pushed the write deadline %d times, want at least 2 — io.CopyN is back on the interrupt branch, and with a Content-Length declared that is one sendfile under the server's WriteTimeout", rec.deadlines)
+	}
+	if got := rec.Body.Len(); got != 2*copyBufSize {
+		t.Errorf("wrote %d bytes, want the configured %d", got, 2*copyBufSize)
 	}
 }

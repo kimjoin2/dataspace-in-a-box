@@ -246,12 +246,20 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		if n > stat.Size() {
 			n = stat.Size()
 		}
-		io.CopyN(w, f, n) //nolint:errcheck // the connection is about to be severed regardless
-		// The truncated bytes are sitting in ResponseWriter's own
-		// pre-chunking buffer (net/http buffers up to 2KB before deciding
-		// chunked vs. Content-Length) and Hijack does not flush it — only
-		// explicitly flushing here gets the n bytes onto the wire before
-		// the connection is severed.
+		// Through the same rolling-deadline loop as the two real streaming
+		// paths, and for the same reason. This response declares a
+		// Content-Length, so it is not chunked, and io.CopyN here would
+		// reach (*http.response).ReadFrom — which sniffs the first 512
+		// bytes through its own copy and then hands everything after them
+		// to *net.TCPConn.ReadFrom, one sendfile call under the server's
+		// WriteTimeout. That is the bug this file exists to remove, and
+		// declaring a Content-Length is what would have re-enabled it here.
+		rc := http.NewResponseController(w)
+		//nolint:errcheck // the connection is about to be severed regardless
+		copyUnderRollingDeadline(w, rc, io.LimitReader(f, n), h.cfg.DataIdleTimeout)
+		// Whatever the loop left in the response's buffers has to be pushed
+		// out explicitly: Hijack does not flush, so without this the n bytes
+		// need not have reached the wire before the connection is severed.
 		if fl, ok := w.(http.Flusher); ok {
 			fl.Flush()
 		}

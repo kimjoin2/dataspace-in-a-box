@@ -103,9 +103,22 @@ func run() error {
 
 	// These timeouts bound how long a connection can sit idle at each phase,
 	// so a client that dribbles headers (or never sends any) cannot hold a
-	// slot open indefinitely. WriteTimeout will need revisiting once transfer
-	// streaming lands: a streaming response can legitimately run longer than
-	// 30 seconds and would be cut off mid-stream.
+	// slot open indefinitely. WriteTimeout no longer bounds a data transfer:
+	// the data endpoint rolls its own write deadline forward as bytes leave
+	// (dsp.copyUnderRollingDeadline), so a stream is bounded by time without
+	// progress rather than by total elapsed time.
+	//
+	// It stays at 30 seconds regardless, because it still bounds every other
+	// response this server writes. Nothing outside the data endpoint rolls a
+	// deadline, so without this a client that stops reading a negotiation or
+	// catalog response parks that handler for as long as it likes.
+	//
+	// Overriding it per-request from a handler is safe, and that is not
+	// obvious: net/http clears the connection's write deadline after every
+	// request (conn.serve, right after finishRequest) and re-arms it from
+	// WriteTimeout while reading the next one, so a deadline the data
+	// endpoint set cannot survive into the next request on a keep-alive
+	// connection.
 	dspSrv := &http.Server{
 		Addr:              cfg.DSPAddr,
 		Handler:           dsp.NewRouter(cfg, st, roster, signKey),
