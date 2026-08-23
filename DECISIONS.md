@@ -1663,16 +1663,32 @@ connection via `http.Hijacker`, so test code can force a real
 interruption rather than mock one. As of the data-path milestone (§33) the
 truncated response still declares the file's **full** `Content-Length`,
 because that header is now set once after `Stat` and before the `Range`
-branch: an interrupted response therefore promises a length it does not
-deliver and the client sees an unexpected EOF, which is what a real
-interruption looks like rather than the short-but-well-formed body a
-truncated chunked stream would have produced.
-`TestSimulatedInterruptStillDeclaresTheFullLength` pins it, and `make demo`'s
-resume round depends on it — a first attempt that recorded no expected size
-would make the resumed attempt look like a changed representation.
+branch, so the interrupt path carries it too. What that changes is narrow
+and worth stating exactly, because a wider claim was made here first and was
+wrong: an interrupted response now promises a length it does not deliver, so
+the consumer can tell **how much** it was short by, and a first attempt
+records a real expected total instead of none.
+
+It does not change *whether* the client sees an unexpected EOF. A chunked
+response severed by `Hijack` never receives its terminating chunk, and
+`net/http/internal/chunked.go` turns that `io.EOF` into
+`io.ErrUnexpectedEOF` — at a clean chunk boundary as much as mid-chunk — so
+both framings fail the read. There is no short-but-well-formed body to
+contrast against.
+
+Nor does `make demo`'s resume round depend on this header. The branch that
+discards a partial on a changed representation is guarded by
+`t.ExpectedBytes > 0`, so a first attempt that recorded nothing cannot trip
+it: the resume takes `expected` from the `206`'s own `Content-Range` and
+appends. The demo would pass without the header. It is set because an
+interruption that declares a length is what a real one looks like, and
+because `expected_bytes` is worth recording on the first attempt rather than
+only the second — not because anything would otherwise break.
+`TestSimulatedInterruptStillDeclaresTheFullLength` pins it.
 
 It never fires on a `Range` request, which keeps the interrupt-then-resume
-sequence testable — the field is what `make demo`'s second round exercises. That round runs against a dedicated
+sequence testable — the field is what `make demo`'s second round exercises.
+That round runs against a dedicated
 dataset, `urn:dataset:sample-resume`, rather than the original
 `urn:dataset:sample`, so the baseline scenario's pass/fail signal stays
 unambiguous. It checks two things, not one: a byte-for-byte diff of the

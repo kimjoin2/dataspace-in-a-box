@@ -211,11 +211,18 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 
 	// Before the Range branch, so all three response shapes carry it — the
 	// full 200, the 206, and the simulated interrupt, which is also a 200
-	// and returns before the plain path. Setting it only at the plain-200
-	// site leaves the interrupt branch chunked, and then a demo's first
-	// attempt records no expected size while its resumed attempt learns the
-	// real one — which reads as a changed representation, discards the
-	// partial, and leaves no third start message coming to recover it.
+	// and returns before the plain path.
+	//
+	// What setting it on the interrupt branch buys is narrower than this
+	// comment once claimed, and DECISIONS.md section 31.4 now records the
+	// correction: it is not that a chunked truncation would look
+	// well-formed (net/http turns a severed chunked stream into
+	// io.ErrUnexpectedEOF either way), and it is not that make demo's
+	// resume would otherwise discard its partial (that branch is guarded by
+	// ExpectedBytes > 0 and cannot fire when the first attempt recorded
+	// nothing). It buys a consumer that can tell how much it was short by,
+	// and an expected total recorded on the first attempt rather than only
+	// the second.
 	//
 	// The two refusals inside the Range branch are the exception, and each
 	// clears it again: they send an error document or nothing at all, and a
