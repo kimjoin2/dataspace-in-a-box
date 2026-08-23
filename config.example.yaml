@@ -103,6 +103,23 @@ roster_signer: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
 # There is no environment override for this list.
 datasets:
   - id: urn:dataset:sample
+    # The file this dataset's bytes come from. This is the field that makes
+    # the connector actually serve data, and it is the one most likely to be
+    # missed: a dataset without it is still advertisable, negotiable, and
+    # transferable — the whole control plane works — and only the data
+    # endpoint answers 409, because the agreement is real and there is
+    # nothing configured behind it.
+    #
+    # Checked for existence at startup, so a typo fails at boot rather than
+    # on the first pull. Read per request rather than held open: a file
+    # swapped underneath the connector is the operator's business.
+    #
+    # Note what transfer_policies does to this. Its default, [STARTED], is
+    # the configuration that serves data; a sequence naming COMPLETED or
+    # TERMINATED ends the transfer on a timer, and ending a transfer ends
+    # access to its bytes. A terminal step and a source_file do not combine.
+    # source_file: /var/lib/dsbox/sample.csv
+
     # Optional. RFC 3339. Absent means the offer never expires. Set, this
     # becomes a real ODRL constraint on the offer and the agreement — not
     # only a negotiation-time gate — and the data plane refuses a pull once
@@ -181,3 +198,19 @@ datasets:
 #     sequence: [STARTED, SUSPENDED, STARTED, COMPLETED]
 #   - agreement_id: urn:uuid:another-agreement
 #     sequence: []            # accept the request and stay in REQUESTED
+
+# Optional. The mirror of transfer_policies for the consumer role: what this
+# connector does on its own once a transfer it requested reaches a state,
+# keyed by the agreement the transfer runs under. Unlike the provider table
+# above, an agreement with no entry here sends nothing at all — the consumer
+# has no default sequence to fall back on.
+#
+# `after` is the state whose arrival releases the sequence; empty means
+# STARTED. The same rule about legality applies: whether a step is allowed
+# depends on where the previous one left the transfer, which is only known at
+# runtime, so an illegal walk loads without complaint and is refused at the
+# step. There is no environment override for this list.
+# consumer_transfer_policies:
+#   - agreement_id: urn:uuid:example-agreement
+#     after: STARTED
+#     sequence: [COMPLETED]
