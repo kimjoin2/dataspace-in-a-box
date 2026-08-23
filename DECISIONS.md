@@ -2033,6 +2033,48 @@ leaves the row instead of outliving it: a fresh attempt seeds nothing from
 storage, because a length recorded from a representation that has already
 been thrown away has no authority over the one arriving now.
 
+**33.6 Shutdown waits for in-flight pulls, and `Add` runs before the goroutine
+does.** `NewRouter` returns a `sync.WaitGroup` alongside the handler, every
+data pull it dispatches is counted in it, and `run` waits on it — with a cap —
+after both listeners have shut down and before the deferred `st.Close()`
+fires. The group is returned rather than kept inside the package because the
+thing that must wait on it lives outside: nothing else in `internal/dsp`
+outlives a request.
+
+This is a milestone-specific need, not an oversight corrected late. A pull
+writes to the store only as of this milestone — recording `expected_bytes`
+per 33.5 is its last act before it places the file — so before now a pull
+outliving shutdown was harmless, and today the same pull's final write lands
+on a closed `*sql.DB` and the row never records its outcome. Removing the
+consumer's overall client timeout widened the same window in the same
+milestone: it used to be at most the ten seconds `callbackHTTPClient`
+allowed, and it is now unbounded. The race became newly consequential and
+newly wide at once, which is why it is closed here rather than left to the
+follow-ups.
+
+The placement rule is the part a later edit will get wrong, so it is stated
+rather than implied. `Add(1)` runs at the dispatch site, on the handler's own
+goroutine, *before* the `go` statement; only `Done` is deferred inside the
+wrapper. Two independent reasons, either sufficient. An `Add` that runs inside
+the goroutine can be outrun by a `Wait` entering the window between `go` and
+the goroutine's first line, which returns with that pull unregistered and
+defeats the entire guarantee. And seventeen tests call `pullTransferData`
+directly rather than through `go`, so an `Add` outside the function paired
+with a `Done` inside it would decrement a counter nothing had incremented and
+panic on a negative. Keeping both halves at the dispatch site, and
+`pullTransferData` free of the group entirely, makes that imbalance
+structurally impossible rather than merely unreached.
+`TestShutdownWaitCoversAnInFlightPull` covers both halves: it asserts the
+download landed immediately after `Wait` returns, with no poll, because a
+poll would pass whether or not anything waited.
+
+The wait is capped at five seconds rather than being indefinite, and a pull
+still running when the cap expires loses its record exactly as it would have
+without any of this. That is deliberate and it is the better of the two
+failures available: the alternative to a bounded wait is a connector that
+will not shut down while a counterparty keeps dribbling bytes at it, which
+turns one lost row into an operator holding down `SIGKILL`.
+
 *Trade-off accepted.* Three things.
 
 `sendfile` is given up on exactly the case it was built for. A large file now
