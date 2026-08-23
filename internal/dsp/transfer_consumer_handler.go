@@ -249,14 +249,15 @@ func (h transferHandler) maybeDriveConsumerTransfer(t store.ConsumerTransfer, re
 	go h.driveConsumerTransfer(t)
 }
 
-// newDataPullClient returns the client one data pull uses. It is
-// deliberately not callbackHTTPClient: a callback push is a small JSON body
-// that should be answered at once, and ten seconds is right for it, while a
-// data pull's body is the product and may legitimately take hours.
+// dataPullHTTPClient fetches transfer data. It is deliberately not
+// callbackHTTPClient: a callback push is a small JSON body that should be
+// answered at once, and ten seconds is right for it, while a data pull's
+// body is the product and may legitimately take hours.
 //
-// So there is no Client.Timeout here — the body is bounded by
-// idleTimeoutReader instead, on time without progress. Three things that
-// look like omissions are requirements:
+// So there is no Client.Timeout here. A pull is bounded by time without
+// progress instead: idleTimeoutReader covers the body, and a timer armed
+// around Do covers everything before a body exists. Two things that look
+// like omissions are requirements:
 //
 // CheckRedirect matches callbackHTTPClient's. validateOutgoingCallback
 // checks the endpoint a counterparty supplied and nothing a redirect points
@@ -265,31 +266,18 @@ func (h transferHandler) maybeDriveConsumerTransfer(t store.ConsumerTransfer, re
 // precisely so a firewall mistake cannot expose it (DECISIONS.md section
 // 12).
 //
-// The transport is a clone of the default rather than a bare literal.
-// ResponseHeaderTimeout starts only once the request is written, so without
-// the clone's DialContext timeout and TLSHandshakeTimeout — and
-// validateCallbackURL permits https — a black-holed endpoint would hold this
-// goroutine for as long as the OS is willing to wait.
-//
-// ResponseHeaderTimeout is the idle timeout itself rather than a constant of
-// its own. Waiting for a response header is time without progress, which is
-// exactly what data_idle_timeout bounds everywhere else on both sides of
-// this connector; a separate constant would be a second bound on the same
-// thing, changeable only by editing this file. That is also why the client
-// is built per pull rather than once: Transport.ResponseHeaderTimeout is
-// fixed the moment the transport exists, so a package-level client could not
-// take the value from configuration at all. Pulls are rare and long, which
-// makes the connection pool a shared client would preserve worth nothing
-// here — and the caller closes the idle connections this one leaves behind.
-func newDataPullClient(idle time.Duration) *http.Client {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.ResponseHeaderTimeout = idle
-	return &http.Client{
-		Transport: tr,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+// The transport is a clone of the default rather than a bare literal, so
+// this client keeps the connection pool and the dial defaults the rest of
+// the connector gets. It carries no ResponseHeaderTimeout on purpose: the
+// timer around Do bounds the header wait already, and bounds the dial and
+// the TLS handshake with it, which ResponseHeaderTimeout does not — one
+// mechanism enforcing data_idle_timeout rather than two, one of which could
+// not have read the configuration anyway.
+var dataPullHTTPClient = &http.Client{
+	Transport: http.DefaultTransport.(*http.Transport).Clone(),
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
 }
 
 // downloadDir is where pulled bytes land, under the one directory this
@@ -398,10 +386,21 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	if resuming {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingSize))
 	}
-	client := newDataPullClient(h.cfg.DataIdleTimeout)
-	defer client.CloseIdleConnections()
-	resp, err := client.Do(req)
+	// Nothing has arrived yet either, so the wait for a response falls under
+	// the same cancellation that bounds a stalled body — which covers the
+	// dial and the TLS handshake as well as the header wait. If this fires
+	// between Do returning and the Stop, the first body read fails with
+	// context.Canceled and context.Cause reports errIdleTimeout, which is
+	// the branch the copy below already attributes correctly.
+	headers := time.AfterFunc(h.cfg.DataIdleTimeout, func() { cancel(errIdleTimeout) })
+	resp, err := dataPullHTTPClient.Do(req)
+	headers.Stop()
 	if err != nil {
+		if errors.Is(context.Cause(ctx), errIdleTimeout) {
+			slog.Error("data endpoint sent no response within the idle timeout",
+				"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint)
+			return
+		}
 		slog.Error("data pull", "consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "error", err)
 		return
 	}
@@ -481,15 +480,27 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	// because a counterparty that streams chunked states no length at all,
 	// and this connector's own provider did exactly that until this
 	// milestone.
-	expected := t.ExpectedBytes
+	//
+	// A fresh attempt seeds nothing from the row. Its authority is what this
+	// response states, and a length recorded from an earlier representation
+	// has none: the two paths that discard a partial leave that recorded
+	// value behind, and carrying it into the next attempt would refuse a
+	// body that is in fact complete while reporting a remembered number as
+	// something this counterparty stated. A resume does seed from the row,
+	// because the representation it is continuing is the one that recorded
+	// it.
+	var expected int64
 	if resuming {
+		expected = t.ExpectedBytes
 		if hasStatedComplete {
 			expected = statedComplete
 		}
 	} else if resp.ContentLength >= 0 {
 		expected = resp.ContentLength
 	}
-	if expected > 0 && expected != t.ExpectedBytes {
+	// Recorded even when it is zero, which is how a stale total from a
+	// discarded representation leaves the row rather than outliving it.
+	if expected != t.ExpectedBytes {
 		if err := h.store.SetConsumerTransferExpectedBytes(t.ConsumerPID, expected); err != nil {
 			slog.Error("record expected bytes", "consumer_pid", t.ConsumerPID, "error", err)
 		}

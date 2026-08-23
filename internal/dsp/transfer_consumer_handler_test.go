@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -930,8 +931,11 @@ func TestPullStopsAtMaxDownloadBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat partial: %v", err)
 	}
-	if info.Size() > 2000+copyBufSize {
-		t.Errorf("wrote %d bytes past a %d ceiling", info.Size(), 2000)
+	// Exactly one byte past the ceiling: that is the byte the LimitReader is
+	// given so the overshoot can be detected at all. A looser bound would
+	// admit a ceiling applied once per copy buffer instead of once per pull.
+	if info.Size() != 2001 {
+		t.Errorf("partial holds %d bytes, want 2001 — a 2000-byte ceiling plus the one byte that proves it was exceeded", info.Size())
 	}
 }
 
@@ -976,6 +980,20 @@ func TestPullCompletesWhileBytesKeepArriving(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// This is also what catches a pull that reaches for callbackHTTPClient
+	// instead of its own client: that Timeout covers the whole response
+	// body, so borrowing it caps a transfer at whatever the link moves in
+	// the window. Ten seconds is too long to wait for here, so the callback
+	// client's own timeout is lowered for the duration of this test — a pull
+	// that uses it is then cut off mid-stream, and a pull with a client of
+	// its own does not notice. Safe to mutate in place: this test is
+	// sequential, and Go resumes the package's parallel tests only once the
+	// sequential pass is over, so nothing else is running while the value is
+	// lowered. Cleanup puts it back.
+	restore := callbackHTTPClient.Timeout
+	callbackHTTPClient.Timeout = 50 * time.Millisecond
+	t.Cleanup(func() { callbackHTTPClient.Timeout = restore })
+
 	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: 150 * time.Millisecond})
 	pid := seedConsumerTransfer(t, st, TransferStarted)
 	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
@@ -1008,7 +1026,87 @@ func TestPullRefusesAConnectionThatNeverSendsHeaders(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("a counterparty that never sent headers held the pull open; ResponseHeaderTimeout is not set")
+		t.Fatal("a counterparty that never sent a response held the pull open; the wait for one is not under the idle timeout")
+	}
+}
+
+// TestAFreshPullDoesNotInheritALengthFromADiscardedRepresentation walks the
+// three attempts that used to end in a permanently blocked transfer. A first
+// attempt records the length its counterparty stated and is cut off holding
+// a partial; a second is answered about a different representation, which
+// discards that partial but leaves the recorded total behind; a third starts
+// fresh against a counterparty that states nothing at all. Seeding that
+// third attempt from the row would refuse a body that is in fact complete,
+// and would say so in a log line attributing a remembered number to a
+// counterparty that never sent one.
+func TestAFreshPullDoesNotInheritALengthFromADiscardedRepresentation(t *testing.T) {
+	dir := t.TempDir()
+	stall := make(chan struct{})
+	var attempt atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch attempt.Add(1) {
+		case 1:
+			// States 400, delivers 100, then goes quiet until the idle
+			// timeout cuts it off — leaving a partial and a recorded 400.
+			w.Header().Set("Content-Length", "400")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(strings.Repeat("a", 100)))
+			w.(http.Flusher).Flush()
+			<-stall
+		case 2:
+			// A different representation, so the resume is refused and the
+			// partial discarded. The recorded 400 stays in the row.
+			w.Header().Set("Content-Range", "bytes 100-599/600")
+			w.Header().Set("Content-Length", "500")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte(strings.Repeat("b", 500)))
+		default:
+			// Chunked, so this counterparty states no length at all.
+			w.WriteHeader(http.StatusOK)
+			for i := 0; i < 5; i++ {
+				_, _ = w.Write([]byte(strings.Repeat("c", 50)))
+				w.(http.Flusher).Flush()
+			}
+		}
+	}))
+	defer func() { close(stall); srv.Close() }()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: 150 * time.Millisecond})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	addr := &DataAddress{Endpoint: srv.URL}
+
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, addr)
+	row, _, err := st.GetConsumerTransfer(pid)
+	if err != nil {
+		t.Fatalf("get after the first attempt: %v", err)
+	}
+	if row.ExpectedBytes != 400 {
+		t.Fatalf("after the first attempt ExpectedBytes = %d, want the stated 400", row.ExpectedBytes)
+	}
+
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid, ExpectedBytes: row.ExpectedBytes}, addr)
+	if _, err := os.Stat(pullPartialPath(dir, pid)); err == nil {
+		t.Fatal("the second attempt kept a partial belonging to a different representation")
+	}
+	row, _, err = st.GetConsumerTransfer(pid)
+	if err != nil {
+		t.Fatalf("get after the second attempt: %v", err)
+	}
+
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid, ExpectedBytes: row.ExpectedBytes}, addr)
+	got, err := os.ReadFile(filepath.Join(dir, downloadDir, pid))
+	if err != nil {
+		t.Fatalf("a complete body was refused against a length no counterparty stated: %v", err)
+	}
+	if len(got) != 250 {
+		t.Errorf("published %d bytes, want 250", len(got))
+	}
+	row, _, err = st.GetConsumerTransfer(pid)
+	if err != nil {
+		t.Fatalf("get after the third attempt: %v", err)
+	}
+	if row.ExpectedBytes != 0 {
+		t.Errorf("ExpectedBytes = %d, want 0 — the attempt that succeeded stated nothing, and the discarded representation's total must not outlive it", row.ExpectedBytes)
 	}
 }
 
@@ -1085,7 +1183,9 @@ func TestInboundStartCarriesTheRecordedExpectedBytesToThePull(t *testing.T) {
 // to localhost precisely so a firewall mistake cannot expose it.
 func TestPullDoesNotFollowARedirect(t *testing.T) {
 	dir := t.TempDir()
+	var reached atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
 		_, _ = w.Write([]byte("bytes from an address no guard ever saw"))
 	}))
 	defer target.Close()
@@ -1098,6 +1198,12 @@ func TestPullDoesNotFollowARedirect(t *testing.T) {
 	pid := seedConsumerTransfer(t, st, TransferStarted)
 	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
 
+	// The hit count is the assertion that matters: not publishing could
+	// happen for any number of reasons, but reaching the target at all means
+	// this connector sent a request to an address no guard ever saw.
+	if n := reached.Load(); n != 0 {
+		t.Errorf("the redirect target was reached %d times; the pull followed a redirect to an address validateOutgoingCallback never checked", n)
+	}
 	if _, err := os.Stat(filepath.Join(dir, downloadDir, pid)); err == nil {
 		t.Error("the pull followed a redirect and published what it found there")
 	}
@@ -1107,11 +1213,11 @@ func TestPullDoesNotFollowARedirect(t *testing.T) {
 // client that no behavioral test in this file can reach cheaply. The absent
 // overall timeout is the whole reason the client exists, and proving its
 // absence behaviorally would mean a test that runs longer than
-// callbackHTTPClient's ten seconds; the dial and handshake bounds only show
-// up against an endpoint that black-holes packets, which a loopback httptest
-// server cannot be.
+// callbackHTTPClient's ten seconds; the dial and handshake defaults only
+// show up against an endpoint that black-holes packets, which a loopback
+// httptest server cannot be.
 func TestDataPullClientIsNotTheCallbackClient(t *testing.T) {
-	c := newDataPullClient(30 * time.Second)
+	c := dataPullHTTPClient
 
 	if c.Timeout != 0 {
 		t.Errorf("Client.Timeout = %v, want none — an overall timeout caps a data pull at whatever the link moves in that time", c.Timeout)
@@ -1123,17 +1229,14 @@ func TestDataPullClientIsNotTheCallbackClient(t *testing.T) {
 	if !ok {
 		t.Fatalf("Transport is %T, want *http.Transport", c.Transport)
 	}
-	if tr.ResponseHeaderTimeout != 30*time.Second {
-		t.Errorf("ResponseHeaderTimeout = %v, want the idle timeout the client was built with", tr.ResponseHeaderTimeout)
-	}
-	// The next two say the transport is a clone of the default rather than a
-	// bare literal. Neither is covered by ResponseHeaderTimeout, which starts
-	// only once the request is written, and neither is covered by
-	// Client.Timeout any more.
+	// These two say the transport is a clone of the default rather than a
+	// bare literal. The idle timer around Do bounds the dial and the
+	// handshake too, so these are the belt to that suspenders — and what
+	// says this client still pools connections like every other one here.
 	if tr.DialContext == nil {
-		t.Error("DialContext is nil — a bare transport literal, so a black-holed endpoint's TCP connect is bounded by nothing")
+		t.Error("DialContext is nil — a bare transport literal, so this client dials without the defaults the rest of the connector uses")
 	}
 	if tr.TLSHandshakeTimeout <= 0 {
-		t.Error("TLSHandshakeTimeout is unset — a bare transport literal, so an https endpoint's handshake is bounded by nothing")
+		t.Error("TLSHandshakeTimeout is unset — a bare transport literal rather than a clone of the default")
 	}
 }
