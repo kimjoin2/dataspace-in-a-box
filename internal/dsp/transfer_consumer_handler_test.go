@@ -981,20 +981,13 @@ func TestPullCompletesWhileBytesKeepArriving(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// This is also what catches a pull that reaches for callbackHTTPClient
-	// instead of its own client: that Timeout covers the whole response
-	// body, so borrowing it caps a transfer at whatever the link moves in
-	// the window. Ten seconds is too long to wait for here, so the callback
-	// client's own timeout is lowered for the duration of this test — a pull
-	// that uses it is then cut off mid-stream, and a pull with a client of
-	// its own does not notice. Safe to mutate in place: this test is
-	// sequential, and Go resumes the package's parallel tests only once the
-	// sequential pass is over, so nothing else is running while the value is
-	// lowered. Cleanup puts it back.
-	restore := callbackHTTPClient.Timeout
-	callbackHTTPClient.Timeout = 50 * time.Millisecond
-	t.Cleanup(func() { callbackHTTPClient.Timeout = restore })
-
+	// A pull that reached for callbackHTTPClient instead of its own client
+	// is caught structurally by TestDataPullClientIsNotTheCallbackClient,
+	// which pins dataPullHTTPClient.Timeout at zero. This test used to also
+	// lower callbackHTTPClient.Timeout in place to catch it dynamically;
+	// that mutated a package-level client shared by every other test in the
+	// package, which docs/follow-ups.md names as the likeliest source of a
+	// future flake, and it duplicated a check that already holds without it.
 	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: 150 * time.Millisecond})
 	pid := seedConsumerTransfer(t, st, TransferStarted)
 	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})

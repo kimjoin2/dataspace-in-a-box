@@ -1,10 +1,13 @@
 package dsp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -145,6 +148,14 @@ func TestDataPullServesTheConfiguredFile(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "application/octet-stream" {
 		t.Errorf("Content-Type = %q", ct)
+	}
+	// The header this milestone added, on the path that carries it. Without
+	// it the response is chunked, and a consumer then records no expected
+	// size for a fresh pull — which is what makes a later resume look like a
+	// changed representation. make demo is the only other gate that would
+	// notice, and it does not run in CI.
+	if cl := rec.Header().Get("Content-Length"); cl != strconv.Itoa(len(servedBytes)) {
+		t.Errorf("Content-Length = %q, want %d", cl, len(servedBytes))
 	}
 }
 
@@ -861,5 +872,96 @@ func TestDataPullSimulatedInterruptRollsTheWriteDeadline(t *testing.T) {
 	}
 	if got := rec.Body.Len(); got != 2*copyBufSize {
 		t.Errorf("wrote %d bytes, want the configured %d", got, 2*copyBufSize)
+	}
+}
+
+// endlessReader supplies bytes as fast as they are asked for, up to a limit,
+// without ever pausing. It is the opposite of slowReader: nothing on the
+// source side can stall this copy, so the only thing that can is the client.
+type endlessReader struct{ left int64 }
+
+func (r *endlessReader) Read(p []byte) (int, error) {
+	if r.left <= 0 {
+		return 0, io.EOF
+	}
+	n := int64(len(p))
+	if n > r.left {
+		n = r.left
+	}
+	for i := range p[:n] {
+		p[i] = 'x'
+	}
+	r.left -= n
+	return int(n), nil
+}
+
+// TestProviderGivesUpOnAConsumerThatStopsReading is the provider-side mirror
+// of TestPullIsCutOffWhenProgressStops. Two existing tests prove the rolling
+// deadline does not fire while a transfer keeps moving, and one counts how
+// often it is pushed; none proves it ever actually fires. This does: a
+// consumer that reads the response headers and then stops reading must be
+// cut loose after data_idle_timeout rather than parked on forever.
+//
+// It needs a real socket, not a recorder. The cutoff is the kernel refusing
+// a write past its deadline once the send and receive buffers are both full,
+// and neither httptest.ResponseRecorder nor the deadlineRecorder shim can
+// produce that — deadlineRecorder's SetWriteDeadline returns nil and its
+// writes always succeed.
+//
+// The server is deliberately built with no WriteTimeout of its own. If it
+// had one, that bound would cut the response off and this test would pass
+// against a handler that rolled nothing.
+func TestProviderGivesUpOnAConsumerThatStopsReading(t *testing.T) {
+	const idle = 300 * time.Millisecond
+	// Comfortably past anything the loopback send and receive buffers will
+	// autotune to, so the write genuinely blocks rather than being absorbed.
+	// endlessReader allocates none of it.
+	const bodySize = 64 << 20
+
+	copyErr := make(chan error, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(bodySize))
+		w.WriteHeader(http.StatusOK)
+		rc := http.NewResponseController(w)
+		_, err := copyUnderRollingDeadline(w, rc, &endlessReader{left: bodySize}, idle)
+		copyErr <- err
+	}))
+	srv.Start()
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	// Read exactly the headers and not a byte of body, then stop. The
+	// connection stays open: closing it would fail the server's writes with
+	// a reset rather than with the deadline, which is a different mechanism
+	// and would pass with the deadline removed.
+	br := bufio.NewReader(conn)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read response headers: %v", err)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+
+	select {
+	case err := <-copyErr:
+		if err == nil {
+			t.Fatal("the copy finished against a client that never read the body")
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Errorf("copy failed with %v, want a deadline error — the response ended for some reason other than the idle bound", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the provider never gave up on a consumer that stopped reading; the write deadline is not bounding the stream")
 	}
 }
