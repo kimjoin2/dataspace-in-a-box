@@ -24,6 +24,26 @@ mgmt_token: ""
 # Required. Created on first start if it does not exist.
 data_dir: ./data
 
+# How long a data transfer may go without progress before it is given up on,
+# on both sides: the provider rolls its response write deadline by this, and
+# a consumer's pull cancels when no bytes arrive within it. Optional,
+# default 60s. DSBOX_DATA_IDLE_TIMEOUT overrides it.
+#
+# This bounds time without progress, not total time. That distinction is the
+# whole point: a bound on total time is a file size limit expressed in
+# seconds, and it moves with the network rather than with any decision an
+# operator made.
+# data_idle_timeout: 60s
+
+# The ceiling on a single data pull, in bytes. Optional, default 8589934592
+# (8 GiB). DSBOX_MAX_DOWNLOAD_BYTES overrides it.
+#
+# A counterparty that states a Content-Length is bounded by it. One that
+# streams chunked states nothing, and with no overall client timeout this is
+# what bounds it instead — as well as being the only backstop against a
+# transfer that never goes idle because it dribbles.
+# max_download_bytes: 8589934592
+
 # This participant's identifier, as it appears in every catalog this connector
 # serves and as the issuer of every credential it presents. Required and never
 # inferred. DSBOX_PARTICIPANT_ID overrides it.
@@ -153,7 +173,13 @@ datasets:
     # truncates a non-Range pull at this many bytes and severs the
     # connection, so make demo can prove resumption against a real
     # interrupted transfer. A request carrying Range is never truncated. A
-    # real deployment has no reason to set this. Uncomment to try it:
+    # real deployment has no reason to set this.
+    #
+    # The response still declares the file's full Content-Length, so a
+    # client sees an unexpected EOF rather than a short but well-formed
+    # body — which is what a real interruption looks like.
+    #
+    # Uncomment to try it:
     # simulate_interrupt_after_bytes: 2000
 
 # Optional. Configures this connector's autonomous behavior when it is

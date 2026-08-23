@@ -67,7 +67,8 @@ func authedRouter(t *testing.T) (http.Handler, ed25519.PrivateKey) {
 		ParticipantID: testSelf,
 		Datasets:      []config.Dataset{{ID: "urn:dataset:a"}},
 	}
-	return NewRouter(cfg, st, roster, nil), priv
+	handler, _ := NewRouter(cfg, st, roster, nil)
+	return handler, priv
 }
 
 type routeUnderTest struct {

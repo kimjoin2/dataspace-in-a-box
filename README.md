@@ -121,21 +121,23 @@ one a signature scheme answers by itself.
 **A resumed transfer trusts a size check, not a content check.** A pull
 that gets interrupted resumes from where it left off on the next restart —
 the provider answers `Range: bytes=N-` with `206` and the remaining bytes,
-or `416` if its file is no longer at least that long, which is also the
-whole of the integrity check: a replacement that leaves the file at least
-as long as the offset already fetched is appended to rather than refused,
-so neither a same-size nor a longer substitution is caught. There is no
-expected size and no digest. An orphaned partial download from a transfer
-that never restarts is not cleaned up either.
+or `416` if its file is no longer at least that long, which is
+one half of the integrity check. The other half is length: a counterparty
+that states a `Content-Length` or a complete `Content-Range` has that value
+recorded on the first attempt and compared on every later one, so a
+replacement of a different size is refused rather than appended to. A
+replacement of exactly the same size is still not caught, and a counterparty
+that states no length at all is checked only by the byte ceiling. There is
+no digest. An orphaned partial download from a transfer that never restarts
+is not cleaned up either.
 
-**And a pull is capped at ten seconds, which is not a policy.** The
-consumer fetches through the same client it uses for callback pushes, whose
-ten-second timeout covers the response body — so a transfer that cannot
-finish inside it is severed, at roughly 12 MB on a 10 Mbit/s link, with no
-operator retry. The provider's thirty-second write timeout is the looser of
-the two. Neither is configurable, `make demo` moves kilobytes, and the TCK
-moves no bytes at all, so nothing here measures the size this connector can
-actually carry.
+**A transfer is now bounded by progress, not by the clock.** Both sides give
+up only after `data_idle_timeout` passes with no bytes moving, so a transfer
+of any size finishes as long as it keeps moving. `max_download_bytes` is the
+ceiling for a counterparty that states no length, and the only backstop
+against one that dribbles slowly enough never to go idle. What still has no
+measurement is size: `make demo` moves kilobytes and the TCK moves no bytes,
+so nothing here proves how large a transfer this can actually carry.
 
 Everything else known and unfixed is in [`docs/follow-ups.md`](docs/follow-ups.md),
 with the reasoning for each, and the order the remaining milestones should be

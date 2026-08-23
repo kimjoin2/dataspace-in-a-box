@@ -77,6 +77,12 @@ type transferHandler struct {
 	// (most existing tests, which never exercise pullTransferData) is
 	// unaffected.
 	pulling *sync.Map
+	// pulls counts in-flight pullTransferData goroutines so the connector
+	// can wait for them at shutdown. Without this, a pull's store write can
+	// land after run()'s deferred st.Close() and be lost — and with the
+	// overall client timeout gone, the window is unbounded rather than ten
+	// seconds wide.
+	pulls *sync.WaitGroup
 }
 
 // handleTransferRequest serves POST /transfers/request, the only entry point

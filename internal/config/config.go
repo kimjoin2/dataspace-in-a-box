@@ -200,6 +200,13 @@ type Dataset struct {
 	// this — the same "test affordance" category TerminateOnVerify and
 	// transfer_policies are already in. A request that carries Range is
 	// never truncated, regardless of this value.
+	//
+	// Note what this now does to the response's framing: the connector sets
+	// Content-Length from the file's real size before it decides how much to
+	// send, so an interrupted response declares a length it does not deliver
+	// and a client sees an unexpected EOF. That is a more realistic
+	// simulation than a truncated chunked stream, and it is why the header
+	// is set before the Range branch rather than beside each write.
 	SimulateInterruptAfterBytes int64 `yaml:"simulate_interrupt_after_bytes"`
 }
 
@@ -348,6 +355,20 @@ func Load(data []byte, getenv func(string) string) (Config, error) {
 		}
 		cfg.DevMode = b
 	}
+	if v := getenv("DSBOX_DATA_IDLE_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("DSBOX_DATA_IDLE_TIMEOUT %q: %w", v, err)
+		}
+		cfg.DataIdleTimeout = d
+	}
+	if v := getenv("DSBOX_MAX_DOWNLOAD_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("DSBOX_MAX_DOWNLOAD_BYTES %q: %w", v, err)
+		}
+		cfg.MaxDownloadBytes = n
+	}
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -483,6 +504,12 @@ func (c Config) validate() error {
 	}
 	if c.MgmtToken != "" && len(c.MgmtToken) < minMgmtTokenLen {
 		return fmt.Errorf("mgmt_token must be at least %d characters", minMgmtTokenLen)
+	}
+	if c.DataIdleTimeout <= 0 {
+		return fmt.Errorf("data_idle_timeout must be positive, got %v: a transfer with no idle bound is one nothing can stop", c.DataIdleTimeout)
+	}
+	if c.MaxDownloadBytes <= 0 {
+		return fmt.Errorf("max_download_bytes must be positive, got %d: it is the only bound on a counterparty that states no length", c.MaxDownloadBytes)
 	}
 	return nil
 }

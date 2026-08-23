@@ -1947,3 +1947,112 @@ the collision. The single surviving row says this connector is the consumer, so
 before by accident, not by design, and §23.6 already rejects a loopback
 callback — so this shape needs a connector's real public address and is a
 self-test, not a deployment.
+
+## 33. A data transfer is bounded by progress, not by elapsed time
+
+**Decision.** Both ends of the data path give up on a transfer that stops
+moving, and on nothing else. The provider streams through
+`copyUnderRollingDeadline`, which pushes the connection's write deadline out
+by `data_idle_timeout` before every chunk it writes. The consumer fetches
+through `dataPullHTTPClient`, which carries no `Client.Timeout` at all: a
+timer armed around `Do` bounds the dial, the handshake, and the header wait,
+and `idleTimeoutReader` bounds the body by the same duration. Both bounds are
+one configuration value, `data_idle_timeout`, defaulting to 60s;
+`max_download_bytes` is the second bound, and the two are validated as
+positive at load. The design spec is
+`docs/superpowers/specs/2026-08-24-data-path-correctness-design.md`.
+
+**33.1 A bound on total time is a file size limit written in seconds.** What
+this replaces is the previous arrangement, in which a pull inherited
+`callbackHTTPClient`'s ten-second timeout and a provider response inherited
+the server's thirty-second `WriteTimeout`. Neither was a decision about
+transfers; both were decisions about small JSON messages that a data body
+happened to be routed through. A cap on elapsed time cannot distinguish a
+counterparty that has stopped from a file that is simply large, so it sets a
+maximum transferable size — and sets it in a unit nobody chose, because the
+size it implies moves with whatever bandwidth is available on the day. Time
+without progress is the property actually worth bounding: it is what a stuck
+transfer has and a slow one does not.
+
+**33.2 `io.Copy` is banned on the provider's streaming paths.** This is not a
+stylistic preference and it does not read as a rule from the call site, which
+is why it is recorded. `*http.response` implements `io.ReaderFrom`. On a
+response that is not chunked — which is every response carrying a
+`Content-Length` — that implementation hands the file to
+`*net.TCPConn.ReadFrom`, a single `sendfile` that blocks until the whole
+transfer finishes. A handler parked inside it cannot roll anything, so
+whatever deadline was set before the call governs the entire response.
+`copyUnderRollingDeadline` writes through `http.ResponseWriter` in a loop
+instead, and takes an `http.ResponseWriter` rather than an `io.Writer` for
+the same reason: a helper accepting `io.Writer` would find `ReadFrom` again
+through the interface and silently restore the problem.
+
+The consequence worth stating plainly is retrospective. The `206` path set
+`Content-Length` before this milestone, so resumed transfers were already
+non-chunked and already collapsed into one `sendfile` under the server's
+`WriteTimeout`. Resumption has therefore been capped at thirty seconds since
+§31 shipped, with nothing in the code able to observe the cap or report it.
+The bug is older than the milestone that fixed it.
+
+**33.3 The server-wide `WriteTimeout` stays, and the reason is narrower than
+it first appears.** It remains at thirty seconds because it still bounds
+every response that is not a data stream — negotiation, catalog, transfer
+control — none of which roll a deadline of their own, and any of which a
+client that stops reading would otherwise park indefinitely.
+
+It does **not** stay because removing it would leak a deadline into the next
+request on a keep-alive connection. That mechanism was investigated and
+refuted: `net/http`'s `conn.serve` clears the write deadline unconditionally
+after every request (`server.go:2080-2081`) and re-arms it from
+`WriteTimeout` while reading the next one, so a deadline the data endpoint
+set cannot survive the request that set it. Recorded because the refuted
+explanation is the plausible one, and a future reader who reasons it out
+rather than checking will arrive at it.
+
+**33.4 A `SetWriteDeadline` error is fatal to the stream.** If the deadline
+cannot be set, the loop is not rolling anything and the response has silently
+reverted to whatever bound was already in force — the exact condition this
+section exists to remove. Aborting is the honest answer, and it makes the
+failure loud instead of invisible. The cost lands in the tests rather than in
+production: `httptest.ResponseRecorder` implements neither `SetWriteDeadline`
+nor `Unwrap`, so `http.ResponseController` reports `ErrNotSupported` against
+it and every streaming test would abort on the first chunk. `deadlineRecorder`
+in `internal/dsp/data_handler_test.go` is a two-line shim that supplies the
+method. The shim moved; the production behavior did not.
+
+**33.5 `expected_bytes` of `0` means not known, never known to be zero.** The
+consumer records what the counterparty stated for the whole representation —
+`Content-Length` on a fresh pull, `Content-Range`'s complete length on a
+resume — in `consumer_transfers.expected_bytes`, and compares the finished
+file against it. A counterparty that streams chunked states nothing, and this
+connector's own provider did exactly that until this milestone, so `0` had to
+mean "no claim was made" rather than "a claim of zero was made". Every read
+guards on `expected > 0` before comparing. The column is also written when
+the value is `0`, which is how a stale total from a discarded representation
+leaves the row instead of outliving it: a fresh attempt seeds nothing from
+storage, because a length recorded from a representation that has already
+been thrown away has no authority over the one arriving now.
+
+*Trade-off accepted.* Three things.
+
+`sendfile` is given up on exactly the case it was built for. A large file now
+moves through a 256 KiB userspace buffer with a syscall per chunk instead of
+one kernel-side copy. That is the direct cost of 33.2 and it is worth paying:
+an unbounded transfer that is somewhat slower beats a fast one that stops at
+thirty seconds.
+
+A same-length replacement between attempts is still not caught. §31.1 said
+this when length was not checked at all; recording the expected total narrows
+it — a replacement of a *different* size is now refused rather than appended
+to — without closing it. Only a digest would close it, and there is none.
+
+And removing the ten-second cap makes an orphaned partial download
+unboundedly large. Before this milestone a transfer that was interrupted and
+never restarted left behind at most what ten seconds of transfer produced;
+now it leaves behind whatever arrived before the counterparty went quiet, up
+to `max_download_bytes`. The leak itself is not new — §31's *Trade-off
+accepted* already recorded it, and `docs/follow-ups.md` already tracks it —
+but its size bound is gone, which moves the retention policy that entry asks
+for from a tidiness item to an overdue one. It is still not solved here: a
+retention rule is a decision about operator expectations, not a line of code
+this milestone can add on its way past.

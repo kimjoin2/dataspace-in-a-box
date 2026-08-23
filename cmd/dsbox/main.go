@@ -101,6 +101,10 @@ func run() error {
 	}
 	defer st.Close()
 
+	// pulls counts the data pulls the router has in flight. Waited on at
+	// shutdown, below, because each one writes to the store on its way out.
+	dspHandler, pulls := dsp.NewRouter(cfg, st, roster, signKey)
+
 	// These timeouts bound how long a connection can sit idle at each phase,
 	// so a client that dribbles headers (or never sends any) cannot hold a
 	// slot open indefinitely. WriteTimeout no longer bounds a data transfer:
@@ -121,7 +125,7 @@ func run() error {
 	// connection.
 	dspSrv := &http.Server{
 		Addr:              cfg.DSPAddr,
-		Handler:           dsp.NewRouter(cfg, st, roster, signKey),
+		Handler:           dspHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -175,6 +179,18 @@ func run() error {
 		}()
 	}
 	wg.Wait()
+
+	// In-flight pulls write to the store on their way out, so they have to
+	// finish before the deferred st.Close() above. Bounded: a pull that is
+	// still going after this loses its record, which is better than holding
+	// shutdown open indefinitely.
+	pullsDone := make(chan struct{})
+	go func() { pulls.Wait(); close(pullsDone) }()
+	select {
+	case <-pullsDone:
+	case <-time.After(5 * time.Second):
+		slog.Warn("shutting down with data pulls still in flight; their outcome will not be recorded")
+	}
 	return err
 }
 

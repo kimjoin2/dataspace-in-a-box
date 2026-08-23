@@ -12,11 +12,18 @@ import (
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
 
-// NewRouter returns the handler for the public DSP listener. It takes the
+// NewRouter returns the handler for the public DSP listener, and the
+// WaitGroup counting the data pulls it has in flight. It takes the
 // configuration because the catalog is served from it, and the store because
 // negotiation state is persisted there.
-func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey ed25519.PrivateKey) http.Handler {
+//
+// The WaitGroup is returned rather than kept inside because the thing that
+// must wait on it lives outside: a pull writes to the store on its way out,
+// so the caller has to hold the store open until every pull it started has
+// finished. Nothing else in this package outlives a request.
+func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey ed25519.PrivateKey) (http.Handler, *sync.WaitGroup) {
 	mux := http.NewServeMux()
+	pulls := &sync.WaitGroup{}
 
 	cat := catalogHandler{cfg: cfg}
 	mux.HandleFunc("POST "+VersionPath+"/catalog/request", cat.handleCatalogRequest)
@@ -38,7 +45,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	// {id} on the five addressed transfer routes is this connector's own
 	// generated provider pid, the same convention the provider-role
 	// negotiation routes above use.
-	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}}
+	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}, pulls: pulls}
 	mux.HandleFunc("POST "+VersionPath+"/transfers/request", tr.handleTransferRequest)
 	mux.HandleFunc("POST "+VersionPath+"/transfers/initiate", tr.handleTransferInitiate)
 
@@ -57,7 +64,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 		outer := http.NewServeMux()
 		mountVersionEndpoint(outer)
 		outer.Handle("/", mux)
-		return outer
+		return outer, pulls
 	}
 
 	// Outbound is armed here rather than in each client, so "authentication
@@ -88,7 +95,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	outer := http.NewServeMux()
 	mountVersionEndpoint(outer)
 	outer.Handle("/", requireParticipant(roster, cfg.ParticipantID, mux))
-	return outer
+	return outer, pulls
 }
 
 // mountVersionEndpoint puts the version document on a mux, in two patterns.

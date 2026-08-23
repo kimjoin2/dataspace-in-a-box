@@ -659,3 +659,64 @@ func TestDatasetSimulateInterruptAfterBytesAcceptsAPositiveValue(t *testing.T) {
 		t.Errorf("SimulateInterruptAfterBytes = %d, want 2000", cfg.Datasets[0].SimulateInterruptAfterBytes)
 	}
 }
+
+func TestDataIdleTimeoutDefaultsAndOverrides(t *testing.T) {
+	base := "public_url: http://x\nparticipant_id: urn:participant:x\ndata_dir: /tmp/x\nrequire_auth: false\ndev_mode: true\n"
+
+	cfg, err := Load([]byte(base), func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.DataIdleTimeout != defaultDataIdleTimeout {
+		t.Errorf("DataIdleTimeout = %v, want the default %v", cfg.DataIdleTimeout, defaultDataIdleTimeout)
+	}
+	if cfg.MaxDownloadBytes != defaultMaxDownloadBytes {
+		t.Errorf("MaxDownloadBytes = %d, want the default %d", cfg.MaxDownloadBytes, defaultMaxDownloadBytes)
+	}
+
+	cfg, err = Load([]byte(base+"data_idle_timeout: 90s\nmax_download_bytes: 1024\n"), func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("load with values: %v", err)
+	}
+	if cfg.DataIdleTimeout != 90*time.Second {
+		t.Errorf("DataIdleTimeout = %v, want 90s", cfg.DataIdleTimeout)
+	}
+	if cfg.MaxDownloadBytes != 1024 {
+		t.Errorf("MaxDownloadBytes = %d, want 1024", cfg.MaxDownloadBytes)
+	}
+
+	cfg, err = Load([]byte(base), func(k string) string {
+		switch k {
+		case "DSBOX_DATA_IDLE_TIMEOUT":
+			return "5s"
+		case "DSBOX_MAX_DOWNLOAD_BYTES":
+			return "77"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("load with env: %v", err)
+	}
+	if cfg.DataIdleTimeout != 5*time.Second {
+		t.Errorf("DataIdleTimeout = %v, want the environment's 5s", cfg.DataIdleTimeout)
+	}
+	if cfg.MaxDownloadBytes != 77 {
+		t.Errorf("MaxDownloadBytes = %d, want the environment's 77", cfg.MaxDownloadBytes)
+	}
+}
+
+func TestNonPositiveDataBoundsAreRejected(t *testing.T) {
+	base := "public_url: http://x\nparticipant_id: urn:participant:x\ndata_dir: /tmp/x\nrequire_auth: false\ndev_mode: true\n"
+	for _, tc := range []struct{ name, doc string }{
+		{"zero idle timeout", base + "data_idle_timeout: 0s\n"},
+		{"negative idle timeout", base + "data_idle_timeout: -1s\n"},
+		{"zero max download bytes", base + "max_download_bytes: 0\n"},
+		{"negative max download bytes", base + "max_download_bytes: -1\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Load([]byte(tc.doc), func(string) string { return "" }); err == nil {
+				t.Error("loaded without error; a bound that is not positive disables the thing it bounds")
+			}
+		})
+	}
+}

@@ -709,7 +709,8 @@ func TestSynchronousResponseDoesNotWaitForTheCallbackPush(t *testing.T) {
 	// make the request.
 	cfg.RequireAuth = new(bool)
 	cfg.DevMode = true
-	srv := httptest.NewServer(NewRouter(cfg, st, auth.Roster{}, nil))
+	handler, _ := NewRouter(cfg, st, auth.Roster{}, nil)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	// A mismatched offer for a valid dataset: one offer push, no follow-up
