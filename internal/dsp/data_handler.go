@@ -42,6 +42,57 @@ func parseRangeStart(header string) (int64, bool) {
 	return n, true
 }
 
+// copyBufSize is large on purpose. net/http buffers a response internally —
+// 2048 bytes at response.w, 4096 at conn.bufw — so with a buffer near those
+// sizes "the write succeeded" measures the buffer rather than the wire, and
+// the deadline below would never fire on a stalled client.
+const copyBufSize = 256 << 10
+
+// copyUnderRollingDeadline streams src to w, pushing the write deadline out
+// before each chunk so a transfer is bounded by time without progress rather
+// than by total elapsed time.
+//
+// It does not use io.Copy, and that is the whole point. *http.response
+// implements io.ReaderFrom, and on a non-chunked response — which is every
+// response that carries a Content-Length — that implementation hands the
+// whole file to *net.TCPConn.ReadFrom, one sendfile call that blocks until
+// the transfer finishes. A handler parked in that call cannot roll
+// anything, so whatever deadline was set before it governs the entire
+// response. Writing through w directly is what keeps the loop.
+//
+// For the same reason w must stay an http.ResponseWriter here rather than an
+// io.Writer: a helper taking io.Writer would find ReadFrom again through the
+// interface and silently restore the problem. The cost is real and accepted
+// — this gives up sendfile on exactly the large-file case this exists for —
+// because an unbounded transfer that is merely slower beats a fast one that
+// stops at the server's write timeout.
+func copyUnderRollingDeadline(w http.ResponseWriter, rc *http.ResponseController, src io.Reader, idle time.Duration) (int64, error) {
+	buf := make([]byte, copyBufSize)
+	var total int64
+	for {
+		// Before the write, while the current deadline is still in the
+		// future: SetWriteDeadline documents that setting a deadline after
+		// it has been exceeded will not extend it.
+		if err := rc.SetWriteDeadline(time.Now().Add(idle)); err != nil {
+			return total, fmt.Errorf("set write deadline: %w", err)
+		}
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			written, writeErr := w.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return total, nil
+			}
+			return total, readErr
+		}
+	}
+}
+
 // handleData serves GET {version}/data/{providerPid} — where a consumer
 // fetches the bytes a started transfer entitles it to. Behind the same
 // middleware as every other counterparty-facing route, because a data pull is
@@ -148,14 +199,31 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before the Range branch, so all three response shapes carry it — the
+	// full 200, the 206, and the simulated interrupt, which is also a 200
+	// and returns before the plain path. Setting it only at the plain-200
+	// site leaves the interrupt branch chunked, and then a demo's first
+	// attempt records no expected size while its resumed attempt learns the
+	// real one — which reads as a changed representation, discards the
+	// partial, and leaves no third start message coming to recover it.
+	//
+	// The two refusals inside the Range branch are the exception, and each
+	// clears it again: they send an error document or nothing at all, and a
+	// response that declares the dataset's length and then sends a shorter
+	// body has that body truncated by net/http and the connection closed —
+	// the consumer sees an unparseable refusal instead of the reason.
+	w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
+
 	if rangeStart, hasRange := parseRangeStart(r.Header.Get("Range")); hasRange {
 		if rangeStart >= stat.Size() {
+			w.Header().Del("Content-Length")
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", stat.Size()))
 			writeError(w, TransferErrorType, http.StatusRequestedRangeNotSatisfiable,
 				"the requested range starts at or after the end of this dataset's current content")
 			return
 		}
 		if _, err := f.Seek(rangeStart, io.SeekStart); err != nil {
+			w.Header().Del("Content-Length")
 			slog.Error("seek source_file for range request", "path", ds.SourceFile, "error", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -164,7 +232,10 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.FormatInt(stat.Size()-rangeStart, 10))
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusPartialContent)
-		if _, err := io.Copy(w, f); err != nil {
+		// After the 416 branch and immediately before the first byte: every
+		// refusal path above must stay untouched.
+		rc := http.NewResponseController(w)
+		if _, err := copyUnderRollingDeadline(w, rc, f, h.cfg.DataIdleTimeout); err != nil {
 			slog.Error("stream data", "provider_pid", providerPID, "error", err)
 		}
 		return
@@ -193,9 +264,12 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Streamed rather than buffered: memory must not scale with file size.
-	// The server's write timeout still bounds how large a file can finish.
+	// The write deadline rolls forward as bytes leave, so what bounds this
+	// is time without progress rather than the server's write timeout —
+	// which would otherwise be a file size limit expressed in seconds.
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if _, err := io.Copy(w, f); err != nil {
+	rc := http.NewResponseController(w)
+	if _, err := copyUnderRollingDeadline(w, rc, f, h.cfg.DataIdleTimeout); err != nil {
 		slog.Error("stream data", "provider_pid", providerPID, "error", err)
 	}
 }

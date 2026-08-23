@@ -66,6 +66,12 @@ type Config struct {
 	// that must survive a restart (DECISIONS.md section 8).
 	DataDir string `yaml:"data_dir"`
 
+	// DataIdleTimeout bounds how long a data transfer may go without
+	// progress, on both sides: the provider rolls its write deadline by it,
+	// and the consumer's pull cancels when no bytes arrive within it.
+	// Optional; defaultDataIdleTimeout when unset.
+	DataIdleTimeout time.Duration `yaml:"data_idle_timeout"`
+
 	// ConsumerPolicies configures this connector's autonomous behavior when
 	// it is negotiating as consumer, keyed by the dataset_id this connector
 	// itself requests via POST /negotiations/initiate. A dataset_id with no
@@ -269,6 +275,8 @@ const (
 	defaultMgmtAddr = "127.0.0.1:8081"
 )
 
+const defaultDataIdleTimeout = 60 * time.Second
+
 // minMgmtTokenLen is the shortest management token accepted. It exists to
 // fail an obviously placeholder value at load rather than in production.
 const minMgmtTokenLen = 16
@@ -276,7 +284,7 @@ const minMgmtTokenLen = 16
 // Load parses the YAML document, applies environment overrides, and validates
 // the result. Environment values take precedence over the file.
 func Load(data []byte, getenv func(string) string) (Config, error) {
-	cfg := Config{DSPAddr: defaultDSPAddr, MgmtAddr: defaultMgmtAddr}
+	cfg := Config{DSPAddr: defaultDSPAddr, MgmtAddr: defaultMgmtAddr, DataIdleTimeout: defaultDataIdleTimeout}
 
 	// KnownFields rejects a document with an unrecognized key instead of
 	// silently dropping it — a typo like "dsp_add" would otherwise load with

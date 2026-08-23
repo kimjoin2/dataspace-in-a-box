@@ -45,6 +45,14 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.MgmtAddr != "127.0.0.1:8081" {
 		t.Errorf("MgmtAddr = %q, want 127.0.0.1:8081", cfg.MgmtAddr)
 	}
+	// A zero DataIdleTimeout is not "no timeout": the provider rolls its
+	// write deadline by it, and SetWriteDeadline(now.Add(0)) is a deadline
+	// already in the past, so every write on every transfer would fail. The
+	// data path is undefensive about it precisely because Load guarantees a
+	// positive value here.
+	if cfg.DataIdleTimeout != 60*time.Second {
+		t.Errorf("DataIdleTimeout = %v, want 60s", cfg.DataIdleTimeout)
+	}
 }
 
 func TestLoadRequiresPublicURL(t *testing.T) {

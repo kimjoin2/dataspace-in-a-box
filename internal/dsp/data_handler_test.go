@@ -2,12 +2,14 @@ package dsp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,15 @@ import (
 )
 
 const servedBytes = "id,value\n1,hello\n"
+
+// testDataIdleTimeout is what every fixture in this file puts in
+// config.DataIdleTimeout. These tests build a config.Config as a struct
+// literal, which bypasses config.Load and its defaults, and the zero value is
+// not merely "no timeout": handleData rolls the write deadline by it, and
+// SetWriteDeadline(time.Now().Add(0)) is a deadline already in the past, so
+// every write would fail. Load guarantees a positive value in production, so
+// the fixture is where this belongs — handleData must stay undefensive.
+const testDataIdleTimeout = 5 * time.Second
 
 // dataFixture wires a provider-role transfer to a dataset with a real file,
 // and returns a handler plus the transfer's provider pid.
@@ -42,7 +53,7 @@ func dataFixtureWithValidity(t *testing.T, state string, counterparty string, wi
 		}
 		ds.SourceFile = path
 	}
-	cfg := config.Config{ParticipantID: testSelf, Datasets: []config.Dataset{ds}}
+	cfg := config.Config{ParticipantID: testSelf, Datasets: []config.Dataset{ds}, DataIdleTimeout: testDataIdleTimeout}
 
 	now := time.Now()
 	if err := st.CreateAgreement(store.Agreement{AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
@@ -64,8 +75,44 @@ func pullAs(t *testing.T, h dataHandler, id, issuer string) *httptest.ResponseRe
 	req.SetPathValue("id", id)
 	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, issuer))
 	rec := httptest.NewRecorder()
-	h.handleData(rec, req)
+	h.handleData(deadlineRecorder{rec}, req)
 	return rec
+}
+
+// pullInterrupting is pullAs against a dataset whose bytes are cut short by
+// the simulated-interrupt knob, writing into a caller-supplied
+// ResponseWriter so the response headers can be read back. The source file is
+// fileSize bytes of filler: this exercises response shape, not content.
+func pullInterrupting(t *testing.T, w http.ResponseWriter, fileSize int64, interruptAfter int64) {
+	t.Helper()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	path := filepath.Join(t.TempDir(), "a.csv")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", int(fileSize))), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	ds := config.Dataset{ID: "urn:dataset:a", SourceFile: path, SimulateInterruptAfterBytes: interruptAfter}
+	cfg := config.Config{ParticipantID: testSelf, Datasets: []config.Dataset{ds}, DataIdleTimeout: testDataIdleTimeout}
+
+	now := time.Now()
+	if err := st.CreateAgreement(store.Agreement{AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
+		Origin: store.OriginImported, CreatedAt: now}); err != nil {
+		t.Fatalf("CreateAgreement: %v", err)
+	}
+	if err := st.CreateTransfer(store.TransferProcess{ProviderPID: "p1", ConsumerPID: "c1",
+		AgreementID: "urn:uuid:a", State: TransferStarted, CallbackAddress: "http://x", Format: "HTTP-PULL",
+		CounterpartyID: testPeer, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/p1", nil)
+	req.SetPathValue("id", "p1")
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+	dataHandler{cfg: cfg, store: st}.handleData(w, req)
 }
 
 func TestDataPullServesTheConfiguredFile(t *testing.T) {
@@ -314,7 +361,7 @@ func TestDataPullServesAPartialRange(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
 	req.Header.Set("Range", "bytes=3-")
 	rec := httptest.NewRecorder()
-	h.handleData(rec, req)
+	h.handleData(deadlineRecorder{rec}, req)
 
 	if rec.Code != http.StatusPartialContent {
 		t.Fatalf("got %d, want 206: %s", rec.Code, rec.Body)
@@ -354,6 +401,49 @@ func TestDataPullRangeAtOrPastTheEndIs416(t *testing.T) {
 	}
 }
 
+// TestDataPullRangePastTheEndKeepsItsErrorDocument pins the refusal against a
+// real server rather than a recorder, because only a real server enforces
+// Content-Length. handleData declares the dataset's length before the Range
+// branch so every shape that sends bytes carries it; a 416 sends an error
+// document instead, and if it inherited that declaration net/http would
+// truncate the document to the file's length and close the connection. The
+// consumer would then read a broken response where a reason was written.
+func TestDataPullRangePastTheEndKeepsItsErrorDocument(t *testing.T) {
+	h, _ := dataFixture(t, TransferStarted, testPeer, true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.SetPathValue("id", "p1")
+		r = r.WithContext(context.WithValue(r.Context(), issuerContextKey{}, testPeer))
+		h.handleData(w, r)
+	}))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+VersionPath+"/data/p1", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", len(servedBytes)))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("got %d, want 416", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v — the refusal was truncated by a Content-Length it should not carry", err)
+	}
+	var doc ErrorResponse
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("the refusal is not a readable error document (%v): %q", err, body)
+	}
+	if doc.Code != strconv.Itoa(http.StatusRequestedRangeNotSatisfiable) {
+		t.Errorf("code = %q, want %q", doc.Code, strconv.Itoa(http.StatusRequestedRangeNotSatisfiable))
+	}
+}
+
 // TestDataPullUnsupportedRangeFormIsIgnored pins RFC 7233's own guidance for
 // a range form this connector does not implement: ignore it and serve the
 // whole thing, exactly as if no Range header had been sent at all.
@@ -364,7 +454,7 @@ func TestDataPullUnsupportedRangeFormIsIgnored(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
 	req.Header.Set("Range", "bytes=0-5")
 	rec := httptest.NewRecorder()
-	h.handleData(rec, req)
+	h.handleData(deadlineRecorder{rec}, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200 (the unsupported closed form is ignored): %s", rec.Code, rec.Body)
@@ -438,7 +528,7 @@ func TestDataPullSimulatedInterruptDoesNotFireOnARangedRequest(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
 	req.Header.Set("Range", "bytes=3-")
 	rec := httptest.NewRecorder()
-	h.handleData(rec, req)
+	h.handleData(deadlineRecorder{rec}, req)
 
 	if rec.Code != http.StatusPartialContent {
 		t.Fatalf("got %d, want 206 — a ranged request must never be truncated: %s", rec.Code, rec.Body)
@@ -467,7 +557,7 @@ func dataFixtureWithSimulatedInterrupt(t *testing.T, afterBytes int64) (dataHand
 		t.Fatalf("write source: %v", err)
 	}
 	ds := config.Dataset{ID: "urn:dataset:a", SourceFile: path, SimulateInterruptAfterBytes: afterBytes}
-	cfg := config.Config{ParticipantID: testSelf, Datasets: []config.Dataset{ds}}
+	cfg := config.Config{ParticipantID: testSelf, Datasets: []config.Dataset{ds}, DataIdleTimeout: testDataIdleTimeout}
 
 	now := time.Now()
 	if err := st.CreateAgreement(store.Agreement{AgreementID: "urn:uuid:a", DatasetID: "urn:dataset:a",
@@ -492,4 +582,198 @@ func waitForFile(t *testing.T, path string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("no file appeared at %s", path)
+}
+
+// deadlineRecorder is httptest.ResponseRecorder plus the one method
+// http.ResponseController needs. The recorder implements neither
+// SetWriteDeadline nor Unwrap, so without this every streaming test would
+// get the fatal error handleData now raises when deadlines are unsupported
+// — and that error is fatal on purpose, so the shim moves rather than the
+// production behavior.
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func (deadlineRecorder) SetWriteDeadline(time.Time) error { return nil }
+
+func TestCopyUnderRollingDeadlineOutlivesAShortWriteTimeout(t *testing.T) {
+	// httptest.NewServer builds a server with no timeouts at all, so a test
+	// written against it would pass with and without the rolling deadline
+	// and its mutation check could never fire. The timeout has to be
+	// injected into an unstarted server.
+	body := strings.Repeat("x", 64<<10)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		if _, err := copyUnderRollingDeadline(w, rc, &slowReader{s: body, chunk: 4 << 10, pause: 40 * time.Millisecond}, time.Second); err != nil {
+			t.Errorf("copy: %v", err)
+		}
+	}))
+	srv.Config.WriteTimeout = 100 * time.Millisecond
+	srv.Start()
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v — the response was cut off, so the deadline was not rolled", err)
+	}
+	if len(got) != len(body) {
+		t.Errorf("got %d bytes, want %d — the write timeout truncated a response that kept making progress", len(got), len(body))
+	}
+}
+
+func TestCopyUnderRollingDeadlineFailsWhenDeadlinesAreUnsupported(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rc := http.NewResponseController(rec)
+	_, err := copyUnderRollingDeadline(rec, rc, strings.NewReader("hello"), time.Second)
+	if err == nil {
+		t.Fatal("copy succeeded on a writer with no deadline support; an ignored error leaves the response back under the server-wide WriteTimeout with nothing saying so")
+	}
+}
+
+// slowReader delivers its string in chunks with a pause between them, so a
+// response takes longer than a short WriteTimeout while never going idle.
+type slowReader struct {
+	s     string
+	chunk int
+	pause time.Duration
+	off   int
+}
+
+func (r *slowReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.s) {
+		return 0, io.EOF
+	}
+	if r.off > 0 {
+		time.Sleep(r.pause)
+	}
+	n := copy(p[:min(len(p), r.chunk)], r.s[r.off:])
+	r.off += n
+	return n, nil
+}
+
+func TestSimulatedInterruptStillDeclaresTheFullLength(t *testing.T) {
+	// The interrupt branch is a 200 that returns before the plain-200 path,
+	// so a Content-Length set only there would leave this response chunked —
+	// and a consumer would record no expected size for the first attempt of
+	// exactly the transfer make demo resumes.
+	rec := httptest.NewRecorder()
+	pullInterrupting(t, deadlineRecorder{rec}, 5000, 2000)
+	if got := rec.Result().Header.Get("Content-Length"); got != "5000" {
+		t.Errorf("Content-Length = %q, want the file's real length 5000 — an interrupted response must still declare it", got)
+	}
+}
+
+// countingDeadlineRecorder is deadlineRecorder that also records how many
+// times the handler pushed the write deadline out, and refuses a deadline
+// that is not actually in the future. deadlineRecorder accepts any deadline,
+// which is right for the tests that only need the response to happen, but it
+// means a fixture whose DataIdleTimeout is the zero value goes unnoticed
+// there — and in production that is SetWriteDeadline(now.Add(0)), a deadline
+// already past, which fails every write.
+type countingDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadlines int
+}
+
+func (c *countingDeadlineRecorder) SetWriteDeadline(d time.Time) error {
+	c.deadlines++
+	if !d.After(time.Now()) {
+		return fmt.Errorf("write deadline %v is not in the future", d)
+	}
+	return nil
+}
+
+// TestDataPullRollsTheWriteDeadlineOnBothStreamingPaths pins the wiring
+// rather than the helper. copyUnderRollingDeadline has its own tests, but
+// nothing else notices if handleData goes back to io.Copy: a recorder has no
+// deadline to exceed, so every other test in this file passes either way
+// while a real transfer is silently capped at the server's WriteTimeout
+// again. Counting the pushes is what makes that visible.
+func TestDataPullRollsTheWriteDeadlineOnBothStreamingPaths(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		rangeHeader string
+		want        int
+		wantBody    string
+	}{
+		{"full 200", "", http.StatusOK, servedBytes},
+		{"partial 206", "bytes=3-", http.StatusPartialContent, servedBytes[3:]},
+	} {
+		h, id := dataFixture(t, TransferStarted, testPeer, true)
+		req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/"+id, nil)
+		req.SetPathValue("id", id)
+		req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+		if c.rangeHeader != "" {
+			req.Header.Set("Range", c.rangeHeader)
+		}
+		rec := &countingDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+		h.handleData(rec, req)
+
+		if rec.Code != c.want {
+			t.Fatalf("%s: got %d, want %d: %s", c.name, rec.Code, c.want, rec.Body)
+		}
+		if rec.deadlines == 0 {
+			t.Errorf("%s: streamed without ever pushing the write deadline — io.Copy is back, and the transfer is bounded by the server's WriteTimeout again", c.name)
+		}
+		if got := rec.Body.String(); got != c.wantBody {
+			t.Errorf("%s: body = %q, want %q — nothing was streamed, so the deadline the handler set was refused", c.name, got, c.wantBody)
+		}
+	}
+}
+
+// lateReader delivers its whole string in one chunk, after a pause long
+// enough that a short server-wide WriteTimeout has already elapsed. The
+// chunk has to be larger than net/http's internal buffers (2048 at
+// response.w, 4096 at conn.bufw) or the write never reaches the socket and
+// no deadline applies to it — the same reason copyBufSize is large.
+type lateReader struct {
+	s     string
+	pause time.Duration
+	done  bool
+}
+
+func (r *lateReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	time.Sleep(r.pause)
+	r.done = true
+	return copy(p, r.s), nil
+}
+
+// TestCopyUnderRollingDeadlineRollsBeforeTheFirstWrite pins the ordering,
+// which the outlives-a-short-WriteTimeout test above cannot: its first chunk
+// arrives immediately, so rolling the deadline after each write would carry
+// it too. The server's WriteTimeout is already ticking when the handler is
+// entered, so the case that separates the two orderings is a first chunk
+// that arrives after it has elapsed.
+func TestCopyUnderRollingDeadlineRollsBeforeTheFirstWrite(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		src := &lateReader{s: strings.Repeat("x", 64<<10), pause: 250 * time.Millisecond}
+		if _, err := copyUnderRollingDeadline(w, rc, src, time.Second); err != nil {
+			t.Errorf("copy: %v — the first write was still governed by the server's WriteTimeout", err)
+		}
+	}))
+	srv.Config.WriteTimeout = 100 * time.Millisecond
+	srv.Start()
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if len(got) != 64<<10 {
+		t.Errorf("got %d bytes, want %d", len(got), 64<<10)
+	}
 }

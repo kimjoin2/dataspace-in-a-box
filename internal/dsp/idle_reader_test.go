@@ -90,25 +90,18 @@ func TestIdleTimeoutReaderReportsAlreadyCancelledRatherThanResetting(t *testing.
 	_, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	src := strings.NewReader(strings.Repeat("x", 10000))
-	r := newIdleTimeoutReader(src, time.Nanosecond, cancel)
+	r := newIdleTimeoutReader(src, time.Millisecond, cancel)
 	defer r.Stop()
 
-	// The idle window is already gone by the time anything is read, so the
-	// cancel is scheduled or done. Read must surface that rather than reset
-	// a timer whose function has already fired.
-	deadline := time.After(2 * time.Second)
+	// Sleeping well past the idle window is what makes this deterministic:
+	// the timer has certainly fired before the first Read, so the single
+	// read below is the case under test — a cancel that has already run.
+	// Racing a read loop against the timer measures the scheduler instead,
+	// and under full-suite load that race has already lost once.
+	time.Sleep(50 * time.Millisecond)
+
 	buf := make([]byte, 1)
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("Read never reported the idle timeout")
-		default:
-		}
-		if _, err := r.Read(buf); err != nil {
-			if !errors.Is(err, errIdleTimeout) {
-				t.Fatalf("err = %v, want errIdleTimeout", err)
-			}
-			return
-		}
+	if _, err := r.Read(buf); !errors.Is(err, errIdleTimeout) {
+		t.Fatalf("err = %v, want errIdleTimeout — Read reset a timer whose function had already fired", err)
 	}
 }
