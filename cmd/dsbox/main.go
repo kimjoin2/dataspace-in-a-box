@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -37,7 +38,16 @@ func main() {
 // os.Exit inline) lets every deferred cleanup in this function actually run.
 func run() error {
 	configPath := flag.String("config", "config.yaml", "path to the configuration file")
+	showVersion := flag.Bool("version", false, "print the build identity and exit")
 	flag.Parse()
+
+	version := buildVersion(debug.ReadBuildInfo())
+	if *showVersion {
+		// Straight to stdout, not through slog: this is the answer to a
+		// question, and a bug report should be able to paste it.
+		fmt.Println(version)
+		return nil
+	}
 
 	data, err := os.ReadFile(*configPath)
 	if err != nil {
@@ -120,7 +130,10 @@ func run() error {
 	go serve(dspSrv, "dsp", failed)
 	go serve(mgmtSrv, "management", failed)
 
+	// version leads: the first question asked about a log from a connector
+	// that misbehaved is which build produced it.
 	slog.Info("connector started",
+		"version", version,
 		"public_url", cfg.PublicURL,
 		"dsp_addr", cfg.DSPAddr,
 		"mgmt_addr", cfg.MgmtAddr,
