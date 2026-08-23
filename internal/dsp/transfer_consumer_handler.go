@@ -276,17 +276,18 @@ func parseContentRange(header string) (first int64, hasFirst bool, complete int6
 	}
 	rangePart, completePart := rest[:slash], rest[slash+1:]
 
-	if completePart != "*" {
-		if n, err := strconv.ParseInt(completePart, 10, 64); err == nil && n >= 0 {
-			complete, hasComplete = n, true
-		}
+	// RFC 9110 §14.4 permits "*" in place of either half. Neither needs its
+	// own check: ParseInt rejects "*" because it is not a digit string, and
+	// IndexByte finds no '-' in it, so both fall through to "not present"
+	// on their own. An explicit guard here would be a branch no test could
+	// kill.
+	if n, err := strconv.ParseInt(completePart, 10, 64); err == nil && n >= 0 {
+		complete, hasComplete = n, true
 	}
 
-	if rangePart != "*" {
-		if dash := strings.IndexByte(rangePart, '-'); dash > 0 {
-			if n, err := strconv.ParseInt(rangePart[:dash], 10, 64); err == nil && n >= 0 {
-				first, hasFirst = n, true
-			}
+	if dash := strings.IndexByte(rangePart, '-'); dash > 0 {
+		if n, err := strconv.ParseInt(rangePart[:dash], 10, 64); err == nil && n >= 0 {
+			first, hasFirst = n, true
 		}
 	}
 	return first, hasFirst, complete, hasComplete
