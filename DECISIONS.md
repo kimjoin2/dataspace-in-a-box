@@ -1660,9 +1660,19 @@ this connector already is, rather than run two writers against one file.
 for testing resumption.** `config.Dataset.SimulateInterruptAfterBytes`
 truncates a non-`Range` request at that many bytes and severs the
 connection via `http.Hijacker`, so test code can force a real
-interruption rather than mock one. It never fires on a `Range` request,
-which keeps the interrupt-then-resume sequence testable — the field is what
-`make demo`'s second round exercises. That round runs against a dedicated
+interruption rather than mock one. As of the data-path milestone (§33) the
+truncated response still declares the file's **full** `Content-Length`,
+because that header is now set once after `Stat` and before the `Range`
+branch: an interrupted response therefore promises a length it does not
+deliver and the client sees an unexpected EOF, which is what a real
+interruption looks like rather than the short-but-well-formed body a
+truncated chunked stream would have produced.
+`TestSimulatedInterruptStillDeclaresTheFullLength` pins it, and `make demo`'s
+resume round depends on it — a first attempt that recorded no expected size
+would make the resumed attempt look like a changed representation.
+
+It never fires on a `Range` request, which keeps the interrupt-then-resume
+sequence testable — the field is what `make demo`'s second round exercises. That round runs against a dedicated
 dataset, `urn:dataset:sample-resume`, rather than the original
 `urn:dataset:sample`, so the baseline scenario's pass/fail signal stays
 unambiguous. It checks two things, not one: a byte-for-byte diff of the
@@ -2041,16 +2051,32 @@ fires. The group is returned rather than kept inside the package because the
 thing that must wait on it lives outside: nothing else in `internal/dsp`
 outlives a request.
 
-This is a milestone-specific need, not an oversight corrected late. A pull
-writes to the store only as of this milestone — recording `expected_bytes`
-per 33.5 is its last act before it places the file — so before now a pull
-outliving shutdown was harmless, and today the same pull's final write lands
-on a closed `*sql.DB` and the row never records its outcome. Removing the
-consumer's overall client timeout widened the same window in the same
-milestone: it used to be at most the ten seconds `callbackHTTPClient`
-allowed, and it is now unbounded. The race became newly consequential and
-newly wide at once, which is why it is closed here rather than left to the
-follow-ups.
+This is a milestone-specific need, not an oversight corrected late: a pull
+touches the store at all only as of this milestone, because 33.5's
+`expected_bytes` is the first thing it has ever had to record. Removing the
+consumer's overall client timeout widened the window in the same milestone —
+a pull used to outlive shutdown by at most the ten seconds
+`callbackHTTPClient` allowed, and now by however long the counterparty keeps
+it alive.
+
+**What the wait actually buys is narrower than it may look, and worth stating
+precisely.** The `expected_bytes` write happens immediately after the
+response headers arrive — *before* `os.OpenFile`, before the copy — so it is
+the pull's first store act, not its last. The window in which shutdown could
+lose it is therefore the short one between dispatch and the counterparty's
+first response, not the whole length of an hours-long transfer. For that
+window a five-second cap is ample rather than useless, which is the opposite
+of the conclusion a reader would draw from thinking the write lands at the
+end. Past that write, what the wait protects is not a store row at all but
+the file itself: up to the cap for the copy to finish and `os.Rename` to
+place it, after which the pull touches nothing shared.
+
+This becomes last-act protection when Plan B's `data_completed_at` and
+`data_error` columns land — a pull will then write its outcome after the
+copy, at exactly the point an unbounded transfer is most likely to be caught
+by shutdown, and the cap that is ample today will be worth re-examining then.
+Neither column exists in this branch, so there is no outcome write here to
+lose.
 
 The placement rule is the part a later edit will get wrong, so it is stated
 rather than implied. `Add(1)` runs at the dispatch site, on the handler's own
@@ -2068,14 +2094,23 @@ structurally impossible rather than merely unreached.
 download landed immediately after `Wait` returns, with no poll, because a
 poll would pass whether or not anything waited.
 
-The wait is capped at five seconds rather than being indefinite, and a pull
-still running when the cap expires loses its record exactly as it would have
-without any of this. That is deliberate and it is the better of the two
-failures available: the alternative to a bounded wait is a connector that
-will not shut down while a counterparty keeps dribbling bytes at it, which
-turns one lost row into an operator holding down `SIGKILL`.
+**This deviates from the design spec, which asked for cancellation rather
+than a wait.** Spec §1.5 specified that pulls be given a context derived from
+a connector-lifetime context `run()` cancels before waiting, so shutdown would
+*stop* an in-flight pull and then wait briefly for it to unwind. The code
+instead gives each pull `context.Background()`, which `run()` has no handle
+on: shutdown cannot cancel a pull, only outlast it. A pull still streaming
+when the cap expires is abandoned mid-copy rather than told to stop.
 
-*Trade-off accepted.* Three things.
+The cost is real and is not only the abandoned pull. `srv.Shutdown` already
+carries its own five seconds, and a streaming `handleData` will exhaust them
+every time — `Shutdown` waits on active handlers, and the provider side of a
+large transfer is exactly that — so the two bounds run back to back and
+shutdown now costs up to ten seconds where it used to cost five. Recorded as
+a live deviation rather than a closed decision: cancellation is still the
+better design, and the wait is what this branch has.
+
+*Trade-off accepted.* Four things.
 
 `sendfile` is given up on exactly the case it was built for. A large file now
 moves through a 256 KiB userspace buffer with a syscall per chunk instead of
@@ -2098,3 +2133,13 @@ but its size bound is gone, which moves the retention policy that entry asks
 for from a tidiness item to an overdue one. It is still not solved here: a
 retention rule is a decision about operator expectations, not a line of code
 this milestone can add on its way past.
+
+And the shutdown wait can still lose the row it exists to protect. The cap in
+33.6 is five seconds, so a pull whose `expected_bytes` write has not happened
+by then is abandoned exactly as it would have been without any of this. That
+is the better of the two failures available — the alternative to a bounded
+wait is a connector that will not shut down while a counterparty keeps
+dribbling at it, which trades one lost row for an operator holding down
+`SIGKILL` — but it is a bound chosen against a window nobody has measured,
+and the spec's cancellation (33.6) would have removed the guess rather than
+sized it.

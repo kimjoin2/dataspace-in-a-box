@@ -78,10 +78,15 @@ type transferHandler struct {
 	// unaffected.
 	pulling *sync.Map
 	// pulls counts in-flight pullTransferData goroutines so the connector
-	// can wait for them at shutdown. Without this, a pull's store write can
-	// land after run()'s deferred st.Close() and be lost — and with the
-	// overall client timeout gone, the window is unbounded rather than ten
-	// seconds wide.
+	// can wait for them at shutdown (DECISIONS.md section 33.6).
+	//
+	// What it protects is narrower than "a pull's store write": that write
+	// records expected_bytes and happens as soon as the response headers
+	// arrive, so only a pull caught between dispatch and its first response
+	// could land it after run()'s deferred st.Close(). Past that point the
+	// wait is holding the door for the copy and the rename, not for the
+	// store. It becomes last-act protection if a pull ever writes its
+	// outcome at the end.
 	pulls *sync.WaitGroup
 }
 
