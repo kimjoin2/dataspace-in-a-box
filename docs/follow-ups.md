@@ -158,6 +158,19 @@ transfer terminated, which today is a different code path
 (`pullTransferData`), and wiring the two together is a design decision, not
 a cleanup.
 
+**Updated by the data-path milestone (2026-08): the size bound on this leak
+is gone.** When this entry was written, a pull inherited the callback
+client's ten-second overall timeout, so an orphaned partial was at most what
+ten seconds of transfer produced — a leak measured in megabytes on any
+ordinary link. That timeout was removed so a large transfer could finish
+(`DECISIONS.md` §33), and an interrupted pull now leaves behind whatever
+arrived before the counterparty went quiet, bounded only by
+`max_download_bytes` — 8 GiB by default, per orphan. Nothing about the
+cleanup problem changed; what changed is the cost of not solving it, which
+moves this from a tidiness item to the one entry on this page an operator
+running real data should read first. `DECISIONS.md` §33's *Trade-off
+accepted* records the same conclusion from the other side.
+
 ## From the exchange-authorization milestone (2026-08)
 
 The policy cross-check's three entries are gone: `DECISIONS.md` §32 closed

@@ -195,6 +195,18 @@ sharing.
   handshake unbounded, and `validateCallbackURL` permits `https`. The clone
   keeps `DialContext`'s timeout, `TLSHandshakeTimeout`,
   `ExpectContinueTimeout`, and `Proxy`.
+
+  **Superseded during implementation: the transport carries no
+  `ResponseHeaderTimeout`.** The clone stayed; the timeout did not. What
+  replaced it is a `time.AfterFunc` armed around `Do` that cancels the
+  request's context, which the implementation needed anyway for the
+  no-response-at-all case. That timer is strictly wider than
+  `ResponseHeaderTimeout`: it starts before the request is written, so it
+  bounds the dial and the TLS handshake as well as the header wait, which is
+  exactly the gap this bullet was written to close. Keeping both would have
+  meant two mechanisms enforcing one `data_idle_timeout`, one of which could
+  drift from the other. See `dataPullHTTPClient`'s doc comment in
+  `internal/dsp/transfer_consumer_handler.go`, and `DECISIONS.md` §33.
 - **The body is wrapped in an idle-timeout reader**: it resets a
   `time.Timer` on every read returning more than zero bytes, and the timer
   cancels the request's context. Cancelling the context does interrupt an
