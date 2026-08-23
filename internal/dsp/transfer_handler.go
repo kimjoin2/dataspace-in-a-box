@@ -537,6 +537,7 @@ func (h transferHandler) applyTransition(w http.ResponseWriter, r *http.Request,
 				AgreementID:    t.AgreementID,
 				CounterpartyID: t.CounterpartyID,
 				State:          to,
+				ExpectedBytes:  t.ExpectedBytes,
 			}, msg.DataAddress)
 		}
 		h.maybeDriveConsumerTransfer(store.ConsumerTransfer{
@@ -565,6 +566,11 @@ type resolvedTransfer struct {
 	// message this connector sends as consumer is addressed against. The
 	// provider role's equivalent is TransferProcess.CallbackAddress.
 	ProviderBaseURL string
+	// ExpectedBytes is set for consumer-role rows only. It reaches
+	// pullTransferData through the struct the caller assembles rather than a
+	// store read, so the pull's read path stays store-free and the tests
+	// that call it directly keep working.
+	ExpectedBytes int64
 }
 
 // id is the identifier this transfer's endpoints are addressed by, which is
@@ -625,6 +631,7 @@ func (h transferHandler) lookup(w http.ResponseWriter, r *http.Request) (resolve
 			},
 			Consumer:        true,
 			ProviderBaseURL: c.ProviderBaseURL,
+			ExpectedBytes:   c.ExpectedBytes,
 		}, true
 	}
 

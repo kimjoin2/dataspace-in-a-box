@@ -1,6 +1,7 @@
 package dsp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -248,6 +249,49 @@ func (h transferHandler) maybeDriveConsumerTransfer(t store.ConsumerTransfer, re
 	go h.driveConsumerTransfer(t)
 }
 
+// newDataPullClient returns the client one data pull uses. It is
+// deliberately not callbackHTTPClient: a callback push is a small JSON body
+// that should be answered at once, and ten seconds is right for it, while a
+// data pull's body is the product and may legitimately take hours.
+//
+// So there is no Client.Timeout here — the body is bounded by
+// idleTimeoutReader instead, on time without progress. Three things that
+// look like omissions are requirements:
+//
+// CheckRedirect matches callbackHTTPClient's. validateOutgoingCallback
+// checks the endpoint a counterparty supplied and nothing a redirect points
+// at, so a client that follows redirects would let that endpoint hop to
+// 127.0.0.1:8081 and reach the management listener that binds to localhost
+// precisely so a firewall mistake cannot expose it (DECISIONS.md section
+// 12).
+//
+// The transport is a clone of the default rather than a bare literal.
+// ResponseHeaderTimeout starts only once the request is written, so without
+// the clone's DialContext timeout and TLSHandshakeTimeout — and
+// validateCallbackURL permits https — a black-holed endpoint would hold this
+// goroutine for as long as the OS is willing to wait.
+//
+// ResponseHeaderTimeout is the idle timeout itself rather than a constant of
+// its own. Waiting for a response header is time without progress, which is
+// exactly what data_idle_timeout bounds everywhere else on both sides of
+// this connector; a separate constant would be a second bound on the same
+// thing, changeable only by editing this file. That is also why the client
+// is built per pull rather than once: Transport.ResponseHeaderTimeout is
+// fixed the moment the transport exists, so a package-level client could not
+// take the value from configuration at all. Pulls are rare and long, which
+// makes the connection pool a shared client would preserve worth nothing
+// here — and the caller closes the idle connections this one leaves behind.
+func newDataPullClient(idle time.Duration) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = idle
+	return &http.Client{
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 // downloadDir is where pulled bytes land, under the one directory this
 // connector already owns. A second configurable path would be a second thing
 // to get wrong, and this milestone gains nothing from it.
@@ -337,7 +381,13 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	}
 	resuming := existingSize > 0
 
-	req, err := http.NewRequest(http.MethodGet, addr.Endpoint, nil)
+	// The cancel is what the idle reader below pulls to stop a body that has
+	// gone quiet: cancelling the request's context closes the connection
+	// underneath the read, and the cause says why for the log.
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, addr.Endpoint, nil)
 	if err != nil {
 		slog.Error("build data pull", "consumer_pid", t.ConsumerPID, "error", err)
 		return
@@ -348,12 +398,21 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	if resuming {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingSize))
 	}
-	resp, err := callbackHTTPClient.Do(req)
+	client := newDataPullClient(h.cfg.DataIdleTimeout)
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
 	if err != nil {
 		slog.Error("data pull", "consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "error", err)
 		return
 	}
 	defer resp.Body.Close()
+
+	// The complete length the counterparty states for the whole
+	// representation. Only a 206 carries it, and both the resume check below
+	// and the expected total further down read it, so Content-Range is
+	// parsed exactly once.
+	var statedComplete int64
+	var hasStatedComplete bool
 
 	if resuming {
 		switch resp.StatusCode {
@@ -369,10 +428,24 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			// wrong Content-Range is not proof the provider's file
 			// changed, just a different-shaped answer to investigate.
 			contentRange := resp.Header.Get("Content-Range")
-			first, hasFirst, _, _ := parseContentRange(contentRange)
+			var first int64
+			var hasFirst bool
+			first, hasFirst, statedComplete, hasStatedComplete = parseContentRange(contentRange)
 			if !hasFirst || first != existingSize {
 				slog.Error("206 response's Content-Range does not start where this connector's partial download left off; leaving the partial download in place",
 					"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "content_range", contentRange, "had_bytes", existingSize)
+				return
+			}
+			// A counterparty stating a different complete length is
+			// answering about a different representation, not continuing
+			// this one. Same handling as 416, and for the same reason. An
+			// absent or unknown total is not a mismatch.
+			if hasStatedComplete && t.ExpectedBytes > 0 && statedComplete != t.ExpectedBytes {
+				slog.Warn("the provider states a different complete length than this transfer recorded; discarding the partial download",
+					"consumer_pid", t.ConsumerPID, "stated", statedComplete, "recorded", t.ExpectedBytes)
+				if err := os.Remove(partial); err != nil {
+					slog.Error("remove stale partial download", "path", partial, "error", err)
+				}
 				return
 			}
 			// fall through to the append below
@@ -403,6 +476,25 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		return
 	}
 
+	// The complete length this attempt was told to expect, from whichever
+	// header carried it. Zero means not known — never known to be zero —
+	// because a counterparty that streams chunked states no length at all,
+	// and this connector's own provider did exactly that until this
+	// milestone.
+	expected := t.ExpectedBytes
+	if resuming {
+		if hasStatedComplete {
+			expected = statedComplete
+		}
+	} else if resp.ContentLength >= 0 {
+		expected = resp.ContentLength
+	}
+	if expected > 0 && expected != t.ExpectedBytes {
+		if err := h.store.SetConsumerTransferExpectedBytes(t.ConsumerPID, expected); err != nil {
+			slog.Error("record expected bytes", "consumer_pid", t.ConsumerPID, "error", err)
+		}
+	}
+
 	flag := os.O_CREATE | os.O_WRONLY
 	if resuming {
 		flag |= os.O_APPEND
@@ -414,14 +506,46 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		slog.Error("open download file", "path", partial, "error", err)
 		return
 	}
-	n, err := io.Copy(out, resp.Body)
+	body := newIdleTimeoutReader(resp.Body, h.cfg.DataIdleTimeout, cancel)
+	defer body.Stop()
+
+	// One byte past the ceiling, so a body that would exceed it is caught
+	// rather than silently truncated into a file that looks complete.
+	remaining := h.cfg.MaxDownloadBytes - existingSize
+	n, err := io.Copy(out, io.LimitReader(body, remaining+1))
 	if err != nil {
 		out.Close()
+		if cause := context.Cause(ctx); errors.Is(cause, errIdleTimeout) || errors.Is(err, errIdleTimeout) {
+			slog.Error("data pull made no progress within the idle timeout; leaving the partial download in place",
+				"consumer_pid", t.ConsumerPID, "had_bytes", existingSize, "appended_bytes", n)
+			return
+		}
 		slog.Error("write download", "consumer_pid", t.ConsumerPID, "error", err)
+		return
+	}
+	if n > remaining {
+		out.Close()
+		slog.Error("data pull exceeded max_download_bytes; leaving the partial download in place",
+			"consumer_pid", t.ConsumerPID, "limit", h.cfg.MaxDownloadBytes)
+		return
+	}
+	// Sync before the rename. A rename that outruns its data turns a crash
+	// into a success log beside a truncated file, which is worse than a
+	// failure because it reports itself as one that did not happen.
+	if err := out.Sync(); err != nil {
+		out.Close()
+		slog.Error("sync download", "consumer_pid", t.ConsumerPID, "error", err)
 		return
 	}
 	if err := out.Close(); err != nil {
 		slog.Error("close download", "consumer_pid", t.ConsumerPID, "error", err)
+		return
+	}
+
+	total := existingSize + n
+	if expected > 0 && total != expected {
+		slog.Error("the download does not match the length the provider stated; leaving the partial download in place",
+			"consumer_pid", t.ConsumerPID, "have", total, "stated", expected)
 		return
 	}
 	if resuming {
@@ -432,5 +556,5 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		slog.Error("place download", "path", final, "error", err)
 		return
 	}
-	slog.Info("pulled transfer data", "consumer_pid", t.ConsumerPID, "path", final, "bytes", n)
+	slog.Info("pulled transfer data", "consumer_pid", t.ConsumerPID, "path", final, "bytes", total, "expected", expected)
 }

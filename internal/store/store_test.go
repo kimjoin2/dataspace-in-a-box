@@ -1093,3 +1093,38 @@ func TestAgreementRoundTripsItsCounterparty(t *testing.T) {
 		t.Fatalf("ListAgreements gave %+v", list)
 	}
 }
+
+func TestConsumerTransferExpectedBytesRoundTrips(t *testing.T) {
+	st, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC()
+	if err := st.CreateConsumerTransfer(ConsumerTransfer{
+		ConsumerPID: "urn:uuid:c1", ProviderBaseURL: "http://p", AgreementID: "urn:uuid:a1",
+		Format: "HttpData-PULL", State: "REQUESTED", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, found, err := st.GetConsumerTransfer("urn:uuid:c1")
+	if err != nil || !found {
+		t.Fatalf("get: %v found=%v", err, found)
+	}
+	if got.ExpectedBytes != 0 {
+		t.Errorf("a fresh row has ExpectedBytes = %d, want 0 — zero means not known", got.ExpectedBytes)
+	}
+
+	if err := st.SetConsumerTransferExpectedBytes("urn:uuid:c1", 4096); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, _, err = st.GetConsumerTransfer("urn:uuid:c1")
+	if err != nil {
+		t.Fatalf("get after set: %v", err)
+	}
+	if got.ExpectedBytes != 4096 {
+		t.Errorf("ExpectedBytes = %d, want 4096", got.ExpectedBytes)
+	}
+}

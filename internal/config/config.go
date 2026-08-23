@@ -72,6 +72,13 @@ type Config struct {
 	// Optional; defaultDataIdleTimeout when unset.
 	DataIdleTimeout time.Duration `yaml:"data_idle_timeout"`
 
+	// MaxDownloadBytes caps a single data pull. With no overall client
+	// timeout, a counterparty that states no length is bounded by nothing
+	// else — and it is also the only backstop against a transfer that never
+	// goes idle because it dribbles. Optional; defaultMaxDownloadBytes when
+	// unset.
+	MaxDownloadBytes int64 `yaml:"max_download_bytes"`
+
 	// ConsumerPolicies configures this connector's autonomous behavior when
 	// it is negotiating as consumer, keyed by the dataset_id this connector
 	// itself requests via POST /negotiations/initiate. A dataset_id with no
@@ -277,6 +284,8 @@ const (
 
 const defaultDataIdleTimeout = 60 * time.Second
 
+const defaultMaxDownloadBytes = 8 << 30
+
 // minMgmtTokenLen is the shortest management token accepted. It exists to
 // fail an obviously placeholder value at load rather than in production.
 const minMgmtTokenLen = 16
@@ -284,7 +293,12 @@ const minMgmtTokenLen = 16
 // Load parses the YAML document, applies environment overrides, and validates
 // the result. Environment values take precedence over the file.
 func Load(data []byte, getenv func(string) string) (Config, error) {
-	cfg := Config{DSPAddr: defaultDSPAddr, MgmtAddr: defaultMgmtAddr, DataIdleTimeout: defaultDataIdleTimeout}
+	cfg := Config{
+		DSPAddr:          defaultDSPAddr,
+		MgmtAddr:         defaultMgmtAddr,
+		DataIdleTimeout:  defaultDataIdleTimeout,
+		MaxDownloadBytes: defaultMaxDownloadBytes,
+	}
 
 	// KnownFields rejects a document with an unrecognized key instead of
 	// silently dropping it — a typo like "dsp_add" would otherwise load with

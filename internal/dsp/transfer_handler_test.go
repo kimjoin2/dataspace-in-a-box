@@ -15,12 +15,31 @@ import (
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
 
+// testMaxDownloadBytes is what this fixture puts in config.MaxDownloadBytes
+// when a caller left it zero, for the same reason testDataIdleTimeout exists:
+// these tests build a config.Config as a struct literal, which bypasses
+// config.Load and every default it applies.
+//
+// Both fills are load-bearing rather than cosmetic. config.Load validates
+// both bounds as positive, so pullTransferData is free to be undefensive
+// about them — and against a literal that skipped Load, a zero
+// DataIdleTimeout is time.AfterFunc(0, cancel), which cancels every pull the
+// instant it starts, and a zero MaxDownloadBytes is a ceiling that admits
+// nothing. A caller that set its own value keeps it.
+const testMaxDownloadBytes = 1 << 30
+
 // newTestTransferHandler mirrors newTestHandler: an in-memory store, and the
 // outgoing-callback SSRF filter disabled because httptest servers are always
 // on loopback, which is exactly what that filter rejects in production. The
 // filter has its own direct table test in callback_test.go.
 func newTestTransferHandler(t *testing.T, cfg config.Config) (transferHandler, *store.Store) {
 	t.Helper()
+	if cfg.DataIdleTimeout == 0 {
+		cfg.DataIdleTimeout = testDataIdleTimeout
+	}
+	if cfg.MaxDownloadBytes == 0 {
+		cfg.MaxDownloadBytes = testMaxDownloadBytes
+	}
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)

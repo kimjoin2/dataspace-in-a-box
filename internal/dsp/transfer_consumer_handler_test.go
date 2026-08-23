@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -702,5 +703,437 @@ func TestParseContentRange(t *testing.T) {
 				t.Errorf("complete = (%d, %v), want (%d, %v)", complete, hasComplete, tt.complete, tt.hasComplete)
 			}
 		})
+	}
+}
+
+// The pulls below go through newTestTransferHandler like every other test in
+// this file, and seed their row with seedConsumerTransfer — a pull that
+// records a stated length needs a row to record it against, and that helper
+// already writes one. Nothing else is set up, because a pull driven directly
+// needs nothing else.
+
+func TestPullRecordsAndPublishesAStatedLength(t *testing.T) {
+	dir := t.TempDir()
+	body := strings.Repeat("y", 3000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
+
+	got, err := os.ReadFile(filepath.Join(dir, downloadDir, pid))
+	if err != nil {
+		t.Fatalf("the download was not published: %v", err)
+	}
+	if len(got) != len(body) {
+		t.Errorf("published %d bytes, want %d", len(got), len(body))
+	}
+	row, _, err := st.GetConsumerTransfer(pid)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if row.ExpectedBytes != int64(len(body)) {
+		t.Errorf("ExpectedBytes = %d, want %d — the stated length was not recorded", row.ExpectedBytes, len(body))
+	}
+}
+
+// TestPullDoesNotPublishFewerBytesThanStated is the plain-200 half of the
+// size contract, and net/http is what enforces it: the client compares the
+// body against Content-Length itself and fails the copy with
+// io.ErrUnexpectedEOF, so this connector's own comparison of the total
+// against the stated length is never reached here. It is reached on a
+// resume, where a self-consistent range can still fall short of the total
+// the same header states — TestPullDoesNotPublishAResumeShortOfTheStatedTotal
+// is that case, and the one that pins the check.
+func TestPullDoesNotPublishFewerBytesThanStated(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "5000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(strings.Repeat("z", 100)))
+	}))
+	defer srv.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
+
+	if _, err := os.Stat(filepath.Join(dir, downloadDir, pid)); err == nil {
+		t.Error("a download short of its stated length was published")
+	}
+	if _, err := os.Stat(pullPartialPath(dir, pid)); err != nil {
+		t.Errorf("the partial was not kept for a later resume: %v", err)
+	}
+}
+
+// TestPullDoesNotPublishAResumeShortOfTheStatedTotal is the case the stated
+// total actually catches. A provider that answers a Range request with a
+// valid, self-consistent 206 shorter than the complete length its own
+// Content-Range declares leaves the transport nothing to complain about:
+// exactly as many bytes arrive as that response promised. Only comparing
+// what the file now holds against the total notices that the transfer is
+// not finished.
+func TestPullDoesNotPublishAResumeShortOfTheStatedTotal(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", "bytes 100-299/600")
+		w.Header().Set("Content-Length", "200")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte(strings.Repeat("b", 200)))
+	}))
+	defer srv.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pullPartialPath(dir, pid), []byte(strings.Repeat("a", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid, ExpectedBytes: 600}, &DataAddress{Endpoint: srv.URL})
+
+	if _, err := os.Stat(filepath.Join(dir, downloadDir, pid)); err == nil {
+		t.Error("a resume 300 bytes short of the stated complete length was published")
+	}
+	info, err := os.Stat(pullPartialPath(dir, pid))
+	if err != nil {
+		t.Fatalf("the partial was not kept for a later resume: %v", err)
+	}
+	if info.Size() != 300 {
+		t.Errorf("partial holds %d bytes, want the 300 that have arrived so far", info.Size())
+	}
+}
+
+func TestPullPublishesWhenNoLengthIsStated(t *testing.T) {
+	dir := t.TempDir()
+	body := strings.Repeat("q", 2000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No Content-Length: net/http sends this chunked, which is what this
+		// connector's own provider did before this milestone and what the
+		// TCK's own data endpoint does on every consumer-side pull a gate
+		// run makes. This is the branch `make tck` exercises.
+		w.WriteHeader(http.StatusOK)
+		for i := 0; i < 4; i++ {
+			_, _ = w.Write([]byte(body[i*500 : (i+1)*500]))
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer srv.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
+
+	got, err := os.ReadFile(filepath.Join(dir, downloadDir, pid))
+	if err != nil {
+		t.Fatalf("a transfer with no stated length was not published: %v", err)
+	}
+	if len(got) != len(body) {
+		t.Errorf("published %d bytes, want %d", len(got), len(body))
+	}
+	row, _, err := st.GetConsumerTransfer(pid)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if row.ExpectedBytes != 0 {
+		t.Errorf("ExpectedBytes = %d, want 0 — nothing was stated", row.ExpectedBytes)
+	}
+}
+
+func TestResumeDiscardsThePartialWhenTheStatedTotalChanged(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Starts where the partial left off, but the representation is a
+		// different length than the one this transfer recorded.
+		w.Header().Set("Content-Range", "bytes 100-599/600")
+		w.Header().Set("Content-Length", "500")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte(strings.Repeat("b", 500)))
+	}))
+	defer srv.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	partial := pullPartialPath(dir, pid)
+	if err := os.WriteFile(partial, []byte(strings.Repeat("a", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid, ExpectedBytes: 400}, &DataAddress{Endpoint: srv.URL})
+
+	if _, err := os.Stat(partial); err == nil {
+		t.Error("the partial survived a counterparty stating a different complete length; a different representation is not a resumption")
+	}
+	if _, err := os.Stat(filepath.Join(dir, downloadDir, pid)); err == nil {
+		t.Error("the mismatched response was published")
+	}
+}
+
+func TestResumeAcceptsAnUnknownCompleteLength(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", "bytes 100-199/*")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte(strings.Repeat("b", 100)))
+	}))
+	defer srv.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pullPartialPath(dir, pid), []byte(strings.Repeat("a", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid, ExpectedBytes: 200}, &DataAddress{Endpoint: srv.URL})
+
+	got, err := os.ReadFile(filepath.Join(dir, downloadDir, pid))
+	if err != nil {
+		t.Fatalf("an unknown complete length was treated as a mismatch: %v", err)
+	}
+	if len(got) != 200 {
+		t.Errorf("published %d bytes, want 200", len(got))
+	}
+}
+
+func TestPullStopsAtMaxDownloadBytes(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		for i := 0; i < 50; i++ {
+			_, _ = w.Write([]byte(strings.Repeat("m", 1000)))
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer srv.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, MaxDownloadBytes: 2000})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
+
+	if _, err := os.Stat(filepath.Join(dir, downloadDir, pid)); err == nil {
+		t.Error("a download past the ceiling was published")
+	}
+	info, err := os.Stat(pullPartialPath(dir, pid))
+	if err != nil {
+		t.Fatalf("stat partial: %v", err)
+	}
+	if info.Size() > 2000+copyBufSize {
+		t.Errorf("wrote %d bytes past a %d ceiling", info.Size(), 2000)
+	}
+}
+
+func TestPullIsCutOffWhenProgressStops(t *testing.T) {
+	dir := t.TempDir()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(strings.Repeat("s", 500)))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer func() { close(release); srv.Close() }()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: 150 * time.Millisecond})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
+
+	if _, err := os.Stat(filepath.Join(dir, downloadDir, pid)); err == nil {
+		t.Error("a pull that stalled was published")
+	}
+	info, err := os.Stat(pullPartialPath(dir, pid))
+	if err != nil {
+		t.Fatalf("the partial was not kept after an idle cutoff: %v", err)
+	}
+	if info.Size() != 500 {
+		t.Errorf("partial holds %d bytes, want the 500 that arrived", info.Size())
+	}
+}
+
+func TestPullCompletesWhileBytesKeepArriving(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Ten chunks, each well inside the idle window, together far beyond
+		// it. This is the difference between an idle bound and a total one.
+		for i := 0; i < 10; i++ {
+			_, _ = w.Write([]byte(strings.Repeat("k", 100)))
+			w.(http.Flusher).Flush()
+			time.Sleep(30 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: 150 * time.Millisecond})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
+
+	got, err := os.ReadFile(filepath.Join(dir, downloadDir, pid))
+	if err != nil {
+		t.Fatalf("a transfer that kept making progress was cut off: %v", err)
+	}
+	if len(got) != 1000 {
+		t.Errorf("published %d bytes, want 1000", len(got))
+	}
+}
+
+func TestPullRefusesAConnectionThatNeverSendsHeaders(t *testing.T) {
+	dir := t.TempDir()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // never writes a header
+	}))
+	defer func() { close(release); srv.Close() }()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: 150 * time.Millisecond})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+
+	done := make(chan struct{})
+	go func() {
+		h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a counterparty that never sent headers held the pull open; ResponseHeaderTimeout is not set")
+	}
+}
+
+// TestInboundStartCarriesTheRecordedExpectedBytesToThePull is the wire
+// between the stored column and the check that reads it. pullTransferData
+// takes ExpectedBytes from the struct its caller assembles rather than from
+// a store read, so a recorded total is worth nothing unless lookup projects
+// it and the start dispatch passes it on. With that wire cut every resume
+// looks like a first attempt and the 206 mismatch check can never fire in
+// production, which no direct-call pull test would notice.
+func TestInboundStartCarriesTheRecordedExpectedBytesToThePull(t *testing.T) {
+	dir := t.TempDir()
+	data := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A valid continuation of the partial seeded below, but of a
+		// 600-byte representation rather than the 400-byte one the row
+		// recorded.
+		w.Header().Set("Content-Range", "bytes 100-599/600")
+		w.Header().Set("Content-Length", "500")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte(strings.Repeat("b", 500)))
+	}))
+	defer data.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	now := time.Now()
+	const id = "urn:uuid:c-expected"
+	if err := st.CreateConsumerTransfer(store.ConsumerTransfer{
+		ConsumerPID: id, ProviderPID: "urn:uuid:p-1", ProviderBaseURL: "http://provider.example/2025-1",
+		AgreementID: "urn:uuid:a", Format: "HTTP-PULL", State: TransferRequested,
+		ExpectedBytes: 400, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	partial := pullPartialPath(dir, id)
+	if err := os.WriteFile(partial, []byte(strings.Repeat("a", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"@context":["` + ContextURL + `"],"@type":"` + TransferStartMessageType + `",` +
+		`"providerPid":"urn:uuid:p-1","consumerPid":"` + id + `",` +
+		`"dataAddress":{"@type":"DataAddress","endpointType":"https://w3id.org/idsa/v4.1/HTTP",` +
+		`"endpoint":"` + data.URL + `"}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, VersionPath+"/transfers/"+id+"/start", strings.NewReader(body))
+	req.SetPathValue("id", id)
+	h.handleTransferStart(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inbound start: got %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(partial); os.IsNotExist(err) {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatal("the partial survived a counterparty stating a different complete length — the recorded ExpectedBytes never reached the pull")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(dir, downloadDir, id)); err == nil {
+		t.Error("the mismatched response was published")
+	}
+}
+
+// TestPullDoesNotFollowARedirect pins a security property the pull used to
+// inherit by borrowing callbackHTTPClient, and which a client of its own is
+// free to lose. validateOutgoingCallback checks the endpoint the
+// counterparty supplied and nothing a redirect points at, so a client that
+// follows one lets that endpoint hop to the management listener, which binds
+// to localhost precisely so a firewall mistake cannot expose it.
+func TestPullDoesNotFollowARedirect(t *testing.T) {
+	dir := t.TempDir()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("bytes from an address no guard ever saw"))
+	}))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer srv.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
+
+	if _, err := os.Stat(filepath.Join(dir, downloadDir, pid)); err == nil {
+		t.Error("the pull followed a redirect and published what it found there")
+	}
+}
+
+// TestDataPullClientIsNotTheCallbackClient pins the properties of the pull's
+// client that no behavioral test in this file can reach cheaply. The absent
+// overall timeout is the whole reason the client exists, and proving its
+// absence behaviorally would mean a test that runs longer than
+// callbackHTTPClient's ten seconds; the dial and handshake bounds only show
+// up against an endpoint that black-holes packets, which a loopback httptest
+// server cannot be.
+func TestDataPullClientIsNotTheCallbackClient(t *testing.T) {
+	c := newDataPullClient(30 * time.Second)
+
+	if c.Timeout != 0 {
+		t.Errorf("Client.Timeout = %v, want none — an overall timeout caps a data pull at whatever the link moves in that time", c.Timeout)
+	}
+	if c.CheckRedirect == nil {
+		t.Error("redirects are enabled; the endpoint guard checked the address the counterparty gave and nothing a redirect points at")
+	}
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport is %T, want *http.Transport", c.Transport)
+	}
+	if tr.ResponseHeaderTimeout != 30*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %v, want the idle timeout the client was built with", tr.ResponseHeaderTimeout)
+	}
+	// The next two say the transport is a clone of the default rather than a
+	// bare literal. Neither is covered by ResponseHeaderTimeout, which starts
+	// only once the request is written, and neither is covered by
+	// Client.Timeout any more.
+	if tr.DialContext == nil {
+		t.Error("DialContext is nil — a bare transport literal, so a black-holed endpoint's TCP connect is bounded by nothing")
+	}
+	if tr.TLSHandshakeTimeout <= 0 {
+		t.Error("TLSHandshakeTimeout is unset — a bare transport literal, so an https endpoint's handshake is bounded by nothing")
 	}
 }

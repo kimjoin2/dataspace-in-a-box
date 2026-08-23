@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS consumer_transfer_processes (
     agreement_id      TEXT NOT NULL,
     format            TEXT NOT NULL,
     state             TEXT NOT NULL,
+    expected_bytes    INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );`
@@ -327,6 +328,13 @@ func migrate(db *sql.DB) error {
 			`ALTER TABLE `+table+` ADD COLUMN counterparty_id TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
+	}
+	// expected_bytes is in both the CREATE literal above and this loop.
+	// counterparty_id is in the literal only on agreements (section 32.5);
+	// doing both here is what that section's own reasoning argues for.
+	if err := addColumnIfMissing(db, "consumer_transfer_processes", "expected_bytes",
+		`ALTER TABLE consumer_transfer_processes ADD COLUMN expected_bytes INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -769,16 +777,22 @@ type ConsumerTransfer struct {
 	// authorizes an inbound request against it — DECISIONS.md section 32.3.
 	// Empty on rows written before authentication existed.
 	CounterpartyID string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// ExpectedBytes is the complete length the counterparty stated for this
+	// transfer's data, recorded on the first attempt so a later one can tell
+	// a resumption from a different representation. Zero means not known —
+	// never known to be zero — because a counterparty that streams chunked
+	// states no length at all and that is not an error.
+	ExpectedBytes int64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // CreateConsumerTransfer persists a new consumer-role transfer.
 func (s *Store) CreateConsumerTransfer(t ConsumerTransfer) error {
 	_, err := s.db.Exec(
-		`INSERT INTO consumer_transfer_processes (consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, counterparty_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ConsumerPID, t.ProviderPID, t.ProviderBaseURL, t.AgreementID, t.Format, t.State, t.CounterpartyID,
+		`INSERT INTO consumer_transfer_processes (consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, counterparty_id, expected_bytes, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ConsumerPID, t.ProviderPID, t.ProviderBaseURL, t.AgreementID, t.Format, t.State, t.CounterpartyID, t.ExpectedBytes,
 		t.CreatedAt.UTC().Format(timeFormat), t.UpdatedAt.UTC().Format(timeFormat),
 	)
 	if err != nil {
@@ -791,13 +805,13 @@ func (s *Store) CreateConsumerTransfer(t ConsumerTransfer) error {
 // consumer pid.
 func (s *Store) GetConsumerTransfer(consumerPID string) (ConsumerTransfer, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, created_at, updated_at, counterparty_id
+		`SELECT consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, created_at, updated_at, counterparty_id, expected_bytes
 		 FROM consumer_transfer_processes WHERE consumer_pid = ?`, consumerPID)
 
 	var t ConsumerTransfer
 	var created, updated string
 	err := row.Scan(&t.ConsumerPID, &t.ProviderPID, &t.ProviderBaseURL, &t.AgreementID, &t.Format, &t.State,
-		&created, &updated, &t.CounterpartyID)
+		&created, &updated, &t.CounterpartyID, &t.ExpectedBytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConsumerTransfer{}, false, nil
 	}
@@ -866,6 +880,20 @@ func (s *Store) SetConsumerTransferProviderPID(consumerPID, providerPID string, 
 	}
 	if rows == 0 {
 		return fmt.Errorf("update consumer transfer %s: %w", consumerPID, ErrNotFound)
+	}
+	return nil
+}
+
+// SetConsumerTransferExpectedBytes records the complete length a
+// counterparty stated for a transfer's data. Unguarded, unlike the state
+// setters: this is not a protocol transition, and folding it into one would
+// make SetConsumerTransferState's from/to guard mean two things.
+func (s *Store) SetConsumerTransferExpectedBytes(consumerPID string, expected int64) error {
+	if _, err := s.db.Exec(
+		`UPDATE consumer_transfer_processes SET expected_bytes = ? WHERE consumer_pid = ?`,
+		expected, consumerPID,
+	); err != nil {
+		return fmt.Errorf("set expected bytes for consumer transfer %s: %w", consumerPID, err)
 	}
 	return nil
 }
