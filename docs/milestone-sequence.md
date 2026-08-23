@@ -143,13 +143,13 @@ new reader of that column has to learn it before touching anything.
 worse than neutral here: it is a constraint on the design rather than evidence
 for it. The harness authenticates as `urn:participant:tck` while hardcoding
 `TCK_PARTICIPANT` as the `providerId` it sends, so a roster check written the
-obvious way loses all fifteen `TP_C` results — the same 35-of-65 outcome §32
-measured before writing a line. Evidence therefore comes from unit tests plus
-`make demo`, the only harness where the two names agree, and even there it
-agrees by fixture rather than by rule. **Settle before starting:** what an
-initiate call may name when the roster does not list it. Refusing outright is
-what breaks the harness, so that question is the milestone, not a detail inside
-it.
+obvious way loses all fifteen `TP_C` results and all but one of `CN_C` — the
+same 35-of-65 outcome §32 measured before writing a line. Evidence therefore
+comes from unit tests plus `make demo`, the only harness where the two names
+agree, and even there it agrees by fixture rather than by rule. **Settle
+before starting:** what an initiate call may name when the roster does not
+list it. Refusing outright is what breaks the harness, so that question is the
+milestone, not a detail inside it.
 
 What follows is the original argument, kept as written.
 
