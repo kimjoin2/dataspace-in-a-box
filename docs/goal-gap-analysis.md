@@ -156,9 +156,9 @@ documentation alone, bootstrap, revoke, and discover.
 - No backup or `VACUUM` story in code or documentation, against a schema with
   no delete path anywhere by design (§25.3) and an uncleaned `.partial-*`
   directory. Monotonic growth with no remediation.
-- **The binary has no version.** No `-version` flag, no `ReadBuildInfo`
-  stamp, no version field in the boot log. An operator cannot say what is
-  running and a bug report cannot name a build.
+- ~~**The binary has no version.**~~ *Closed.* A `-version` flag reports the
+  short revision, marked when the tree was dirty, and the boot log carries
+  the same value.
 - **The DSP version is a compile-time constant.** `VersionPath = "/2025-1"`
   is baked into every route and into callback addresses. The version metadata
   endpoint exists to advertise several versions; this connector cannot serve
@@ -248,11 +248,14 @@ order is driven by **what can still verify the work**. "Safe first" is the
 special case of it that holds for security work, promoted to a slogan; the
 promotion is what pushed three of the four promises out of the document.
 
-0. **Give the artifact an identity, and stop the documentation drift.** A
-   `-version` flag and a build stamp, `source_file` and
-   `consumer_transfer_policies` in `config.example.yaml`, role columns in
-   `README.md`'s protocol table. Cheap, blocks nothing, and everything below
-   needs to name a build. `SECURITY.md` was the fifth item here and is done.
+0. **Give the artifact an identity, and stop the documentation drift.**
+   *Done.* `SECURITY.md` and private vulnerability reporting; a `-version`
+   flag reporting the short revision and carried in the boot log;
+   `source_file` and `consumer_transfer_policies` documented in
+   `config.example.yaml`; `MET` and `CAT` marked served-only in `README.md`'s
+   protocol table, and that section's claim about the transfer size limit
+   corrected to name the consumer's ten seconds. Cheap, blocked nothing, and
+   everything below can now name a build.
 
 1. **The data path** — split the pull off `callbackHTTPClient`, verify what
    arrives, `Sync()` it, record it, make it queryable, log the served
