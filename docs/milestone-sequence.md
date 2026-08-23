@@ -9,6 +9,19 @@ The TCK has carried every milestone so far. It stops carrying them at
 different points for each of the remaining ones, and that — more than
 dependency order — is what sets the sequence.
 
+**This document sequences one axis of the goal.** Every milestone it names,
+finished or forward, is protocol or authorization work; it has no entry for
+onboarding, discovery, the management surface, the UI, observability, or
+release. That is not an oversight in the list — it follows from the rule this
+document has been applying, "do the step that makes the next one safe, first",
+which says nothing about a licence or a metrics endpoint and so silently
+excluded everything it could not phrase as safety. The rule stated in the
+paragraph above — order by *what can still verify the work* — is the general
+one, and it does reach those axes. `docs/goal-gap-analysis.md` measures all
+four promises against the goal and proposes an order across them; this
+document remains the authority for the protocol and authorization axis inside
+that order.
+
 ## What has been done since this was written
 
 **All four milestones below are complete, and three more shipped that this
