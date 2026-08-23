@@ -536,8 +536,13 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	}
 	if n > remaining {
 		out.Close()
-		slog.Error("data pull exceeded max_download_bytes; leaving the partial download in place",
-			"consumer_pid", t.ConsumerPID, "limit", h.cfg.MaxDownloadBytes)
+		// Not a dead end, and the message says so because the recovery is
+		// not obvious: the bytes already written are a valid prefix at the
+		// right offset, so raising max_download_bytes and restarting the
+		// transfer resumes from exactly here rather than starting over.
+		slog.Error("data pull exceeded max_download_bytes; leaving the partial download in place — "+
+			"raise max_download_bytes and restart the transfer to resume from the bytes already fetched",
+			"consumer_pid", t.ConsumerPID, "limit", h.cfg.MaxDownloadBytes, "have_bytes", existingSize+n)
 		return
 	}
 	// Sync before the rename. A rename that outruns its data turns a crash

@@ -83,6 +83,16 @@ func copyUnderRollingDeadline(w http.ResponseWriter, rc *http.ResponseController
 			if writeErr != nil {
 				return total, writeErr
 			}
+			// io.Copy's invariant, kept because this is a hand-rolled
+			// io.Copy: a short write with a nil error would otherwise drop
+			// those bytes silently and carry on, producing a response that
+			// is missing a hole in the middle and reports success. Nothing
+			// net/http hands us does this today; the guard is here because
+			// the helper is the copy, and a copy that can lose bytes
+			// without saying so is worse than one that stops.
+			if written < n {
+				return total, io.ErrShortWrite
+			}
 		}
 		if readErr != nil {
 			if readErr == io.EOF {
