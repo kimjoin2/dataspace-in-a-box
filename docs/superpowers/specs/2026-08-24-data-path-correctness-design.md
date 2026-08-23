@@ -521,11 +521,10 @@ mutation as this repository does elsewhere: delete the check, confirm a
 - `GET /transfers` returns both roles, with download fields on consumer rows,
   and refuses without the management token.
 
-**Before implementing:** capture one TCK data response's headers with a
-single `curl` against the TCK container and record the answer here. Twelve
-consumer-side pulls run against that endpoint in every gate run, it is the
-only real third-party counterparty available to this project, and whether it
-states a length decides which branch of §2 the gate exercises.
+**Measured (Task 1):** the TCK's data endpoint answers chunked, with no
+`Content-Length`. So `make tck` exercises §2's no-length branch on all
+twelve of its consumer-side pulls — the gate would have caught a strict
+publish rule, and `expected_bytes` stays 0 for every TCK transfer.
 
 The gates are unchanged: `go vet ./...`, `go test ./...`, `make tck` holding
 65 of 65, and `make demo` still moving its file and diffing it.
