@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -982,12 +984,15 @@ func TestPullCompletesWhileBytesKeepArriving(t *testing.T) {
 	defer srv.Close()
 
 	// A pull that reached for callbackHTTPClient instead of its own client
-	// is caught structurally by TestDataPullClientIsNotTheCallbackClient,
-	// which pins dataPullHTTPClient.Timeout at zero. This test used to also
-	// lower callbackHTTPClient.Timeout in place to catch it dynamically;
-	// that mutated a package-level client shared by every other test in the
-	// package, which docs/follow-ups.md names as the likeliest source of a
-	// future flake, and it duplicated a check that already holds without it.
+	// is caught by TestThePullDoesNotBorrowTheCallbackClientsConnections,
+	// which observes it at the call site through the connection pool.
+	// TestDataPullClientIsNotTheCallbackClient does not catch it: that one
+	// inspects the package variable and never reaches pullTransferData.
+	// This test used to catch it by lowering callbackHTTPClient.Timeout in
+	// place, which mutated a client every other test in the package shares
+	// — docs/follow-ups.md names that pattern as the likeliest source of a
+	// future flake — so the coverage moved to a test that mutates nothing
+	// rather than being dropped.
 	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: 150 * time.Millisecond})
 	pid := seedConsumerTransfer(t, st, TransferStarted)
 	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
@@ -1332,5 +1337,62 @@ func TestShutdownWaitCoversAnInFlightPull(t *testing.T) {
 	}
 	if string(got) != payload {
 		t.Errorf("downloaded %q, want %q", got, payload)
+	}
+}
+
+// TestThePullDoesNotBorrowTheCallbackClientsConnections catches at the call
+// site what TestDataPullClientIsNotTheCallbackClient can only catch on the
+// package variable. That test inspects dataPullHTTPClient and never reaches
+// pullTransferData, so changing the Do call to callbackHTTPClient.Do passes
+// it — and passed the whole package until this test existed.
+//
+// The observable difference is the connection pool. callbackHTTPClient
+// carries no Transport, so it uses http.DefaultTransport;
+// dataPullHTTPClient carries a clone. Two transports mean two pools, so a
+// keep-alive connection primed by one client is invisible to the other. This
+// test primes the callback client's pool against the same server the pull is
+// then pointed at: a pull on its own client must open a second connection,
+// and a pull that has borrowed the callback client will reuse the first.
+//
+// Nothing shared is mutated, which is the point — the check this replaces
+// lowered callbackHTTPClient.Timeout in place, and docs/follow-ups.md names
+// that pattern as the likeliest source of a future flake.
+func TestThePullDoesNotBorrowTheCallbackClientsConnections(t *testing.T) {
+	var mu sync.Mutex
+	var remoteAddrs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		remoteAddrs = append(remoteAddrs, r.RemoteAddr)
+		mu.Unlock()
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer srv.Close()
+
+	// Prime the callback client's pool. The body must be drained and closed
+	// or the connection is never returned to it, and then even a borrowed
+	// client would open a second connection and this test would pass without
+	// proving anything.
+	resp, err := callbackHTTPClient.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("prime the callback client's pool: %v", err)
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("drain the priming response: %v", err)
+	}
+	resp.Body.Close()
+
+	dir := t.TempDir()
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(remoteAddrs) != 2 {
+		t.Fatalf("the server saw %d requests, want 2 (the priming push and the pull)", len(remoteAddrs))
+	}
+	if remoteAddrs[0] == remoteAddrs[1] {
+		t.Error("the data pull reused the callback client's pooled connection, so the call site is using callbackHTTPClient — " +
+			"whose ten-second Timeout covers the whole response body and caps a transfer at whatever the link moves in it")
 	}
 }
