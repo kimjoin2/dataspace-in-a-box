@@ -547,8 +547,8 @@ func (h transferHandler) applyTransition(w http.ResponseWriter, r *http.Request,
 			// would return with this pull unregistered, which is precisely
 			// the lost store write the counter exists to prevent. Done stays
 			// inside, so the pair is balanced by the wrapper rather than by
-			// pullTransferData — which seventeen tests call directly, and
-			// which would decrement a counter nothing had incremented.
+			// pullTransferData — which many tests call directly, and which
+			// would decrement a counter nothing had incremented.
 			if h.pulls != nil {
 				h.pulls.Add(1)
 			}

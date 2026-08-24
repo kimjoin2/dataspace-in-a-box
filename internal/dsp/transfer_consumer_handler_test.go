@@ -1457,8 +1457,15 @@ func TestPullRecordsItsOutcomeOnEveryPath(t *testing.T) {
 		if row.DataError == "" {
 			t.Fatal("DataError is empty after a pull that was cut off — a failed pull and a successful one must be distinguishable in storage")
 		}
-		if !strings.Contains(row.DataError, "idle") {
-			t.Errorf("DataError = %q, want the sentence naming the idle timeout", row.DataError)
+		// The exact sentence, not a substring: two exits name the idle
+		// timeout — the wait for response headers and this one, the copy
+		// that stalled mid-body — and "idle" cannot tell them apart.
+		if row.DataError != "the data pull made no progress within the idle timeout" {
+			t.Errorf("DataError = %q, want the sentence for a body that stalled mid-copy", row.DataError)
+		}
+		if row.ReceivedBytes != 500 {
+			t.Errorf("ReceivedBytes = %d, want 500 — the bytes that reached disk before the cutoff, "+
+				"which is what tells a restart whether it resumes or starts over", row.ReceivedBytes)
 		}
 		if !row.DataCompletedAt.IsZero() {
 			t.Error("DataCompletedAt is set after a failure")
@@ -1489,6 +1496,32 @@ func TestPullRecordsItsOutcomeOnEveryPath(t *testing.T) {
 		}
 		if row.DataError == "" {
 			t.Error("DataError is empty after a pull refused before it started")
+		}
+	})
+
+	t.Run("a start message with an empty data endpoint records why", func(t *testing.T) {
+		dir := t.TempDir()
+		h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+		pid := seedConsumerTransfer(t, st, "STARTED")
+
+		// Not a defensive case: "dataAddress": {} on a start message decodes
+		// to exactly this — non-nil, empty Endpoint — past the dispatch
+		// site's nil guard and past checkEnvelope, which reads only @context
+		// and @type.
+		h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{})
+
+		row, _, err := st.GetConsumerTransfer(pid)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		// The exact sentence: the zero-value default is also non-empty, so
+		// asserting non-empty would pass on a row that says nothing an
+		// operator can act on when the cause is known exactly.
+		if row.DataError != "the start message carried no data endpoint" {
+			t.Errorf("DataError = %q, want the sentence naming the missing endpoint", row.DataError)
+		}
+		if !row.DataCompletedAt.IsZero() {
+			t.Error("DataCompletedAt is set after a failure")
 		}
 	})
 }

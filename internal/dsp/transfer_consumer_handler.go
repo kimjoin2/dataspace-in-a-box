@@ -380,16 +380,20 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	}
 	outcome := pullOutcome{failure: "the pull ended without recording a reason"}
 	defer func() {
-		if h.store == nil {
-			return
-		}
 		if err := h.store.RecordConsumerTransferOutcome(
 			t.ConsumerPID, outcome.received, outcome.path, outcome.completed, outcome.failure,
 		); err != nil {
 			slog.Error("record pull outcome", "consumer_pid", t.ConsumerPID, "error", err)
 		}
 	}()
+	// Reachable from a real message, not a defensive check: the dispatch site
+	// guards addr != nil, but a start message carrying "dataAddress": {}
+	// decodes to a non-nil pointer with an empty Endpoint, and checkEnvelope
+	// validates only @context and @type. So this is an attempt by a
+	// non-conforming counterparty, and it owns the row like any other.
 	if addr == nil || addr.Endpoint == "" {
+		slog.Error("start message carried no data endpoint", "consumer_pid", t.ConsumerPID)
+		outcome.fail("the start message carried no data endpoint")
 		return
 	}
 	// The endpoint came from a counterparty, so it goes through the same
@@ -580,6 +584,13 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	// rather than silently truncated into a file that looks complete.
 	remaining := h.cfg.MaxDownloadBytes - existingSize
 	n, err := io.Copy(out, io.LimitReader(body, remaining+1))
+	// Set once here rather than at each exit below, which is the work this
+	// design exists to avoid. Every exit past this point leaves the bytes
+	// copied so far on disk, and that number is what tells an operator
+	// whether a restart resumes or starts over — the fact the failure
+	// sentences state in words. succeed writes the same total again on the
+	// success path.
+	outcome.received = existingSize + n
 	if err != nil {
 		out.Close()
 		if cause := context.Cause(ctx); errors.Is(cause, errIdleTimeout) || errors.Is(err, errIdleTimeout) {
