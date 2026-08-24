@@ -138,7 +138,7 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 	//
 	// The third of this connector's three comparison forms, and hand-rolled
 	// rather than shared on purpose. refuseIfNotParty
-	// (auth_middleware.go) carries this identical rule for the five exchange
+	// (auth_middleware.go) carries the same rule for the exchange
 	// resolvers, and handleTransferRequest's agreement check
 	// (transfer_handler.go) carries it with an empty-permitted clause added.
 	// This one must never acquire that clause: a transfer row with no

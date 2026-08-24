@@ -83,15 +83,19 @@ func cutBearer(header string) (string, bool) {
 // stored is the participant this row's exchange is with. Provider-role rows
 // take it from the verified issuer of the request that created them.
 // Consumer-role rows take it from the providerId of an initiate call — which
-// is an authorization anchor now that only the operator can make one and only
-// a roster participant may be named. Before that it was a string any caller
-// could choose, which is why DECISIONS.md section 32.3 recorded the consumer
-// role's resolvers as deliberately unguarded.
+// is an authorization anchor because an initiate call may only name a
+// participant the roster lists, so the stored counterparty is a name this
+// connector can verify a message from. Before that roster check existed,
+// providerId was a string any caller could choose, which is why DECISIONS.md
+// section 32.3 recorded the consumer role's resolvers as deliberately
+// unguarded.
 //
-// Every resolver that reaches a row of either role carries this call. That is
-// load-bearing rather than tidy: a comment saying a consumer counterparty is
-// an authorization anchor, next to a resolver that does not compare against
-// it, would be worse than the documented asymmetry it replaced.
+// Every control-plane resolver that reaches a row of either role carries
+// this call — handleData resolves a transfer row too, but keeps its own
+// comparison deliberately unshared (see its own doc comment for why). That
+// is load-bearing rather than tidy: a comment saying a consumer counterparty
+// is an authorization anchor, next to a resolver that does not compare
+// against it, would be worse than the documented asymmetry it replaced.
 //
 // 403, not 404: DECISIONS.md section 25.1 makes every DSP rejection
 // [400, 500) and never 404, because the counterparty's client checks for 404
