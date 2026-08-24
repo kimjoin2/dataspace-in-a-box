@@ -1128,3 +1128,82 @@ func TestConsumerTransferExpectedBytesRoundTrips(t *testing.T) {
 		t.Errorf("ExpectedBytes = %d, want 4096", got.ExpectedBytes)
 	}
 }
+
+func TestConsumerTransferOutcomeRoundTrips(t *testing.T) {
+	st, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := st.CreateConsumerTransfer(ConsumerTransfer{
+		ConsumerPID: "urn:uuid:o1", ProviderBaseURL: "http://p", AgreementID: "urn:uuid:a1",
+		Format: "HttpData-PULL", State: "STARTED", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, found, err := st.GetConsumerTransfer("urn:uuid:o1")
+	if err != nil || !found {
+		t.Fatalf("get: %v found=%v", err, found)
+	}
+	if got.ReceivedBytes != 0 || got.DataPath != "" || got.DataError != "" || !got.DataCompletedAt.IsZero() {
+		t.Errorf("a fresh row is not blank: %+v — a transfer that has not fetched anything must read as one", got)
+	}
+
+	// A success: bytes, a path, a completion, and no failure.
+	if err := st.RecordConsumerTransferOutcome("urn:uuid:o1", 4096, "/data/downloads/urn:uuid:o1", now, ""); err != nil {
+		t.Fatalf("record success: %v", err)
+	}
+	got, _, err = st.GetConsumerTransfer("urn:uuid:o1")
+	if err != nil {
+		t.Fatalf("get after success: %v", err)
+	}
+	if got.ReceivedBytes != 4096 {
+		t.Errorf("ReceivedBytes = %d, want 4096", got.ReceivedBytes)
+	}
+	if got.DataPath != "/data/downloads/urn:uuid:o1" {
+		t.Errorf("DataPath = %q, want the published path", got.DataPath)
+	}
+	if !got.DataCompletedAt.Equal(now) {
+		t.Errorf("DataCompletedAt = %v, want %v", got.DataCompletedAt, now)
+	}
+	if got.DataError != "" {
+		t.Errorf("DataError = %q, want empty on a success", got.DataError)
+	}
+
+	// A failure on a later attempt: the reason is recorded and the
+	// completion is cleared, so the row cannot read as both at once.
+	if err := st.RecordConsumerTransferOutcome("urn:uuid:o1", 100, "", time.Time{}, "no progress within the idle timeout"); err != nil {
+		t.Fatalf("record failure: %v", err)
+	}
+	got, _, err = st.GetConsumerTransfer("urn:uuid:o1")
+	if err != nil {
+		t.Fatalf("get after failure: %v", err)
+	}
+	if got.DataError != "no progress within the idle timeout" {
+		t.Errorf("DataError = %q, want the reason", got.DataError)
+	}
+	if !got.DataCompletedAt.IsZero() {
+		t.Errorf("DataCompletedAt = %v, want zero — a failed attempt must not leave a completion behind", got.DataCompletedAt)
+	}
+	if got.DataPath != "" {
+		t.Errorf("DataPath = %q, want empty — nothing was published", got.DataPath)
+	}
+}
+
+func TestRecordConsumerTransferOutcomeOnAMissingRowIsNotAnError(t *testing.T) {
+	st, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	// Seventeen tests call pullTransferData directly with no seeded row, and
+	// the deferred recorder Task 2 adds runs on every one of them. This must
+	// stay a silent no-op or all of them start failing.
+	if err := st.RecordConsumerTransferOutcome("urn:uuid:absent", 1, "/x", time.Now().UTC(), ""); err != nil {
+		t.Errorf("recording against a missing row returned %v, want nil", err)
+	}
+}

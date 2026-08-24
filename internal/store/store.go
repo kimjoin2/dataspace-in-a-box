@@ -219,6 +219,10 @@ CREATE TABLE IF NOT EXISTS consumer_transfer_processes (
     format            TEXT NOT NULL,
     state             TEXT NOT NULL,
     expected_bytes    INTEGER NOT NULL DEFAULT 0,
+    received_bytes    INTEGER NOT NULL DEFAULT 0,
+    data_path         TEXT NOT NULL DEFAULT '',
+    data_completed_at TEXT NOT NULL DEFAULT '',
+    data_error        TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );`
@@ -335,6 +339,18 @@ func migrate(db *sql.DB) error {
 	if err := addColumnIfMissing(db, "consumer_transfer_processes", "expected_bytes",
 		`ALTER TABLE consumer_transfer_processes ADD COLUMN expected_bytes INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
+	}
+	// In the CREATE literal above and in this loop both, the same way
+	// expected_bytes is, for the reason section 32.5 gives.
+	for _, col := range []struct{ name, stmt string }{
+		{"received_bytes", `ALTER TABLE consumer_transfer_processes ADD COLUMN received_bytes INTEGER NOT NULL DEFAULT 0`},
+		{"data_path", `ALTER TABLE consumer_transfer_processes ADD COLUMN data_path TEXT NOT NULL DEFAULT ''`},
+		{"data_completed_at", `ALTER TABLE consumer_transfer_processes ADD COLUMN data_completed_at TEXT NOT NULL DEFAULT ''`},
+		{"data_error", `ALTER TABLE consumer_transfer_processes ADD COLUMN data_error TEXT NOT NULL DEFAULT ''`},
+	} {
+		if err := addColumnIfMissing(db, "consumer_transfer_processes", col.name, col.stmt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -783,16 +799,35 @@ type ConsumerTransfer struct {
 	// never known to be zero — because a counterparty that streams chunked
 	// states no length at all and that is not an error.
 	ExpectedBytes int64
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// ReceivedBytes, DataPath, DataCompletedAt, and DataError record what a
+	// pull did. They are the answer to the only question an operator can ask
+	// about a transfer that the protocol state does not answer: did the data
+	// arrive? A completed download has DataCompletedAt set and DataError
+	// empty; a failed one is the reverse, and the two can never both hold,
+	// because RecordConsumerTransferOutcome writes all four together.
+	//
+	// DataError holds the reason a pull stopped rather than a code. The
+	// reasons are already distinct sentences in the log, and the sentence is
+	// what an operator reading this field needs.
+	ReceivedBytes   int64
+	DataPath        string
+	DataCompletedAt time.Time
+	DataError       string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // CreateConsumerTransfer persists a new consumer-role transfer.
 func (s *Store) CreateConsumerTransfer(t ConsumerTransfer) error {
+	completedAt := ""
+	if !t.DataCompletedAt.IsZero() {
+		completedAt = t.DataCompletedAt.UTC().Format(timeFormat)
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO consumer_transfer_processes (consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, counterparty_id, expected_bytes, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO consumer_transfer_processes (consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, counterparty_id, expected_bytes, received_bytes, data_path, data_completed_at, data_error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ConsumerPID, t.ProviderPID, t.ProviderBaseURL, t.AgreementID, t.Format, t.State, t.CounterpartyID, t.ExpectedBytes,
+		t.ReceivedBytes, t.DataPath, completedAt, t.DataError,
 		t.CreatedAt.UTC().Format(timeFormat), t.UpdatedAt.UTC().Format(timeFormat),
 	)
 	if err != nil {
@@ -805,13 +840,13 @@ func (s *Store) CreateConsumerTransfer(t ConsumerTransfer) error {
 // consumer pid.
 func (s *Store) GetConsumerTransfer(consumerPID string) (ConsumerTransfer, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, created_at, updated_at, counterparty_id, expected_bytes
+		`SELECT consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, created_at, updated_at, counterparty_id, expected_bytes, received_bytes, data_path, data_completed_at, data_error
 		 FROM consumer_transfer_processes WHERE consumer_pid = ?`, consumerPID)
 
 	var t ConsumerTransfer
-	var created, updated string
+	var created, updated, completedAt string
 	err := row.Scan(&t.ConsumerPID, &t.ProviderPID, &t.ProviderBaseURL, &t.AgreementID, &t.Format, &t.State,
-		&created, &updated, &t.CounterpartyID, &t.ExpectedBytes)
+		&created, &updated, &t.CounterpartyID, &t.ExpectedBytes, &t.ReceivedBytes, &t.DataPath, &completedAt, &t.DataError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConsumerTransfer{}, false, nil
 	}
@@ -823,6 +858,11 @@ func (s *Store) GetConsumerTransfer(consumerPID string) (ConsumerTransfer, bool,
 	}
 	if t.UpdatedAt, err = time.Parse(timeFormat, updated); err != nil {
 		return ConsumerTransfer{}, false, fmt.Errorf("get consumer transfer %s: parse updated_at: %w", consumerPID, err)
+	}
+	if completedAt != "" {
+		if t.DataCompletedAt, err = time.Parse(timeFormat, completedAt); err != nil {
+			return ConsumerTransfer{}, false, fmt.Errorf("get consumer transfer %s: parse data_completed_at: %w", consumerPID, err)
+		}
 	}
 	return t, true, nil
 }
@@ -894,6 +934,32 @@ func (s *Store) SetConsumerTransferExpectedBytes(consumerPID string, expected in
 		expected, consumerPID,
 	); err != nil {
 		return fmt.Errorf("set expected bytes for consumer transfer %s: %w", consumerPID, err)
+	}
+	return nil
+}
+
+// RecordConsumerTransferOutcome writes what a pull did, all four columns at
+// once. Together rather than individually so a row can never read as both
+// completed and failed: a success passes a completion and an empty failure,
+// a failure passes the reason and a zero time, and each overwrites whatever
+// the last attempt left.
+//
+// A missing row is not an error. Seventeen tests drive pullTransferData
+// directly with no row behind it, and in production there is always one —
+// lookup found it, and there is no delete path. Surfacing "not found" here
+// would add noise to the tests and tell production nothing it could act on.
+func (s *Store) RecordConsumerTransferOutcome(consumerPID string, received int64, path string, completedAt time.Time, failure string) error {
+	stamp := ""
+	if !completedAt.IsZero() {
+		stamp = completedAt.UTC().Format(timeFormat)
+	}
+	if _, err := s.db.Exec(
+		`UPDATE consumer_transfer_processes
+		 SET received_bytes = ?, data_path = ?, data_completed_at = ?, data_error = ?
+		 WHERE consumer_pid = ?`,
+		received, path, stamp, failure, consumerPID,
+	); err != nil {
+		return fmt.Errorf("record outcome for consumer transfer %s: %w", consumerPID, err)
 	}
 	return nil
 }
