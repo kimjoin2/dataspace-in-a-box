@@ -183,26 +183,50 @@ func run() error {
 	wg.Wait()
 
 	// In-flight pulls write their outcome to the store when they finish, so
-	// they have to finish before the deferred st.Close() above. Cancelling
-	// first is what makes the cap below adequate: a cancelled pull stops
-	// copying at once and its deferred write lands immediately, where an
-	// uncancelled one would copy for as long as the counterparty kept
-	// dribbling, run the cap out, and lose the row. DECISIONS.md section
-	// 34.3 has the argument, and section 33.6 is where the cap was first set
-	// and flagged for exactly this re-examination.
-	//
-	// Still bounded rather than indefinite. The cap is now a backstop for a
-	// pull stuck somewhere cancellation does not reach — a blocking syscall
-	// on the file it is writing — not the ordinary path.
-	cancelPulls()
-	pullsDone := make(chan struct{})
-	go func() { pulls.Wait(); close(pullsDone) }()
-	select {
-	case <-pullsDone:
-	case <-time.After(5 * time.Second):
+	// they have to finish before the deferred st.Close() above.
+	if !drainPulls(cancelPulls, pulls, pullDrainBudget) {
 		slog.Warn("shutting down with data pulls still in flight; their outcome will not be recorded")
 	}
 	return err
+}
+
+// pullDrainBudget is how long shutdown gives in-flight pulls to stop and
+// record what they did. Five seconds, from DECISIONS.md section 33.6, which
+// set it against a window where a pull's only store write happened early and
+// flagged it for re-examination once the outcome write landed at the end.
+// That re-examination is section 34.3: with the cancellation in place the
+// budget is no longer sized against a copy the counterparty controls the
+// length of, so it stays where it was.
+const pullDrainBudget = 5 * time.Second
+
+// drainPulls cancels in-flight data pulls and waits for them, bounded. It
+// reports whether they all finished: a pull still running when the budget
+// expires is abandoned mid-copy, which loses its outcome row but is better
+// than a connector that will not shut down while a counterparty keeps
+// dribbling at it.
+//
+// Cancelling first is what makes the budget adequate rather than a guess. A
+// cancelled pull stops copying at once and its deferred outcome write lands
+// immediately; an uncancelled one would copy for as long as the counterparty
+// kept feeding it, run the budget out, and lose exactly the row the wait
+// exists to protect.
+//
+// It is a function rather than four lines inside run because run cannot be
+// tested — it parses flags on the global CommandLine, binds two real
+// listeners, and blocks on os/signal — and the cancel call is the single
+// line connecting this mechanism to the running connector. Inline, dropping
+// it would compile, pass every test, and show up only as the loss it was
+// written to prevent.
+func drainPulls(cancel context.CancelFunc, pulls *sync.WaitGroup, within time.Duration) bool {
+	cancel()
+	done := make(chan struct{})
+	go func() { pulls.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(within):
+		return false
+	}
 }
 
 func serve(s *http.Server, name string, failed chan<- error) {

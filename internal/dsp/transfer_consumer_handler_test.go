@@ -1561,7 +1561,11 @@ func TestCancellingPullsRecordsAnAbandonedOutcome(t *testing.T) {
 
 	// A generous idle timeout, so nothing but the cancellation can end this.
 	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: time.Minute})
-	ctx, cancel := context.WithCancel(context.Background())
+	// With the cause, because the cause is what the pull reads. This is the
+	// same thing NewRouter's returned closure does, so the test simulates a
+	// shutdown rather than an arbitrary cancellation — and a pull cancelled
+	// for some other reason is correctly not attributed to shutdown.
+	ctx, cancel := context.WithCancelCause(context.Background())
 	h.pullCtx = ctx
 	pid := seedConsumerTransfer(t, st, TransferStarted)
 
@@ -1579,7 +1583,7 @@ func TestCancellingPullsRecordsAnAbandonedOutcome(t *testing.T) {
 	// signal from outside that io.Copy has actually run, so this waits for
 	// the bytes to be on disk before pulling the plug.
 	waitForFileSize(t, filepath.Join(dir, downloadDir, ".partial-"+pid), int64(len(sent)))
-	cancel()
+	cancel(errConnectorShuttingDown)
 
 	select {
 	case <-done:
@@ -1623,7 +1627,7 @@ func TestCancellingAPullWaitingOnHeadersRecordsTheSameOutcome(t *testing.T) {
 	defer func() { close(release); provider.Close() }()
 
 	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: time.Minute})
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 	h.pullCtx = ctx
 	pid := seedConsumerTransfer(t, st, TransferStarted)
 
@@ -1634,7 +1638,7 @@ func TestCancellingAPullWaitingOnHeadersRecordsTheSameOutcome(t *testing.T) {
 	}()
 
 	<-reached
-	cancel()
+	cancel(errConnectorShuttingDown)
 
 	select {
 	case <-done:
@@ -1649,8 +1653,63 @@ func TestCancellingAPullWaitingOnHeadersRecordsTheSameOutcome(t *testing.T) {
 	if !strings.Contains(row.DataError, "shut") {
 		t.Errorf("DataError = %q, want the sentence naming shutdown", row.DataError)
 	}
+	if !row.DataCompletedAt.IsZero() {
+		t.Error("DataCompletedAt is set on a pull that was abandoned")
+	}
 	if row.ReceivedBytes != 0 {
 		t.Errorf("ReceivedBytes = %d, want 0 — nothing had arrived, so this is not the branch under test", row.ReceivedBytes)
+	}
+}
+
+// TestAPullCancelledForAnotherReasonDoesNotBlameShutdown is what keeps the
+// attribution narrow. The pull below is cancelled mid-copy exactly as the
+// shutdown test's is, but for a different reason, and the row must not say
+// the connector went down.
+//
+// Without it, widening the check back to "is the parent cancelled at all?"
+// passes every other test here — and the cost of that widening is paid in a
+// durable column: a copy that failed on its own, a full disk, happening to
+// coincide with shutdown would be recorded as shutdown and read that way
+// later by an operator with no log beside it.
+func TestAPullCancelledForAnotherReasonDoesNotBlameShutdown(t *testing.T) {
+	dir := t.TempDir()
+	release := make(chan struct{})
+	sent := strings.Repeat("c", 500)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sent))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer func() { close(release); provider.Close() }()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: time.Minute})
+	ctx, cancel := context.WithCancelCause(context.Background())
+	h.pullCtx = ctx
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+
+	done := make(chan struct{})
+	go func() {
+		h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: provider.URL})
+		close(done)
+	}()
+
+	waitForFileSize(t, filepath.Join(dir, downloadDir, ".partial-"+pid), int64(len(sent)))
+	cancel(errors.New("some other reason entirely"))
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pull did not end when its context was cancelled")
+	}
+
+	row, _, err := st.GetConsumerTransfer(pid)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if strings.Contains(row.DataError, "shut") {
+		t.Errorf("DataError = %q, but nothing shut down — a cancellation is being blamed on shutdown regardless of its cause", row.DataError)
 	}
 }
 

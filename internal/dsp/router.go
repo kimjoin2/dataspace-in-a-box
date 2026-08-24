@@ -27,13 +27,23 @@ import (
 //
 // The two are one mechanism and the caller uses them in one order: cancel,
 // then wait. DECISIONS.md section 34.3 has the argument.
+//
+// The cancel carries a cause rather than being a bare one, which is what
+// lets a pull tell a shutdown apart from every other reason its context
+// could end. The returned closure is still a context.CancelFunc — that type
+// is func() — so the caller holds one function and calls it once.
 func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey ed25519.PrivateKey) (http.Handler, *sync.WaitGroup, context.CancelFunc) {
 	mux := http.NewServeMux()
 	pulls := &sync.WaitGroup{}
 	// The connector's lifetime, as every pull sees it. Cancelled by the
 	// returned function at shutdown, which is what lets an in-flight copy
-	// stop and record its outcome inside the caller's cap.
-	pullCtx, cancelPulls := context.WithCancel(context.Background())
+	// stop and record its outcome inside the caller's cap. The cause is what
+	// a pull reads to attribute the stop: an error it can compare against is
+	// the difference between "the connector shut down" and "something
+	// cancelled this", and only the first is true of every cancellation this
+	// function issues.
+	pullCtx, cancelWithCause := context.WithCancelCause(context.Background())
+	cancelPulls := func() { cancelWithCause(errConnectorShuttingDown) }
 
 	cat := catalogHandler{cfg: cfg}
 	mux.HandleFunc("POST "+VersionPath+"/catalog/request", cat.handleCatalogRequest)
