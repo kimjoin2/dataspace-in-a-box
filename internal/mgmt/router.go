@@ -193,6 +193,13 @@ type agreementView struct {
 // Both roles, with a role field, because a route named /transfers that
 // showed half the transfers would be a trap for whoever read it next.
 // Provider-role rows carry no download fields: they never fetch anything.
+//
+// An empty dataPath does not mean no data was ever fetched. The row
+// describes the latest attempt, not the history: a re-pull that fails writes
+// an empty path and a reason over what a successful earlier attempt
+// recorded, while the file that attempt published is still on disk under
+// data_dir. This route is where an operator meets that first, so it is said
+// here.
 func (h agreementHandler) listTransfers(w http.ResponseWriter, r *http.Request) {
 	consumers, err := h.store.ListConsumerTransfers()
 	if err != nil {

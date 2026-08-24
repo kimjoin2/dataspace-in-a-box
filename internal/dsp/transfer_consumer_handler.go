@@ -360,9 +360,12 @@ type pullOutcome struct {
 	failure   string
 }
 
-// fail records why a pull stopped. The sentence is the one that goes to the
-// log, because DECISIONS.md section 34 records that this column holds a
-// reason rather than a code and an operator reading it needs the sentence.
+// fail records why a pull stopped, as a sentence rather than a code:
+// DECISIONS.md section 34.2 records that an operator reading this one column
+// on one row has no second place to look a code up in. It is the same reason
+// the log line at that exit gives and deliberately not the same string — a
+// log message is a short verb phrase with the detail in structured fields,
+// and this column has no fields, so it has to say the whole thing.
 func (o *pullOutcome) fail(reason string) {
 	o.failure = reason
 }

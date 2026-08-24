@@ -252,9 +252,18 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		// After the 416 branch and immediately before the first byte: every
 		// refusal path above must stay untouched.
 		rc := http.NewResponseController(w)
-		if _, err := copyUnderRollingDeadline(w, rc, f, h.cfg.DataIdleTimeout); err != nil {
+		n, err := copyUnderRollingDeadline(w, rc, f, h.cfg.DataIdleTimeout)
+		if err != nil {
 			slog.Error("stream data", "provider_pid", providerPID, "error", err)
+			return
 		}
+		// The audit line for a resumed pull. issuerFrom is called again
+		// rather than reusing the check above: that binding is scoped to
+		// the `if` that refuses the wrong caller, and a context lookup is
+		// cheaper than widening its scope for two call sites.
+		slog.Info("served transfer data",
+			"issuer", issuerFrom(r), "provider_pid", providerPID, "dataset_id", ds.ID,
+			"bytes", n, "range_start", rangeStart)
 		return
 	}
 
@@ -274,6 +283,11 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 		rc := http.NewResponseController(w)
 		//nolint:errcheck // the connection is about to be severed regardless
 		copyUnderRollingDeadline(w, rc, io.LimitReader(f, n), h.cfg.DataIdleTimeout)
+		// No "served transfer data" line here, and its absence is the
+		// decision. This branch truncates deliberately and then severs the
+		// connection, so the consumer did not receive the dataset; an audit
+		// line would record a delivery that did not happen. The two real
+		// streaming paths carry it and this one does not.
 		// Whatever the loop left in the response's buffers has to be pushed
 		// out explicitly: Hijack does not flush, so without this the n bytes
 		// need not have reached the wire before the connection is severed.
@@ -294,9 +308,13 @@ func (h dataHandler) handleData(w http.ResponseWriter, r *http.Request) {
 	// which would otherwise be a file size limit expressed in seconds.
 	w.Header().Set("Content-Type", "application/octet-stream")
 	rc := http.NewResponseController(w)
-	if _, err := copyUnderRollingDeadline(w, rc, f, h.cfg.DataIdleTimeout); err != nil {
+	n, err := copyUnderRollingDeadline(w, rc, f, h.cfg.DataIdleTimeout)
+	if err != nil {
 		slog.Error("stream data", "provider_pid", providerPID, "error", err)
+		return
 	}
+	slog.Info("served transfer data",
+		"issuer", issuerFrom(r), "provider_pid", providerPID, "dataset_id", ds.ID, "bytes", n)
 }
 
 // datasetFor resolves the agreement a transfer runs under to the dataset

@@ -2,11 +2,13 @@ package dsp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -963,5 +965,73 @@ func TestProviderGivesUpOnAConsumerThatStopsReading(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the provider never gave up on a consumer that stopped reading; the write deadline is not bounding the stream")
+	}
+}
+
+// The provider logs every refusal and, before this milestone, none of its
+// successes — so it could say who it turned away and not who it served.
+// Section 27 obtained a verified identity; this asserts the success path
+// uses it.
+//
+// slog.SetDefault is global, so this test must not run in parallel with
+// anything: it is deliberately sequential, and the parallel tests in this
+// package are paused for the whole of the sequential phase it runs in.
+func TestDataPullLogsWhoCollectedTheData(t *testing.T) {
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	h, id := dataFixture(t, TransferStarted, testPeer, true)
+	rec := pullAs(t, h, id, testPeer)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pull = %d, want 200", rec.Code)
+	}
+
+	line := buf.String()
+	if !strings.Contains(line, "served transfer data") {
+		t.Fatalf("the success path logged nothing; a provider that cannot say who took its data has the wrong half of section 27's identity\nlog: %s", line)
+	}
+	// The byte count too: section 34.5 records that this line carries how
+	// much was collected, and a line that named the collector without the
+	// amount would leave that half of the record undefended.
+	for _, want := range []string{testPeer, id, fmt.Sprintf(`"bytes":%d`, len(servedBytes))} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the audit line does not name %q\nlog: %s", want, line)
+		}
+	}
+}
+
+// The resumed pull is served by a second call site, so it can lose the audit
+// line on its own. README's Status section claims the line covers both
+// streaming paths; this is what makes that claim a test rather than a
+// reading. range_start is asserted because a resumed pull that logged the
+// same line as a fresh one would tell an operator the whole dataset was
+// collected.
+func TestResumedDataPullLogsWhoCollectedTheData(t *testing.T) {
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	h, id := dataFixture(t, TransferStarted, testPeer, true)
+	req := httptest.NewRequest(http.MethodGet, VersionPath+"/data/"+id, nil)
+	req.SetPathValue("id", id)
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
+	req.Header.Set("Range", "bytes=3-")
+	rec := httptest.NewRecorder()
+	h.handleData(deadlineRecorder{rec}, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("pull = %d, want 206: %s", rec.Code, rec.Body)
+	}
+
+	line := buf.String()
+	if !strings.Contains(line, "served transfer data") {
+		t.Fatalf("the 206 path logged nothing; a resumed pull is served data too\nlog: %s", line)
+	}
+	for _, want := range []string{testPeer, id, `"range_start":3`} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the audit line does not name %q\nlog: %s", want, line)
+		}
 	}
 }

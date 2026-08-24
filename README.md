@@ -144,6 +144,30 @@ to go idle. What still has no measurement is size: `make demo` moves kilobytes
 and the TCK moves no bytes, so nothing here proves how large a transfer this
 can actually carry.
 
+**A transfer now leaves a record, and an operator can read it.**
+`GET /transfers` lists every transfer this connector holds in both roles,
+read-only and behind the same management token as `GET /agreements`, so the
+question "did the data actually arrive?" has somewhere to be asked. A failed
+pull and a successful one are no longer the same row: a consumer transfer
+carries the bytes received, where the file was published, when it completed,
+and — when it did not — the reason it stopped, as a sentence rather than a
+code. The four are written together, so a row cannot read as both completed
+and failed. The provider side is louder too: `handleData` now logs who
+collected the data, which transfer and dataset it came from, and how many
+bytes left — the identity the connector already had and previously used only
+to turn the wrong caller away. `DECISIONS.md` section 34 records all of it,
+including what it costs.
+
+Two things that record does not do. An empty `dataPath` does not prove
+nothing was ever fetched — the row describes the latest attempt, so a failed
+re-pull blanks it while the file an earlier attempt published is still on
+disk. And there is still no way to *act* on what it shows: an operator who
+sees a failed pull has no endpoint to retry it with, which is
+[`docs/goal-gap-analysis.md`](docs/goal-gap-analysis.md)'s P2 and is not
+closed here. Nor is the retention rule for the partial files an abandoned
+pull leaves behind, which is the first entry an operator moving real data
+should read in [`docs/follow-ups.md`](docs/follow-ups.md).
+
 Everything else known and unfixed is in [`docs/follow-ups.md`](docs/follow-ups.md),
 with the reasoning for each, and the order the remaining milestones should be
 built in is in [`docs/milestone-sequence.md`](docs/milestone-sequence.md).

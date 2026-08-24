@@ -2075,24 +2075,33 @@ a pull used to outlive shutdown by at most the ten seconds
 `callbackHTTPClient` allowed, and now by however long the counterparty keeps
 it alive.
 
-**What the wait actually buys is narrower than it may look, and worth stating
-precisely.** The `expected_bytes` write happens immediately after the
-response headers arrive — *before* `os.OpenFile`, before the copy — so it is
-the pull's first store act, not its last. The window in which shutdown could
-lose it is therefore the short one between dispatch and the counterparty's
-first response, not the whole length of an hours-long transfer. For that
-window a five-second cap is ample rather than useless, which is the opposite
-of the conclusion a reader would draw from thinking the write lands at the
-end. Past that write, what the wait protects is not a store row at all but
-the file itself: up to the cap for the copy to finish and `os.Rename` to
-place it, after which the pull touches nothing shared.
+**What the wait bought at this milestone was narrower than it looks, and the
+picture has since changed — read this paragraph as history.** When this
+section was written, `expected_bytes` was the only thing a pull wrote, and it
+was written immediately after the response headers arrived: *before*
+`os.OpenFile`, before the copy. It was the pull's first store act, not its
+last. The window in which shutdown could lose it was therefore the short one
+between dispatch and the counterparty's first response, not the whole length
+of an hours-long transfer — and against a window that shape a five-second cap
+was ample rather than useless, which is the opposite of the conclusion a
+reader would draw from thinking the write landed at the end. Past that write,
+what the wait protected was not a store row at all but the file itself: up to
+the cap for the copy to finish and `os.Rename` to place it, after which the
+pull touched nothing shared.
 
-This becomes last-act protection when Plan B's `data_completed_at` and
-`data_error` columns land — a pull will then write its outcome after the
-copy, at exactly the point an unbounded transfer is most likely to be caught
-by shutdown, and the cap that is ample today will be worth re-examining then.
-Neither column exists in this branch, so there is no outcome write here to
-lose.
+**A pull now writes at the end as well, so that reasoning no longer stands on
+its own.** §34.1 added an outcome write in a `defer`, at exactly the point an
+unbounded transfer is most likely to be caught by shutdown. What keeps the
+same five seconds adequate is not the paragraph above but §34.3's
+cancellation, which is what turns the cap from a bound on a copy into a bound
+on an unwind.
+
+**Those columns have landed, and the re-examination this paragraph asked for
+happened: its answer is §34.3.** `data_completed_at` and `data_error` were
+added by the milestone recorded in §34, together with `received_bytes` and
+`data_path`, and the outcome write is now the pull's last act. The
+re-examination did not change the cap — it changed what the cap is racing.
+§34.3 has the argument and the ordering it turns on; it is not repeated here.
 
 The placement rule is the part a later edit will get wrong, so it is stated
 rather than implied. `Add(1)` runs at the dispatch site, on the handler's own
@@ -2100,8 +2109,10 @@ goroutine, *before* the `go` statement; only `Done` is deferred inside the
 wrapper. Two independent reasons, either sufficient. An `Add` that runs inside
 the goroutine can be outrun by a `Wait` entering the window between `go` and
 the goroutine's first line, which returns with that pull unregistered and
-defeats the entire guarantee. And seventeen tests call `pullTransferData`
-directly rather than through `go`, so an `Add` outside the function paired
+defeats the entire guarantee. And many tests in this package call
+`pullTransferData` directly rather than through `go` — the count is left
+unstated because a maintained count in a document rots, and this one already
+had — so an `Add` outside the function paired
 with a `Done` inside it would decrement a counter nothing had incremented and
 panic on a negative. Keeping both halves at the dispatch site, and
 `pullTransferData` free of the group entirely, makes that imbalance
@@ -2110,21 +2121,24 @@ structurally impossible rather than merely unreached.
 download landed immediately after `Wait` returns, with no poll, because a
 poll would pass whether or not anything waited.
 
-**This deviates from the design spec, which asked for cancellation rather
-than a wait.** Spec §1.5 specified that pulls be given a context derived from
-a connector-lifetime context `run()` cancels before waiting, so shutdown would
-*stop* an in-flight pull and then wait briefly for it to unwind. The code
-instead gives each pull `context.Background()`, which `run()` has no handle
-on: shutdown cannot cancel a pull, only outlast it. A pull still streaming
-when the cap expires is abandoned mid-copy rather than told to stop.
+**This deviated from the design spec, which asked for cancellation rather
+than a wait — and §34.3 has since closed the deviation.** Spec §1.5 specified
+that pulls be given a context derived from a connector-lifetime context
+`run()` cancels before waiting, so shutdown would *stop* an in-flight pull and
+then wait briefly for it to unwind. At this milestone the code gave each pull
+`context.Background()`, which `run()` had no handle on: shutdown could not
+cancel a pull, only outlast it, and a pull still streaming when the cap
+expired was abandoned mid-copy rather than told to stop. The deviation was
+recorded here as live because cancellation was the better design and the wait
+was what that branch had; §34.3 is where it was built.
 
-The cost is real and is not only the abandoned pull. `srv.Shutdown` already
+One half of the cost was never the deviation's, and outlives it. `srv.Shutdown`
 carries its own five seconds, and a streaming `handleData` will exhaust them
 every time — `Shutdown` waits on active handlers, and the provider side of a
 large transfer is exactly that — so the two bounds run back to back and
-shutdown now costs up to ten seconds where it used to cost five. Recorded as
-a live deviation rather than a closed decision: cancellation is still the
-better design, and the wait is what this branch has.
+shutdown costs up to ten seconds where it used to cost five. Cancelling pulls
+does not shorten that: what is cancelled is the *consumer's* pull, and what
+`srv.Shutdown` waits on is the provider's handler.
 
 *Trade-off accepted.* Four things.
 
@@ -2156,6 +2170,213 @@ by then is abandoned exactly as it would have been without any of this. That
 is the better of the two failures available — the alternative to a bounded
 wait is a connector that will not shut down while a counterparty keeps
 dribbling at it, which trades one lost row for an operator holding down
-`SIGKILL` — but it is a bound chosen against a window nobody has measured,
-and the spec's cancellation (33.6) would have removed the guess rather than
-sized it.
+`SIGKILL`. This paragraph closed by saying the bound was chosen against a
+window nobody had measured and that the spec's cancellation would have
+removed the guess rather than sizing it. That is now the only half still
+true: the cancellation was built in §34.3, and the cap it survived into is a
+bound on an unwind rather than on a copy. The window is still unmeasured.
+
+## 34. A pull records what it did, and the provider records who collected it
+
+**Decision.** The data path stops being unobservable at both ends. Four
+columns on `consumer_transfer_processes` — `received_bytes`, `data_path`,
+`data_completed_at`, `data_error` — record what a pull did, written once from
+a deferred site rather than at each exit. Shutdown *cancels* in-flight pulls
+before it waits for them, which is what makes that write land. One read-only
+management route, `GET /transfers`, lets an operator read the result for both
+roles. And `handleData` logs the identity it served, so the connector can say
+who collected its data and not only who it turned away. The design spec is
+`docs/superpowers/specs/2026-08-24-data-path-correctness-design.md`; its §7
+splits the work into two plans, and §33 is Plan A to this section's Plan B.
+
+**34.1 Four columns, written together from one deferred site.** `pullOutcome`
+in `internal/dsp/transfer_consumer_handler.go` is a value each exit sets a
+field or two on, and `pullTransferData`'s single deferred call to
+`store.RecordConsumerTransferOutcome` turns it into a row. The four columns
+are written in one `UPDATE`, always all four, so no combination of them can
+disagree: a completed download has `data_completed_at` set and `data_error`
+empty, a failed one is the reverse, and `succeed` is the only thing that can
+produce the first because it sets the stamp and clears the reason in the same
+statement.
+
+The alternative was a recorder called at each exit, and the argument against
+it is arithmetic. `pullTransferData` returns from more than twenty failure
+paths and succeeds from exactly one, so a per-site recorder is that many
+chances to miss one, with nothing to catch the miss — a forgotten exit would
+leave the row describing a *previous* attempt, which is worse than leaving it
+blank because it reads as current. The exact count is deliberately not
+maintained in this sentence; the argument does not depend on it, and a
+maintained count in a document is a thing that rots.
+
+The miss is covered rather than merely made unlikely. The outcome value is
+seeded with a failure sentence — "the pull ended without recording a reason"
+— before any exit is reachable, so an exit that returns without saying why
+still records that the pull did not finish. It is a stated default rather
+than the struct's zero value, and the difference is the reason. The zero
+value is already not a success — nothing sets the completion stamp — but it
+carries no reason either, and a row saying a pull did not finish without
+saying why is a worse answer to an operator than one saying the code forgot
+to record it.
+
+The one return that must *not* record anything is placed where it cannot.
+`pullTransferData` drops a restart's trigger when a pull for the same
+transfer is already in flight, and that return happens **above** the outcome
+value and its `defer` — deliberately, because a dropped duplicate that
+recorded an outcome would overwrite the row belonging to the pull actually
+running. Ordering is the whole mechanism here, so it is stated rather than
+left to be inferred from the line numbers.
+
+`expected_bytes` is not among the four. It is written earlier, when the
+response headers arrive, and §33.5 records why it is written even when the
+value is `0`.
+
+**34.2 `data_error` holds a sentence, not a code.** The reasons a pull can
+stop are already distinct sentences at their exits, and an operator reading
+one column on one row has no second place to look up what a code would have
+meant. So the column carries prose: "the data endpoint refused the pull",
+"the download does not match the length the provider stated", "the data pull
+exceeded max_download_bytes". Nothing switches on these strings, and nothing
+should — that is what a code would be for, and adding one is a decision for
+whoever first needs to branch on a failure rather than read it.
+
+The sentence is the same *reason* the log line at that exit records; it is
+not the same string, and claiming otherwise would be a claim the code does
+not support. Every one of the failure exits differs textually from its own
+`slog` call, because the two follow different conventions: a Go log message
+is a short verb phrase with the detail in structured fields
+(`slog.Error("write download", "consumer_pid", …)`), while the column has no
+fields and must therefore say the whole thing. The one string that is shared
+verbatim is `errConnectorShuttingDown`'s, which is both the cancellation
+cause and the recorded reason — one sentence, one source.
+
+**34.3 Shutdown cancels in-flight pulls, and then waits for them.** §33.6
+promised this re-examination and this is it. That section sized a five-second
+cap against a window it correctly described *at the time*: `expected_bytes`
+was the pull's only store act and it happened early, so the cap covered the
+short gap between dispatch and the counterparty's first response. 34.1 moves
+the record to the end of the copy, which is exactly the change §33.6 said
+would make the cap worth re-examining.
+
+The answer is not a larger cap. It is the cancellation spec §1.5 asked for
+and Plan A deviated from: `NewRouter` now returns a `context.CancelFunc`
+beside its `sync.WaitGroup`, every pull the router dispatches derives its
+request context from that connector-lifetime context, and `drainPulls` in
+`cmd/dsbox/main.go` calls the cancel **before** it waits. That order is the
+decision. A cancelled pull's body read fails immediately and its deferred
+write lands at once, well inside the budget; an *uncancelled* pull keeps
+copying for as long as the counterparty keeps feeding it, runs the budget
+out, and is abandoned mid-copy — losing precisely the row the wait exists to
+protect. A wait without a cancel is a wait whose length the counterparty
+chooses.
+
+So the budget stays where §33.6 put it, at five seconds, now as a named
+constant `pullDrainBudget` rather than a literal at the call site. It is no
+longer a guess about how long a transfer takes, because it no longer bounds a
+transfer: it bounds an unwind.
+
+The cancel carries a cause rather than being bare, which is what lets a pull
+attribute its own stop. `context.Cause` reporting `errConnectorShuttingDown`
+is the difference between "the connector shut down" and "something cancelled
+this", and only the first is true of every cancellation `NewRouter` issues —
+the idle-timeout cancel uses the same mechanism with a different cause.
+Without the cause a shutdown would be recorded as an ordinary read failure,
+which is a lie an operator would act on.
+
+What this does **not** shorten is shutdown itself. §33.6 recorded that
+`srv.Shutdown`'s own five seconds and the drain budget run back to back, so
+shutdown can cost ten seconds where it used to cost five. That is unchanged
+and is not a thing cancellation could have changed: the pull being cancelled
+is the *consumer's*, while what `srv.Shutdown` waits on is a streaming
+`handleData` on the **provider** side, which nothing here cancels.
+
+`drainPulls` is a function rather than four lines inside `run` because `run`
+cannot be tested — it parses flags on the global `CommandLine`, binds two
+real listeners, and blocks on `os/signal`. `TestDrainPullsCancelsWhatItWaitsFor`
+and `TestDrainPullsGivesUpAtTheBudget` cover the helper. The single line
+inside `run` that hands it the real cancel is covered by nothing, and that is
+stated in the trade-off below rather than left to be discovered.
+
+**34.4 `GET /transfers` is read-only, lists both roles, and sits behind the
+management token.** It exists for the reason `GET /agreements` exists, stated
+in that route's own doc comment: an operator otherwise has no way to see what
+happened. §25.3 drew a boundary — the management API "is not the beginning of
+a general management CRUD surface" — and this route is inside it, because
+that boundary is about *writing*. A surface that creates, updates, and
+deletes is what invites a general CRUD API; a second read route is the same
+principle applied a second time, not the boundary moving.
+
+Both roles, with a `role` field, because a route named `/transfers` that
+showed half the transfers would be a trap for whoever read it next.
+Provider-role rows carry no download fields — they never fetch anything —
+and the `role` field says so rather than leaving a reader to infer it from
+four empty values. The wire shape is a view type separate from the store
+structs, for the reason `agreementView` records: the management API does not
+leak whichever columns storage happens to carry. It is behind the same
+`authenticated(cfg.MgmtToken, …)` middleware as both `/agreements` routes, on
+the management listener, which binds to localhost by default.
+
+**This is the second use of an argument with no stated stopping point, and
+that is recorded here so the third has to answer for itself.** §25.3 narrowed
+its own boundary to writes when it admitted `GET /agreements`; this route is
+admitted by the same narrowing. A third and a fourth would be free rides on
+reasoning that has never said where it ends. Whoever adds the third should be
+made to say why the management API is still small.
+
+**34.5 The provider logs who collected its data — a line, not a table.** §27
+went to real trouble to obtain a verified identity, and `handleData` used it
+only to refuse the wrong caller. A connector that can name who it turned away
+and not who it served has kept the wrong half of that identity, for a
+component whose product is data. So both streaming paths log `served transfer
+data` with the issuer, the provider pid, the dataset id, and the bytes
+actually written; the `206` path adds `range_start`, because a resumed pull
+that logged the same line as a fresh one would tell an operator the whole
+dataset was collected.
+
+Both real paths, and only those. The `SimulateInterruptAfterBytes` branch
+truncates deliberately and then severs the connection, so the consumer did
+*not* receive the dataset; a success line there would record a delivery that
+did not happen. Its absence is a decision and is commented as one at the
+site, because the next reader will otherwise see two of three call sites
+covered and take it for an oversight.
+
+A log line rather than a row. The provider holds no per-download state — it
+opens a file, streams it, and is done — so there is nothing for a row to be
+the current version *of*. A table here would be an audit store, with
+retention, growth, and a query surface of its own, which is a larger decision
+than this milestone should make on its way past.
+
+*Trade-off accepted.* Four.
+
+**Five seconds can still lose an outcome, and cancellation narrows that
+without closing it.** A cancelled pull's own unwind — `body.Stop`,
+`out.Close`, the deferred `RecordConsumerTransferOutcome` against a SQLite
+file that may be busy — is not instantaneous, and a machine under enough load
+can outrun the budget. What changed is the shape of the risk, not its
+existence: before, the cap raced a copy whose length the counterparty chose,
+which is not a race that can be won; now it races a bounded cleanup, which is
+one that ordinarily is. The residual is accepted for the reason §33.6 gave
+for having a cap at all — the alternative is a connector that will not shut
+down while a counterparty keeps dribbling at it.
+
+**`run`'s own shutdown path has no test.** `drainPulls` is covered on both
+outcomes, and every pull-side behaviour it depends on is covered, but the
+line in `run` that passes the real `cancelPulls` to it is exercised by
+nothing in this repository — a mutation replacing it with a no-op cancel
+compiles and passes the whole suite. `run` is untestable as written, for the
+reasons 34.3 lists, and extracting it far enough to test would be a larger
+change than the line is worth. Recorded so the gap is known rather than
+assumed absent.
+
+**`GET /transfers` is unpaginated and returns every transfer ever recorded.**
+Matching `GET /agreements`, and for the reason that route records: a list
+that outgrows one response is a problem worth having first. There is no
+delete path (§25.3), so this list only ever grows, and the connector that
+runs long enough to find that out will find it out as a large response body
+rather than as a slow query.
+
+**The audit line is a log, not a queryable record.** It is subject to
+whatever retention the operator's log stack has, which this connector neither
+knows nor configures — `main` writes JSON to stdout and stops there. An
+operator who needs to answer "who collected dataset X last quarter" needs a
+log pipeline; nothing in this repository provides one, and 34.5's reasoning
+for not building a table is also the reason that question has no answer here.
