@@ -132,7 +132,8 @@ reads correctly, and silently refuses all fifteen `TP_C` results.
 section below is this milestone, and it is done. Both hooks moved off the DSP
 listener onto the management listener, so their caller is the operator rather
 than any roster participant; an initiate call may only name a participant the
-roster lists; and `refuseIfNotParty` runs at every consumer-role resolver
+roster lists, wherever authentication is on to consult a roster at all; and
+`refuseIfNotParty` runs at every consumer-role resolver
 rather than at the provider-role ones alone, which is the half §32 recorded as
 deliberately open.
 

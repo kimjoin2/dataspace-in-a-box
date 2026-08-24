@@ -64,7 +64,7 @@ type Config struct {
 	// negotiation or a transfer as consumer are on this listener (DECISIONS.md
 	// section 35.1), so a connector with no token has no way to start either.
 	// What an absent token switched off used to be an agreement import and
-	// two read routes; it now includes this connector's only way to act as
+	// the read routes; it now includes this connector's only way to act as
 	// consumer at all.
 	MgmtToken string `yaml:"mgmt_token"`
 

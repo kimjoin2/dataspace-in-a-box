@@ -47,13 +47,22 @@ oversight:
   reading broader than it is. The hooks that ask this connector to start an
   exchange as consumer are on the management listener behind `mgmt_token`
   (`DECISIONS.md` §35.1), which `require_auth` does not touch — so turning
-  authentication off no longer opens them to anyone. What it still switches
-  off is every comparison on the DSP listener: `refuseIfNotParty` permits
-  while the flag is false, and the roster check on an initiate call is
-  *absent* rather than false, so a consumer-role row written during that
-  window carries a counterparty nobody verified. Turning the flag back on
-  refuses that exchange rather than trusting it, which is the safe direction
-  and is still worth knowing before flipping it.
+  authentication off no longer opens them to anyone.
+
+  **What it still switches off is every comparison on the DSP listener**, and
+  §35 adds a residual of its own there. `refuseIfNotParty` permits while the
+  flag is false, and the roster check on an initiate call is *absent* rather
+  than false, so a consumer-role row written during that window carries a
+  counterparty this connector never verified. It is not empty: both hooks
+  reject a missing `providerId` outright, so the row carries whatever string
+  the operator typed. Turning the flag back on therefore **adopts** that
+  string as the authorization anchor rather than refusing the exchange.
+  `refuseIfNotParty` does nothing but compare an inbound issuer against what
+  the row stores, so a typed name that matches what the peer presents keeps
+  working — the ordinary case — and one that does not fails closed. The risk
+  runs in the adopting direction: an id nothing ever checked becomes the thing
+  later messages are checked against, and nothing marks it as unverified. A
+  report showing that worse than this describes is in scope.
 - **Constraints this connector refuses to evaluate.** Policy evaluation is
   deliberately limited to two shapes (`DECISIONS.md` §14). A constraint that
   is not enforced is rejected rather than ignored, which is the intended

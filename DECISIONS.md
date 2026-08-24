@@ -2597,10 +2597,8 @@ literals in this package's tests leave new fields zero against a
 `AuthRequired()` would not have spared them either. A nil predicate is the
 check being *absent*, which is both the correct default and the same thing
 `NewRouter` already says about a disabled check: a disabled check is absent,
-not silently true. A test that
-wants the check would also have had to build a signed roster file on disk,
-where a closure is two lines. And a predicate needs no new exported API on
-`internal/auth`, whose only lookup returns a key rather than a boolean. A
+not silently true. And a test that wants the check would otherwise have had
+to build a signed roster file on disk, where a closure is two lines. A
 package-level variable armed in `NewRouter` — the shape
 `mintOutboundCredential` uses — was rejected because tests in this package run
 in parallel and CI runs with `-race`.
@@ -2831,9 +2829,10 @@ harness.** `demo/run.sh` used to mint a credential the consumer signed from
 itself to itself, purely to reach these hooks on its own DSP port. Those calls
 now go to the management port with the management token the script already
 used for `GET /agreements`, and the minting step and its explanatory comment
-block are deleted. That credential was the only place in either harness where
-a client this repository controls presents a participant credential to the DSP
-listener, and nothing in `make demo` exercises that shape any more.
+block are deleted. It was the only self-issued operator credential either
+harness produced — a connector signing a token from itself to itself, which
+is a different shape from the credentials the demo's two connectors present
+to each other — and nothing exercises that shape any more.
 
 **An upgraded deployment's in-flight consumer-role exchanges stop working.**
 35.3. Accepted because there are no deployments, and because the alternative

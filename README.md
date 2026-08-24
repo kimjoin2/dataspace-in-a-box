@@ -84,7 +84,9 @@ deliberately not recovered, because this connector has no update path by
 design. Messages arriving about this connector's *consumer-role* exchanges
 used to be exempt from all of this, because the only identity available for
 them was one an operator typed rather than one this connector verified. They
-are checked now, and the paragraph below is how.
+are checked now; what made that possible is `DECISIONS.md` section 35, and
+the paragraph headed "Starting an exchange is an operator action" further
+down says how.
 
 Two limits are worth stating plainly rather than leaving to be discovered.
 `did:web` resolution exists (`dsops resolve <did:web:...>`) but is not part
@@ -150,18 +152,18 @@ can actually carry.
 **Starting an exchange is an operator action, and only an operator can do
 it.** The hooks that tell this connector to negotiate or transfer as consumer
 used to sit on the public DSP listener, where any roster participant could
-call them — and each took the counterparty's name out of the request
-body, made it the audience of a credential this connector signs, and sent that
+call them — and each took the counterparty's name out of the request body,
+made it the audience of a credential this connector signs, and sent that
 credential to an address the same caller chose. Both now sit on the management
 listener behind its token, alongside `GET /agreements` and `GET /transfers`,
-and both refuse a `providerId` this connector's roster does not list. That is
-what turns the counterparty on a consumer-role exchange into an identity
-rather than a string, so a message arriving about one is checked against it
-the way a provider-role message already was. `DECISIONS.md` section 35 records
-it, including what it does not close: being in this connector's roster is not
-the same as being the participant at the address an initiate call names, so an
-operator who points one at the wrong connector still hands it a signed
-credential.
+and, with authentication on, both refuse a `providerId` this connector's
+roster does not list. That is what turns the counterparty on a consumer-role
+exchange into an identity rather than a string, so a message arriving about
+one is checked against it the way a provider-role message already was.
+`DECISIONS.md` section 35 records it, including what it does not close: being
+in this connector's roster is not the same as being the participant at the
+address an initiate call names, so an operator who points one at the wrong
+connector still hands it a signed credential.
 
 **A transfer now leaves a record, and an operator can read it.**
 `GET /transfers` lists every transfer this connector holds in both roles,
