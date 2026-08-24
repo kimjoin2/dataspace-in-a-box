@@ -8,6 +8,7 @@
 package dsp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -628,6 +629,102 @@ func TestHandleAgreement_IllegalFromOfferedIs400(t *testing.T) {
 	}
 }
 
+// handleOffers and handleAgreement resolve their row through GetConsumer
+// directly rather than through a shared lookup helper. DECISIONS.md section
+// 32.3 names them by name as the resolvers left deliberately unguarded, which
+// is what this pair of tests closes.
+func TestHandleOffersRefusesAMessageFromAnotherParty(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now()
+	if err := st.CreateConsumer(store.ConsumerNegotiation{
+		ConsumerPID: "c1", ProviderPID: "p1", ProviderBaseURL: "http://provider",
+		CounterpartyID: "urn:participant:the-provider", State: StateRequested,
+		DatasetID: "d", OfferID: "o", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+	h := negotiationHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+	rec := httptest.NewRecorder()
+	body := `{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],"@type":"ContractOfferMessage"}`
+	req := httptest.NewRequest(http.MethodPost, "/negotiations/c1/offers", strings.NewReader(body))
+	req.SetPathValue("id", "c1")
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, "urn:participant:stranger"))
+	h.handleOffers(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandleAgreementRefusesAMessageFromAnotherParty(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now()
+	if err := st.CreateConsumer(store.ConsumerNegotiation{
+		ConsumerPID: "c1", ProviderPID: "p1", ProviderBaseURL: "http://provider",
+		CounterpartyID: "urn:participant:the-provider", State: StateRequested,
+		DatasetID: "d", OfferID: "o", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+	h := negotiationHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+	rec := httptest.NewRecorder()
+	body := `{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],"@type":"ContractAgreementMessage"}`
+	req := httptest.NewRequest(http.MethodPost, "/negotiations/c1/agreement", strings.NewReader(body))
+	req.SetPathValue("id", "c1")
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, "urn:participant:stranger"))
+	h.handleAgreement(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+// A consumer-role row written before counterparty_id existed carries an
+// empty string. refuseIfNotParty has no empty-stored clause, deliberately:
+// a row nobody can authorize is refused rather than served.
+//
+// This needs no migration fixture. counterparty_id appears in no CREATE
+// literal for the consumer tables, so every fresh database already runs the
+// ALTER that adds it, and leaving the field unset is exactly the state an
+// upgraded row is in.
+func TestHandleOffersRefusesARowWithNoCounterparty(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now()
+	if err := st.CreateConsumer(store.ConsumerNegotiation{
+		ConsumerPID: "c1", ProviderPID: "p1", ProviderBaseURL: "http://provider",
+		State: StateRequested, DatasetID: "d", OfferID: "o",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+	h := negotiationHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+	rec := httptest.NewRecorder()
+	body := `{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],"@type":"ContractOfferMessage"}`
+	req := httptest.NewRequest(http.MethodPost, "/negotiations/c1/offers", strings.NewReader(body))
+	req.SetPathValue("id", "c1")
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, "urn:participant:the-provider"))
+	h.handleOffers(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
 // offerMessageJSON and agreementMessageJSON build minimal, valid message
 // bodies for the handler tests above — the fields these handlers actually
 // read, nothing more (matching this project's own direct-field-check
@@ -866,6 +963,7 @@ func TestHandleAgreement_RecordsTheProviderAsCounterparty(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/x", strings.NewReader(agreementMessageJSON(n)))
 	req.SetPathValue("id", n.ConsumerPID)
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, "urn:participant:the-provider"))
 	w := httptest.NewRecorder()
 	h.handleAgreement(w, req)
 	if w.Code != http.StatusOK {

@@ -1232,11 +1232,12 @@ func TestTransferLookupAllowsTheParty(t *testing.T) {
 	}
 }
 
-// A consumer-role row is never compared: its counterparty came from an
-// operator's initiate body, not from a credential this connector verified.
-// The TCK depends on this — it authenticates as urn:participant:tck while
-// naming itself TCK_PARTICIPANT in that body.
-func TestTransferLookupDoesNotCheckConsumerRows(t *testing.T) {
+// A consumer-role row is compared like a provider-role one. Its counterparty
+// came from an initiate call that only the operator can make and that only
+// accepts a participant the roster lists, so it is an identity. Until the
+// initiate hooks moved behind the operator's token this test asserted the
+// opposite, and the assertion was correct then.
+func TestTransferLookupChecksConsumerRows(t *testing.T) {
 	t.Parallel()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -1259,8 +1260,8 @@ func TestTransferLookupDoesNotCheckConsumerRows(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, testPeer))
 	h.handleGetTransfer(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d — a consumer row must not be checked", rec.Code, http.StatusOK)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
 

@@ -153,6 +153,9 @@ func (h negotiationHandler) handleOffers(w http.ResponseWriter, r *http.Request)
 		writeError(w, ContractNegotiationErrorType, http.StatusNotFound, "no negotiation with id "+id)
 		return
 	}
+	if refuseIfNotParty(w, r, ContractNegotiationErrorType, n.CounterpartyID, h.cfg.AuthRequired()) {
+		return
+	}
 
 	var msg OfferMessage
 	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
@@ -264,6 +267,9 @@ func (h negotiationHandler) handleAgreement(w http.ResponseWriter, r *http.Reque
 		writeError(w, ContractNegotiationErrorType, http.StatusNotFound, "no negotiation with id "+id)
 		return
 	}
+	if refuseIfNotParty(w, r, ContractNegotiationErrorType, n.CounterpartyID, h.cfg.AuthRequired()) {
+		return
+	}
 
 	var msg AgreementMessage
 	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
@@ -354,6 +360,9 @@ func (h negotiationHandler) reactToAgreement(n store.ConsumerNegotiation, unenfo
 // FINALIZED event a provider sends once this connector's verification is
 // acknowledged. Legal only from VERIFIED — see finalizedEventLegalFrom.
 func (h negotiationHandler) handleConsumerFinalizedEvent(w http.ResponseWriter, r *http.Request, n store.ConsumerNegotiation) {
+	if refuseIfNotParty(w, r, ContractNegotiationErrorType, n.CounterpartyID, h.cfg.AuthRequired()) {
+		return
+	}
 	var msg struct {
 		Context   []string `json:"@context"`
 		Type      string   `json:"@type"`
@@ -387,6 +396,9 @@ func (h negotiationHandler) handleConsumerFinalizedEvent(w http.ResponseWriter, 
 
 // handleConsumerTermination is handleTermination's consumer-role branch.
 func (h negotiationHandler) handleConsumerTermination(w http.ResponseWriter, r *http.Request, n store.ConsumerNegotiation) {
+	if refuseIfNotParty(w, r, ContractNegotiationErrorType, n.CounterpartyID, h.cfg.AuthRequired()) {
+		return
+	}
 	body := http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes)
 	var msg envelope
 	if err := json.NewDecoder(body).Decode(&msg); err != nil {

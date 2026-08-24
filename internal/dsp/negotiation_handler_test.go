@@ -1210,3 +1210,95 @@ func TestNegotiationResolversRefuseAStranger(t *testing.T) {
 		})
 	}
 }
+
+// handleEvent and handleTermination reach a consumer-role row through their
+// own two-table dispatch rather than through lookup, which is why
+// DECISIONS.md section 32.3's list of consumer-role resolvers does not name
+// them.
+func TestHandleEventRefusesAConsumerRowFromAnotherParty(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now()
+	if err := st.CreateConsumer(store.ConsumerNegotiation{
+		ConsumerPID: "c1", ProviderPID: "p1", ProviderBaseURL: "http://provider",
+		CounterpartyID: "urn:participant:the-provider", State: StateVerified,
+		DatasetID: "d", OfferID: "o", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+	h := negotiationHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+	rec := httptest.NewRecorder()
+	body := `{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],"@type":"ContractNegotiationEventMessage","eventType":"FINALIZED"}`
+	req := httptest.NewRequest(http.MethodPost, "/negotiations/c1/events", strings.NewReader(body))
+	req.SetPathValue("id", "c1")
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, "urn:participant:stranger"))
+	h.handleEvent(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandleTerminationRefusesAConsumerRowFromAnotherParty(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now()
+	if err := st.CreateConsumer(store.ConsumerNegotiation{
+		ConsumerPID: "c1", ProviderPID: "p1", ProviderBaseURL: "http://provider",
+		CounterpartyID: "urn:participant:the-provider", State: StateRequested,
+		DatasetID: "d", OfferID: "o", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+	h := negotiationHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+	rec := httptest.NewRecorder()
+	body := `{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],"@type":"ContractNegotiationTerminationMessage"}`
+	req := httptest.NewRequest(http.MethodPost, "/negotiations/c1/termination", strings.NewReader(body))
+	req.SetPathValue("id", "c1")
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, "urn:participant:stranger"))
+	h.handleTermination(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+// handleGetNegotiation's provider branch already carries this check; its
+// consumer branch, in this same function, is the one under test here.
+func TestHandleGetNegotiationRefusesAConsumerRowFromAnotherParty(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now()
+	if err := st.CreateConsumer(store.ConsumerNegotiation{
+		ConsumerPID: "c1", ProviderPID: "p1", ProviderBaseURL: "http://provider",
+		CounterpartyID: "urn:participant:the-provider", State: StateRequested,
+		DatasetID: "d", OfferID: "o", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+	h := negotiationHandler{cfg: config.Config{ParticipantID: testSelf}, store: st}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/negotiations/c1", nil)
+	req.SetPathValue("id", "c1")
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, "urn:participant:stranger"))
+	h.handleGetNegotiation(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}

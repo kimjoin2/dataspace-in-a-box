@@ -80,12 +80,18 @@ func cutBearer(header string) (string, bool) {
 // caller is not the participant this row is with. Callers return immediately
 // on true.
 //
-// stored must come from a counterparty this connector verified — a
-// provider-role row, filled from issuerFrom at creation. A consumer-role row's
-// counterparty came from the request body of an operator's own initiate call,
-// which is a string the caller chose; comparing against it is not
-// authorization, and the DSP TCK demonstrates why (it authenticates as
-// urn:participant:tck while naming itself TCK_PARTICIPANT in that body).
+// stored is the participant this row's exchange is with. Provider-role rows
+// take it from the verified issuer of the request that created them.
+// Consumer-role rows take it from the providerId of an initiate call — which
+// is an authorization anchor now that only the operator can make one and only
+// a roster participant may be named. Before that it was a string any caller
+// could choose, which is why DECISIONS.md section 32.3 recorded the consumer
+// role's resolvers as deliberately unguarded.
+//
+// Every resolver that reaches a row of either role carries this call. That is
+// load-bearing rather than tidy: a comment saying a consumer counterparty is
+// an authorization anchor, next to a resolver that does not compare against
+// it, would be worse than the documented asymmetry it replaced.
 //
 // 403, not 404: DECISIONS.md section 25.1 makes every DSP rejection
 // [400, 500) and never 404, because the counterparty's client checks for 404

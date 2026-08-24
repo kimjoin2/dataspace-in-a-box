@@ -370,6 +370,9 @@ func (h negotiationHandler) handleGetNegotiation(w http.ResponseWriter, r *http.
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	} else if ok {
+		if refuseIfNotParty(w, r, ContractNegotiationErrorType, cn.CounterpartyID, h.cfg.AuthRequired()) {
+			return
+		}
 		writeJSON(w, http.StatusOK, buildConsumerNegotiationStateDocument(cn))
 		return
 	}
@@ -388,9 +391,9 @@ func (h negotiationHandler) handleGetNegotiation(w http.ResponseWriter, r *http.
 // consumer table before concluding {id} is unknown, so each does its own
 // two-table lookup and dispatches on which one answered (see handleEvent's
 // doc comment). handleOffers and handleAgreement are consumer-role only and
-// call GetConsumer directly — and carry no ownership check, deliberately: a
-// row they resolve can only be consumer-role, whose counterparty this
-// connector never verified (DECISIONS.md section 32.3).
+// call GetConsumer directly — and carry the refuseIfNotParty call themselves
+// rather than through this helper, since a row they resolve can only be
+// consumer-role.
 func (h negotiationHandler) lookup(w http.ResponseWriter, r *http.Request) (store.Negotiation, bool, error) {
 	providerPID := r.PathValue("id")
 	n, ok, err := h.store.Get(providerPID)

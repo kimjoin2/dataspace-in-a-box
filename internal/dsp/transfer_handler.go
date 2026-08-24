@@ -638,13 +638,14 @@ func (r resolvedTransfer) id() string {
 // independently generated UUIDs and a row can only be in one of them; this
 // comment used to claim the order was shared, which it never was.
 //
-// The refusal is placed after GetTransfer succeeds, which is after the
-// consumer branch above has already returned. That placement is the whole of
-// it: resolvedTransfer carries CounterpartyID for consumer rows too, so the
-// same comparison written against the value this function returns would
-// compile, read correctly, and refuse every consumer-role transfer the TCK
-// drives. See refuseIfNotParty's doc comment and DECISIONS.md section 32.3 for
-// why a consumer-role counterparty is not something to authorize against.
+// Both branches now carry the refusal, and they carry it separately on
+// purpose. resolvedTransfer carries CounterpartyID for consumer rows too, so
+// a single comparison written against the value this function returns — or
+// hoisted above the branch split — would apply the provider-role rule to
+// consumer rows. That happens to be correct now and was catastrophically
+// wrong before the initiate hooks moved behind the operator's token: it would
+// have refused every consumer-role transfer the TCK drives. The placement is
+// deliberate, not incidental.
 //
 // {id} is a pid this connector generated itself — the provider pid it
 // returned in the acknowledgment to POST /transfers/request, or the consumer
@@ -661,6 +662,9 @@ func (h transferHandler) lookup(w http.ResponseWriter, r *http.Request) (resolve
 		return resolvedTransfer{}, false
 	}
 	if ok {
+		if refuseIfNotParty(w, r, TransferErrorType, c.CounterpartyID, h.cfg.AuthRequired()) {
+			return resolvedTransfer{}, false
+		}
 		return resolvedTransfer{
 			TransferProcess: store.TransferProcess{
 				ProviderPID:    c.ProviderPID,

@@ -418,6 +418,7 @@ func TestConsumerFollowUpsAreAddressedToTheCounterparty(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, VersionPath+"/transfers/"+id+"/start", strings.NewReader(body))
 	req.SetPathValue("id", id)
+	req = req.WithContext(context.WithValue(req.Context(), issuerContextKey{}, counterparty))
 	h.handleTransferStart(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("inbound start: got %d, want 200: %s", rec.Code, rec.Body)
