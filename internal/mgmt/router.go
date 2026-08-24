@@ -35,6 +35,7 @@ func NewRouter(cfg config.Config, st *store.Store) http.Handler {
 	h := agreementHandler{store: st}
 	mux.Handle("POST /agreements", authenticated(cfg.MgmtToken, http.HandlerFunc(h.importAgreement)))
 	mux.Handle("GET /agreements", authenticated(cfg.MgmtToken, http.HandlerFunc(h.listAgreements)))
+	mux.Handle("GET /transfers", authenticated(cfg.MgmtToken, http.HandlerFunc(h.listTransfers)))
 
 	return mux
 }
@@ -181,4 +182,75 @@ type agreementView struct {
 	// datasetId to stay adjacent in the JSON body. Putting this field between
 	// them would break that extraction.
 	CounterpartyID string `json:"counterpartyId"`
+}
+
+// listTransfers returns every transfer this connector holds, in both roles.
+// It exists for the same reason GET /agreements does — an operator otherwise
+// has no way to see whether the data a transfer was for actually arrived —
+// and it is read-only for the same reason. DECISIONS.md section 34.4 records
+// why this does not move the boundary section 25.3 drew.
+//
+// Both roles, with a role field, because a route named /transfers that
+// showed half the transfers would be a trap for whoever read it next.
+// Provider-role rows carry no download fields: they never fetch anything.
+func (h agreementHandler) listTransfers(w http.ResponseWriter, r *http.Request) {
+	consumers, err := h.store.ListConsumerTransfers()
+	if err != nil {
+		slog.Error("list consumer transfers", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	providers, err := h.store.ListTransfers()
+	if err != nil {
+		slog.Error("list transfers", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	out := make([]transferView, 0, len(consumers)+len(providers))
+	for _, c := range consumers {
+		v := transferView{
+			Role: "consumer", ConsumerPID: c.ConsumerPID, ProviderPID: c.ProviderPID,
+			AgreementID: c.AgreementID, State: c.State, CounterpartyID: c.CounterpartyID,
+			CreatedAt:     c.CreatedAt.UTC().Format(time.RFC3339Nano),
+			ExpectedBytes: c.ExpectedBytes, ReceivedBytes: c.ReceivedBytes,
+			DataPath: c.DataPath, DataError: c.DataError,
+		}
+		if !c.DataCompletedAt.IsZero() {
+			v.DataCompletedAt = c.DataCompletedAt.UTC().Format(time.RFC3339Nano)
+		}
+		out = append(out, v)
+	}
+	for _, p := range providers {
+		out = append(out, transferView{
+			Role: "provider", ConsumerPID: p.ConsumerPID, ProviderPID: p.ProviderPID,
+			AgreementID: p.AgreementID, State: p.State, CounterpartyID: p.CounterpartyID,
+			CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{"transfers": out}); err != nil {
+		slog.Error("encode transfers", "error", err)
+	}
+}
+
+// transferView is the wire shape, kept separate from the store structs for
+// the reason agreementView records: the management API does not leak
+// whichever columns storage happens to carry. The download fields are
+// omitted when empty so a provider-role row does not carry four blanks that
+// mean nothing for it.
+type transferView struct {
+	Role            string `json:"role"`
+	ConsumerPID     string `json:"consumerPid"`
+	ProviderPID     string `json:"providerPid"`
+	AgreementID     string `json:"agreementId"`
+	State           string `json:"state"`
+	CounterpartyID  string `json:"counterpartyId"`
+	CreatedAt       string `json:"createdAt"`
+	ExpectedBytes   int64  `json:"expectedBytes,omitempty"`
+	ReceivedBytes   int64  `json:"receivedBytes,omitempty"`
+	DataPath        string `json:"dataPath,omitempty"`
+	DataCompletedAt string `json:"dataCompletedAt,omitempty"`
+	DataError       string `json:"dataError,omitempty"`
 }

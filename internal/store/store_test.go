@@ -1207,3 +1207,44 @@ func TestRecordConsumerTransferOutcomeOnAMissingRowIsNotAnError(t *testing.T) {
 		t.Errorf("recording against a missing row returned %v, want nil", err)
 	}
 }
+
+func TestListTransfersReturnsBothRolesInOrder(t *testing.T) {
+	st, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	base := time.Now().UTC().Truncate(time.Second)
+	if err := st.CreateConsumerTransfer(ConsumerTransfer{
+		ConsumerPID: "urn:uuid:c-2", ProviderBaseURL: "http://p", AgreementID: "urn:uuid:a",
+		Format: "HttpData-PULL", State: "STARTED", CreatedAt: base.Add(time.Second), UpdatedAt: base,
+	}); err != nil {
+		t.Fatalf("create consumer 2: %v", err)
+	}
+	if err := st.CreateConsumerTransfer(ConsumerTransfer{
+		ConsumerPID: "urn:uuid:c-1", ProviderBaseURL: "http://p", AgreementID: "urn:uuid:a",
+		Format: "HttpData-PULL", State: "COMPLETED", CreatedAt: base, UpdatedAt: base,
+	}); err != nil {
+		t.Fatalf("create consumer 1: %v", err)
+	}
+
+	consumers, err := st.ListConsumerTransfers()
+	if err != nil {
+		t.Fatalf("list consumer transfers: %v", err)
+	}
+	if len(consumers) != 2 {
+		t.Fatalf("got %d consumer transfers, want 2", len(consumers))
+	}
+	if consumers[0].ConsumerPID != "urn:uuid:c-1" {
+		t.Errorf("first is %q, want the oldest — the list is ordered by creation like ListAgreements", consumers[0].ConsumerPID)
+	}
+
+	providers, err := st.ListTransfers()
+	if err != nil {
+		t.Fatalf("list transfers: %v", err)
+	}
+	if len(providers) != 0 {
+		t.Errorf("got %d provider transfers, want 0 — none were created", len(providers))
+	}
+}

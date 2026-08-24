@@ -992,3 +992,75 @@ func (s *Store) ListAgreements() ([]Agreement, error) {
 	}
 	return out, nil
 }
+
+// ListTransfers returns every provider-role transfer, oldest first.
+// Unpaginated, for the reason ListAgreements is: a transfer list large
+// enough to need paging is a problem worth having first.
+func (s *Store) ListTransfers() ([]TransferProcess, error) {
+	rows, err := s.db.Query(
+		`SELECT provider_pid, consumer_pid, agreement_id, state, callback_address, format, created_at, updated_at, counterparty_id
+		 FROM transfer_processes ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list transfers: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TransferProcess
+	for rows.Next() {
+		var t TransferProcess
+		var created, updated string
+		if err := rows.Scan(&t.ProviderPID, &t.ConsumerPID, &t.AgreementID, &t.State, &t.CallbackAddress, &t.Format,
+			&created, &updated, &t.CounterpartyID); err != nil {
+			return nil, fmt.Errorf("list transfers: %w", err)
+		}
+		if t.CreatedAt, err = time.Parse(timeFormat, created); err != nil {
+			return nil, fmt.Errorf("list transfers: parse created_at: %w", err)
+		}
+		if t.UpdatedAt, err = time.Parse(timeFormat, updated); err != nil {
+			return nil, fmt.Errorf("list transfers: parse updated_at: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list transfers: %w", err)
+	}
+	return out, nil
+}
+
+// ListConsumerTransfers returns every consumer-role transfer, oldest first.
+// Unpaginated, for the reason ListAgreements is.
+func (s *Store) ListConsumerTransfers() ([]ConsumerTransfer, error) {
+	rows, err := s.db.Query(
+		`SELECT consumer_pid, provider_pid, provider_base_url, agreement_id, format, state, created_at, updated_at, counterparty_id, expected_bytes, received_bytes, data_path, data_completed_at, data_error
+		 FROM consumer_transfer_processes ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list consumer transfers: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ConsumerTransfer
+	for rows.Next() {
+		var t ConsumerTransfer
+		var created, updated, completedAt string
+		if err := rows.Scan(&t.ConsumerPID, &t.ProviderPID, &t.ProviderBaseURL, &t.AgreementID, &t.Format, &t.State,
+			&created, &updated, &t.CounterpartyID, &t.ExpectedBytes, &t.ReceivedBytes, &t.DataPath, &completedAt, &t.DataError); err != nil {
+			return nil, fmt.Errorf("list consumer transfers: %w", err)
+		}
+		if t.CreatedAt, err = time.Parse(timeFormat, created); err != nil {
+			return nil, fmt.Errorf("list consumer transfers: parse created_at: %w", err)
+		}
+		if t.UpdatedAt, err = time.Parse(timeFormat, updated); err != nil {
+			return nil, fmt.Errorf("list consumer transfers: parse updated_at: %w", err)
+		}
+		if completedAt != "" {
+			if t.DataCompletedAt, err = time.Parse(timeFormat, completedAt); err != nil {
+				return nil, fmt.Errorf("list consumer transfers: parse data_completed_at: %w", err)
+			}
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list consumer transfers: %w", err)
+	}
+	return out, nil
+}

@@ -296,3 +296,53 @@ func TestGetAgreementsKeepsAgreementIdAdjacentToDatasetId(t *testing.T) {
 		t.Fatalf("agreementId and datasetId are not adjacent in the response body: %s", rec.Body.String())
 	}
 }
+
+// The brief's own mutation table seeds only a consumer row and notes that a
+// handler returning consumer rows alone survives it — so this test seeds a
+// provider-role row too, or "return only the consumer rows" is a mutation
+// this test cannot catch.
+func TestListTransfersReturnsBothRolesWithARoleField(t *testing.T) {
+	h, st := newTestRouter(t)
+	now := time.Now().UTC()
+	if err := st.CreateConsumerTransfer(store.ConsumerTransfer{
+		ConsumerPID: "urn:uuid:c-1", ProviderBaseURL: "http://p", AgreementID: "urn:uuid:a",
+		Format: "HttpData-PULL", State: "COMPLETED", CreatedAt: now, UpdatedAt: now,
+		ExpectedBytes: 4096, ReceivedBytes: 4096, DataPath: "/d/urn:uuid:c-1", DataCompletedAt: now,
+	}); err != nil {
+		t.Fatalf("seed consumer transfer: %v", err)
+	}
+	if err := st.CreateTransfer(store.TransferProcess{
+		ProviderPID: "urn:uuid:p-1", ConsumerPID: "urn:uuid:remote-c", AgreementID: "urn:uuid:a",
+		State: "STARTED", CallbackAddress: "http://consumer", Format: "HttpData-PULL", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed provider transfer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/transfers", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /transfers = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`"role":"consumer"`, `"consumerPid":"urn:uuid:c-1"`, `"receivedBytes":4096`, `"dataPath":"/d/urn:uuid:c-1"`,
+		`"role":"provider"`, `"providerPid":"urn:uuid:p-1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body does not contain %s\nbody: %s", want, body)
+		}
+	}
+}
+
+func TestListTransfersRequiresTheToken(t *testing.T) {
+	h, _ := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/transfers", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("GET /transfers with no token = %d, want 401", rec.Code)
+	}
+}
