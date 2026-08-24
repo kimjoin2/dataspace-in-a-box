@@ -525,9 +525,19 @@ func TestPullTransferData_416DiscardsThePartialFile(t *testing.T) {
 // against.
 func TestPullTransferData_206WithWrongContentRangeLeavesThePartialFileUntouched(t *testing.T) {
 	dir := t.TempDir()
-	h, _ := newTestTransferHandler(t, config.Config{DataDir: dir})
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
 	consumerPID := "urn:uuid:resume-bad-content-range"
 	const already = "id,value\n1,hello\n"
+
+	// A real row, because this test now also asserts what the pull records.
+	now := time.Now()
+	if err := st.CreateConsumerTransfer(store.ConsumerTransfer{
+		ConsumerPID: consumerPID, ProviderPID: "urn:uuid:p-1", ProviderBaseURL: "http://p",
+		AgreementID: "urn:uuid:a-1", Format: "HTTP-PULL", State: "STARTED",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
 
 	if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -557,6 +567,23 @@ func TestPullTransferData_206WithWrongContentRangeLeavesThePartialFileUntouched(
 	}
 	if _, err := os.Stat(filepath.Join(dir, downloadDir, consumerPID)); !os.IsNotExist(err) {
 		t.Error("a final file appeared, but the 206's Content-Range did not match the resume offset")
+	}
+
+	// The row must still say what is on disk. This exit is above the copy,
+	// so nothing after it sets received_bytes; without the seed at the top
+	// of pullTransferData the row would record zero while the partial file
+	// this test just asserted is untouched sits there holding len(already)
+	// bytes — and the next restart would resume from exactly those bytes.
+	// A row that is wrong is worse than one that is merely incomplete, and
+	// received_bytes is omitempty on the wire, so GET /transfers would show
+	// the operator no count at all.
+	row, found, err := st.GetConsumerTransfer(consumerPID)
+	if err != nil || !found {
+		t.Fatalf("get: %v found=%v", err, found)
+	}
+	if row.ReceivedBytes != int64(len(already)) {
+		t.Errorf("ReceivedBytes = %d, want %d — the bytes still on disk at .partial-<pid>, "+
+			"which is what the next restart resumes from", row.ReceivedBytes, len(already))
 	}
 }
 

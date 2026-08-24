@@ -362,10 +362,21 @@ type pullOutcome struct {
 
 // fail records why a pull stopped, as a sentence rather than a code:
 // DECISIONS.md section 34.2 records that an operator reading this one column
-// on one row has no second place to look a code up in. It is the same reason
-// the log line at that exit gives and deliberately not the same string — a
-// log message is a short verb phrase with the detail in structured fields,
-// and this column has no fields, so it has to say the whole thing.
+// on one row has no second place to look a code up in.
+//
+// It is the same reason the log line at that exit gives, and at no exit the
+// same string. Often it is close: at ten of the exits the recorded string is
+// a prefix of the log message, usually that message with a trailing clause
+// ("; leaving the partial download in place") cut off, and at three of those
+// the only difference is a leading "the". Where they diverge it is because
+// the log follows the short-verb-phrase convention with the detail in
+// structured fields, which a column with no fields cannot use.
+//
+// So neighbouring exits carry near-identical prose and nothing checks the
+// pairing. When editing these sentences, diff them against their neighbours
+// rather than reading each on its own — a copy-paste between two adjacent
+// exits is the likeliest way one of them goes wrong, and it will read as
+// correct.
 func (o *pullOutcome) fail(reason string) {
 	o.failure = reason
 }
@@ -375,8 +386,14 @@ func (o *pullOutcome) fail(reason string) {
 // what keeps a row from ever reading as both completed and failed: the store
 // writes all four columns from this one value, so no caller can hand it a
 // completion and a reason at the same time.
-func (o *pullOutcome) succeed(received int64, path string, at time.Time) {
-	o.received, o.path, o.completed, o.failure = received, path, at, ""
+//
+// It deliberately does not take the byte count. By the time this is called
+// `received` is already authoritative — seeded from the partial's size
+// before the request and overwritten with the copy's own total — and a third
+// writer for one field would be a third expression to keep in step with the
+// other two.
+func (o *pullOutcome) succeed(path string, at time.Time) {
+	o.path, o.completed, o.failure = path, at, ""
 }
 
 // pullTransferData fetches what a dataAddress points at and writes it under
@@ -439,6 +456,17 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		existingSize = info.Size()
 	}
 	resuming := existingSize > 0
+	// Seeded here, before anything can fail, because ten of this function's
+	// exits are above the copy and every one of them would otherwise record
+	// zero. Five of those deliberately leave the partial on disk, so a
+	// resumed pull that stops at one would overwrite the previous row's true
+	// count with a zero — a row saying nothing is on disk while the next
+	// restart resumes from exactly these bytes. Wrong is worse than
+	// incomplete: `received_bytes` is `omitempty` on the wire, so the
+	// operator would see no count at all. Commit 0e622ee fixed this for the
+	// exits below the copy; this is the half above it, which is the half
+	// where resumption is the whole subject.
+	outcome.received = existingSize
 
 	// The cancel is what the idle reader below pulls to stop a body that has
 	// gone quiet: cancelling the request's context closes the connection
@@ -672,7 +700,11 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		return
 	}
 
-	total := existingSize + n
+	// Read rather than recomputed: outcome.received already holds
+	// existingSize + n, and two expressions for one number are two things
+	// that can drift apart — the row and the success log would then disagree
+	// about the same transfer.
+	total := outcome.received
 	if expected > 0 && total != expected {
 		slog.Error("the download does not match the length the provider stated; leaving the partial download in place",
 			"consumer_pid", t.ConsumerPID, "have", total, "stated", expected)
@@ -688,6 +720,6 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		outcome.fail("the download could not be placed")
 		return
 	}
-	outcome.succeed(total, final, time.Now().UTC())
+	outcome.succeed(final, time.Now().UTC())
 	slog.Info("pulled transfer data", "consumer_pid", t.ConsumerPID, "path", final, "bytes", total, "expected", expected)
 }
