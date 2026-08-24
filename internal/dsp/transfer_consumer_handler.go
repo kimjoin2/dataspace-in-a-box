@@ -367,10 +367,14 @@ type pullOutcome struct {
 // It is the same reason the log line at that exit gives, and at no exit the
 // same string. Often it is close: at ten of the exits the recorded string is
 // a prefix of the log message, usually that message with a trailing clause
-// ("; leaving the partial download in place") cut off, and at three of those
-// the only difference is a leading "the". Where they diverge it is because
-// the log follows the short-verb-phrase convention with the detail in
-// structured fields, which a column with no fields cannot use.
+// ("; leaving the partial download in place") cut off. At three the only
+// difference is a leading "the", and those three are named so this is
+// checkable by reading — "the start message carried no data endpoint", "the
+// data endpoint sent no response within the idle timeout", and "the data
+// endpoint refused the pull". Of the eleven that are not prefixes, nine
+// diverge because the log follows the short-verb-phrase convention with the
+// detail in structured fields, which a column with no fields cannot use; the
+// other two simply say something different from the reason recorded.
 //
 // So neighbouring exits carry near-identical prose and nothing checks the
 // pairing. When editing these sentences, diff them against their neighbours
@@ -394,6 +398,26 @@ func (o *pullOutcome) fail(reason string) {
 // other two.
 func (o *pullOutcome) succeed(path string, at time.Time) {
 	o.path, o.completed, o.failure = path, at, ""
+}
+
+// discardPartial deletes a partial download whose representation is no
+// longer the one being fetched, and keeps the outcome's byte count in step
+// with the file.
+//
+// The two have to move together, and that is the whole reason this is a
+// function rather than two lines twice. received_bytes is what tells an
+// operator whether a restart resumes or starts over, so a row still holding
+// a count after the bytes were deleted promises a resume that will not
+// happen — and a row zeroed while the delete failed says the opposite about
+// bytes that are still there. Section 34.1's rule is that the row describes
+// the disk; both halves of that are here.
+func discardPartial(o *pullOutcome, partial string) {
+	if err := os.Remove(partial); err != nil {
+		// The bytes survived, so the count must too.
+		slog.Error("remove stale partial download", "path", partial, "error", err)
+		return
+	}
+	o.received = 0
 }
 
 // pullTransferData fetches what a dataAddress points at and writes it under
@@ -423,6 +447,36 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			slog.Error("record pull outcome", "consumer_pid", t.ConsumerPID, "error", err)
 		}
 	}()
+	// What is already on disk, established before the first exit that can
+	// record anything — which is the next one. Only the already-in-flight
+	// guard above runs earlier, and it deliberately records nothing at all.
+	//
+	// The order is the mechanism. Every exit from here to the copy leaves
+	// whatever is on disk untouched, except the two that delete it, and
+	// those put this back to zero through discardPartial. So no exit can
+	// report a count that disagrees with the file: not zero while a partial
+	// is held, and not a held count after the partial is gone. A row that is
+	// wrong is worse than one that is merely incomplete — received_bytes is
+	// omitempty on the wire, so GET /transfers renders a wrong zero as no
+	// count at all, and a wrong count as a promise that a restart will
+	// resume. Commit 0e622ee established this for the exits below the copy.
+	//
+	// Only os.Stat runs before the endpoint is validated, which is a read
+	// and cannot act on a counterparty-supplied address: dir and partial are
+	// path joins over this connector's own configuration and the transfer's
+	// own pid.
+	dir := filepath.Join(h.cfg.DataDir, downloadDir)
+	// A fixed name rather than os.CreateTemp's random one, so a later
+	// restart of the same transfer can find what an earlier attempt left
+	// behind and continue it.
+	partial := filepath.Join(dir, ".partial-"+t.ConsumerPID)
+	var existingSize int64
+	if info, err := os.Stat(partial); err == nil {
+		existingSize = info.Size()
+	}
+	resuming := existingSize > 0
+	outcome.received = existingSize
+
 	// Reachable from a real message, not a defensive check: the dispatch site
 	// guards addr != nil, but a start message carrying "dataAddress": {}
 	// decodes to a non-nil pointer with an empty Endpoint, and checkEnvelope
@@ -441,32 +495,15 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		return
 	}
 
-	dir := filepath.Join(h.cfg.DataDir, downloadDir)
+	// After the stat above, not before it: MkdirAll can only fail here when
+	// the directory does not already exist, and a partial download implies
+	// it does. So this exit cannot be reached with bytes on disk, and the
+	// zero it inherits from the seed is the truth rather than a gap.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		slog.Error("create download directory", "dir", dir, "error", err)
 		outcome.fail("the download directory could not be created")
 		return
 	}
-	// A fixed name rather than os.CreateTemp's random one, so a later
-	// restart of the same transfer can find what an earlier attempt left
-	// behind and continue it.
-	partial := filepath.Join(dir, ".partial-"+t.ConsumerPID)
-	var existingSize int64
-	if info, err := os.Stat(partial); err == nil {
-		existingSize = info.Size()
-	}
-	resuming := existingSize > 0
-	// Seeded here, before anything can fail, because ten of this function's
-	// exits are above the copy and every one of them would otherwise record
-	// zero. Five of those deliberately leave the partial on disk, so a
-	// resumed pull that stops at one would overwrite the previous row's true
-	// count with a zero — a row saying nothing is on disk while the next
-	// restart resumes from exactly these bytes. Wrong is worse than
-	// incomplete: `received_bytes` is `omitempty` on the wire, so the
-	// operator would see no count at all. Commit 0e622ee fixed this for the
-	// exits below the copy; this is the half above it, which is the half
-	// where resumption is the whole subject.
-	outcome.received = existingSize
 
 	// The cancel is what the idle reader below pulls to stop a body that has
 	// gone quiet: cancelling the request's context closes the connection
@@ -561,9 +598,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			if hasStatedComplete && t.ExpectedBytes > 0 && statedComplete != t.ExpectedBytes {
 				slog.Warn("the provider states a different complete length than this transfer recorded; discarding the partial download",
 					"consumer_pid", t.ConsumerPID, "stated", statedComplete, "recorded", t.ExpectedBytes)
-				if err := os.Remove(partial); err != nil {
-					slog.Error("remove stale partial download", "path", partial, "error", err)
-				}
+				discardPartial(&outcome, partial)
 				outcome.fail("the provider states a different complete length than this transfer recorded")
 				return
 			}
@@ -574,9 +609,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			// attempts. Not a valid prefix of anything; start over next time.
 			slog.Warn("provider's file is no longer past what this connector already has; discarding the partial download",
 				"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "had_bytes", existingSize)
-			if err := os.Remove(partial); err != nil {
-				slog.Error("remove stale partial download", "path", partial, "error", err)
-			}
+			discardPartial(&outcome, partial)
 			outcome.fail("the provider's file is no longer past what this connector already has")
 			return
 		default:

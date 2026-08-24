@@ -490,8 +490,18 @@ func TestPullTransferData_ResumesFromAnExistingPartialFile(t *testing.T) {
 // than kept or appended to.
 func TestPullTransferData_416DiscardsThePartialFile(t *testing.T) {
 	dir := t.TempDir()
-	h, _ := newTestTransferHandler(t, config.Config{DataDir: dir})
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
 	consumerPID := "urn:uuid:resume-416"
+
+	// A real row, because this test now also asserts what the pull records.
+	now := time.Now()
+	if err := st.CreateConsumerTransfer(store.ConsumerTransfer{
+		ConsumerPID: consumerPID, ProviderPID: "urn:uuid:p-1", ProviderBaseURL: "http://p",
+		AgreementID: "urn:uuid:a-1", Format: "HTTP-PULL", State: "STARTED",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumerTransfer: %v", err)
+	}
 
 	if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -512,6 +522,19 @@ func TestPullTransferData_416DiscardsThePartialFile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, downloadDir, consumerPID)); !os.IsNotExist(err) {
 		t.Error("a final file appeared, but nothing was ever successfully downloaded")
+	}
+
+	// The row has to follow the file it just deleted. The seed at the top of
+	// pullTransferData put the partial's size here, and this exit is one of
+	// the two that throw those bytes away — so a row still reporting them
+	// would tell an operator a restart resumes when the next attempt starts
+	// from zero.
+	row, found, err := st.GetConsumerTransfer(consumerPID)
+	if err != nil || !found {
+		t.Fatalf("get: %v found=%v", err, found)
+	}
+	if row.ReceivedBytes != 0 {
+		t.Errorf("ReceivedBytes = %d, want 0 — the partial was deleted, so nothing is held and a restart starts over", row.ReceivedBytes)
 	}
 }
 
@@ -909,6 +932,15 @@ func TestResumeDiscardsThePartialWhenTheStatedTotalChanged(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, downloadDir, pid)); err == nil {
 		t.Error("the mismatched response was published")
+	}
+	// The other exit that deletes the partial, and the same rule: the count
+	// follows the file.
+	row, found, err := st.GetConsumerTransfer(pid)
+	if err != nil || !found {
+		t.Fatalf("get: %v found=%v", err, found)
+	}
+	if row.ReceivedBytes != 0 {
+		t.Errorf("ReceivedBytes = %d, want 0 — the partial was discarded as a different representation", row.ReceivedBytes)
 	}
 }
 
@@ -1506,10 +1538,20 @@ func TestPullRecordsItsOutcomeOnEveryPath(t *testing.T) {
 		}
 	})
 
-	t.Run("a refusal before any request still records", func(t *testing.T) {
+	t.Run("a refusal before any request still records, and keeps the partial's count", func(t *testing.T) {
 		dir := t.TempDir()
 		h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
 		pid := seedConsumerTransfer(t, st, "STARTED")
+
+		// A partial from an earlier attempt. This exit is above everything
+		// that touches the network, so it is one of the two that used to
+		// overwrite a true count with zero while these bytes sat on disk.
+		if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(pullPartialPath(dir, pid), []byte(strings.Repeat("a", 11)), 0o600); err != nil {
+			t.Fatalf("seed partial file: %v", err)
+		}
 
 		// An endpoint the outgoing-callback guard rejects, so the pull
 		// returns before it ever builds a request. This is the exit a
@@ -1528,6 +1570,9 @@ func TestPullRecordsItsOutcomeOnEveryPath(t *testing.T) {
 		if row.DataError == "" {
 			t.Error("DataError is empty after a pull refused before it started")
 		}
+		if row.ReceivedBytes != 11 {
+			t.Errorf("ReceivedBytes = %d, want 11 — the partial is untouched by this exit, so the row must still say what a restart resumes from", row.ReceivedBytes)
+		}
 	})
 
 	t.Run("a start message with an empty data endpoint records why", func(t *testing.T) {
@@ -1539,6 +1584,16 @@ func TestPullRecordsItsOutcomeOnEveryPath(t *testing.T) {
 		// to exactly this — non-nil, empty Endpoint — past the dispatch
 		// site's nil guard and past checkEnvelope, which reads only @context
 		// and @type.
+		// A partial from an earlier attempt, because this is the earliest
+		// exit that records anything: if the seed is ever moved back below
+		// it, this is where a true count first turns into a zero.
+		if err := os.MkdirAll(filepath.Join(dir, downloadDir), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(pullPartialPath(dir, pid), []byte(strings.Repeat("a", 11)), 0o600); err != nil {
+			t.Fatalf("seed partial file: %v", err)
+		}
+
 		h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{})
 
 		row, _, err := st.GetConsumerTransfer(pid)
@@ -1550,6 +1605,9 @@ func TestPullRecordsItsOutcomeOnEveryPath(t *testing.T) {
 		// operator can act on when the cause is known exactly.
 		if row.DataError != "the start message carried no data endpoint" {
 			t.Errorf("DataError = %q, want the sentence naming the missing endpoint", row.DataError)
+		}
+		if row.ReceivedBytes != 11 {
+			t.Errorf("ReceivedBytes = %d, want 11 — the first recording exit must not overwrite what is still on disk", row.ReceivedBytes)
 		}
 		if !row.DataCompletedAt.IsZero() {
 			t.Error("DataCompletedAt is set after a failure")
