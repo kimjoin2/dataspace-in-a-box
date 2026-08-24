@@ -241,6 +241,65 @@ func TestHandleInitiate_OnIdleAbandon_TerminatesThroughTheRetryingPath(t *testin
 	}
 }
 
+func TestHandleInitiateRefusesAnUnlistedProviderID(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	restore := validateOutgoingCallback
+	validateOutgoingCallback = func(string) error { return nil }
+	defer func() { validateOutgoingCallback = restore }()
+
+	h := negotiationHandler{
+		cfg:   config.Config{ParticipantID: testSelf, PublicURL: "http://consumer:8080"},
+		store: st,
+		// Lists one participant, and it is not the one the body names.
+		knownParticipant: func(id string) bool { return id == "urn:participant:known" },
+	}
+
+	rec := httptest.NewRecorder()
+	body := `{"providerId":"urn:participant:stranger","offerId":"o","datasetId":"d","connectorAddress":"http://provider:8080/2025-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/negotiations/initiate", strings.NewReader(body))
+	h.handleInitiate(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "urn:participant:stranger") {
+		t.Errorf("body does not name the rejected id: %s", rec.Body.String())
+	}
+}
+
+func TestHandleInitiateSkipsTheRosterCheckWhenItIsAbsent(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	restore := validateOutgoingCallback
+	validateOutgoingCallback = func(string) error { return nil }
+	defer func() { validateOutgoingCallback = restore }()
+
+	// knownParticipant left nil: authentication is off, so there is no
+	// roster and the check is absent rather than refusing everyone.
+	h := negotiationHandler{
+		cfg:   config.Config{ParticipantID: testSelf, PublicURL: "http://consumer:8080"},
+		store: st,
+	}
+
+	rec := httptest.NewRecorder()
+	body := `{"providerId":"anything at all","offerId":"o","datasetId":"d","connectorAddress":"http://provider:8080/2025-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/negotiations/initiate", strings.NewReader(body))
+	h.handleInitiate(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d — a nil predicate is the check being absent", rec.Code, http.StatusOK)
+	}
+}
+
 func TestHandleOffers_Accept_SendsAcceptedEvent(t *testing.T) {
 	var gotEventType string
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

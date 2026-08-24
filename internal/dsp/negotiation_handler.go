@@ -52,6 +52,16 @@ const (
 type negotiationHandler struct {
 	cfg   config.Config
 	store *store.Store
+	// knownParticipant reports whether an id is one the roster lists. It is
+	// how an initiate call's providerId is checked without this handler
+	// holding a roster.
+	//
+	// Nil disables the check rather than refusing everyone, and that
+	// direction is the whole point: the roster is loaded only when
+	// authentication is on, so with it off there is nothing to consult, and
+	// a disabled check is absent rather than silently false. The same
+	// convention pulling uses on transferHandler.
+	knownParticipant func(string) bool
 }
 
 // handleContractRequest serves POST /negotiations/request, the only entry

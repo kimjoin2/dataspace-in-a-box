@@ -70,6 +70,16 @@ type transferHandler struct {
 	cfg       config.Config
 	store     *store.Store
 	stepDelay time.Duration
+	// knownParticipant reports whether an id is one the roster lists. It is
+	// how an initiate call's providerId is checked without this handler
+	// holding a roster.
+	//
+	// Nil disables the check rather than refusing everyone, and that
+	// direction is the whole point: the roster is loaded only when
+	// authentication is on, so with it off there is nothing to consult, and
+	// a disabled check is absent rather than silently false. The same
+	// convention pulling uses below.
+	knownParticipant func(string) bool
 	// pulling tracks in-flight pullTransferData calls by ConsumerPID, so a
 	// restart that arrives while a previous pull for the same transfer is
 	// still running is dropped instead of racing it onto the same

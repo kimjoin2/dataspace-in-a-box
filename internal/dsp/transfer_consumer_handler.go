@@ -86,6 +86,14 @@ func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.R
 			"no agreement with id "+body.AgreementID)
 		return
 	}
+	// Last, for the reason handleInitiate's equivalent gives — and here it
+	// matters concretely: the agreement lookup above is pinned by a test
+	// that asserts only a status code.
+	if h.knownParticipant != nil && !h.knownParticipant(body.ProviderID) {
+		writeError(w, TransferErrorType, http.StatusBadRequest,
+			"providerId "+body.ProviderID+" is not a participant this connector's roster lists")
+		return
+	}
 
 	consumerPID, err := store.NewUUID()
 	if err != nil {

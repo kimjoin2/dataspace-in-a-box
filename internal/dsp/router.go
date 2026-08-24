@@ -51,7 +51,18 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	// configuration rejects one containing a slash.
 	mux.HandleFunc("GET "+VersionPath+"/catalog/datasets/{id}", cat.handleDatasetRequest)
 
-	neg := negotiationHandler{cfg: cfg, store: st}
+	// Non-nil only when there is a roster to consult. NewRouter's own rule
+	// applies: with authentication off the check is absent, not silently
+	// false.
+	var knownParticipant func(string) bool
+	if cfg.AuthRequired() {
+		knownParticipant = func(id string) bool {
+			_, ok := roster.KeyFor(id)
+			return ok
+		}
+	}
+
+	neg := negotiationHandler{cfg: cfg, store: st, knownParticipant: knownParticipant}
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/request", neg.handleContractRequest)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/request", neg.handleReRequest)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/events", neg.handleEvent)
@@ -65,7 +76,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	// {id} on the five addressed transfer routes is this connector's own
 	// generated provider pid, the same convention the provider-role
 	// negotiation routes above use.
-	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}, pulls: pulls, pullCtx: pullCtx}
+	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}, pulls: pulls, pullCtx: pullCtx, knownParticipant: knownParticipant}
 	mux.HandleFunc("POST "+VersionPath+"/transfers/request", tr.handleTransferRequest)
 	mux.HandleFunc("POST "+VersionPath+"/transfers/initiate", tr.handleTransferInitiate)
 

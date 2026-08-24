@@ -105,6 +105,9 @@ func TestTransferInitiateRejectsAnUnknownAgreement(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400", rec.Code)
 	}
+	if !strings.Contains(rec.Body.String(), "no agreement with id") {
+		t.Errorf("refused for the wrong reason: %s", rec.Body.String())
+	}
 }
 
 // The address is where this connector will send, so it goes through the same
@@ -123,8 +126,32 @@ func TestTransferInitiateRejectsAnUnsendableAddress(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400", rec.Code)
 	}
+	if !strings.Contains(rec.Body.String(), "connectorAddress is not an address") {
+		t.Errorf("refused for the wrong reason: %s", rec.Body.String())
+	}
 	if strings.Contains(rec.Body.String(), "127.0.0.1") {
 		t.Error("the rejection echoed the address back")
+	}
+}
+
+func TestTransferInitiateRefusesAnUnlistedProviderID(t *testing.T) {
+	h, st := newTestTransferHandler(t, config.Config{})
+	seedAgreement(t, st, "urn:uuid:a-1")
+	// Lists one participant, and it is not the one the body names.
+	h.knownParticipant = func(id string) bool { return id == "urn:participant:known" }
+
+	fields := fullInitiateFields("http://provider.example/2025-1")
+	fields["providerId"] = "urn:participant:stranger"
+
+	rec := httptest.NewRecorder()
+	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
+		VersionPath+"/transfers/initiate", initiateBody(fields)))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "urn:participant:stranger") {
+		t.Errorf("body does not name the rejected id: %s", rec.Body.String())
 	}
 }
 

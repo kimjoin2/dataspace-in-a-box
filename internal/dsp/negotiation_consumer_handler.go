@@ -58,6 +58,22 @@ func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Reques
 			"connectorAddress is not an address this connector will send to")
 		return
 	}
+	// Last of the validations, deliberately. Every branch here answers 400,
+	// so the order is invisible to a caller — but two sibling tests in the
+	// transfer hook assert only a status code, and a check that ran earlier
+	// would answer their requests first and leave them passing without
+	// testing their own rule.
+	//
+	// Unlike validateOutgoingCallback's reason, this one is echoed. That
+	// silence exists because the address check reports what name resolution
+	// told this connector, which the caller did not know. This reports back
+	// a string the caller just sent, and an operator debugging a typo needs
+	// to see which name was refused.
+	if h.knownParticipant != nil && !h.knownParticipant(body.ProviderID) {
+		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+			"providerId "+body.ProviderID+" is not a participant this connector's roster lists")
+		return
+	}
 
 	consumerPID, err := store.NewUUID()
 	if err != nil {
