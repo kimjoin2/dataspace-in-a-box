@@ -240,3 +240,68 @@ func TestCutBearer(t *testing.T) {
 		}
 	}
 }
+
+// The initiate hooks are not registered on this listener, and this is the
+// assertion that keeps them off it. Every other test in this file would pass
+// if they came back: a re-added registration parses into dspRoutes, sits
+// behind requireParticipant, and answers 401 to an anonymous request like
+// everything else — which is exactly what "every DSP route is closed" checks
+// for. Closed is not the property that matters here. DECISIONS.md section 35
+// moved these two because a roster participant holding a valid credential is
+// not the caller they are meant to have; only the operator is.
+func TestTheInitiateHooksAreNotRegisteredOnTheDSPListener(t *testing.T) {
+	src, err := os.ReadFile("router.go")
+	if err != nil {
+		t.Fatalf("read router.go: %v", err)
+	}
+	registration := regexp.MustCompile(`mux\.Handle(?:Func)?\([^)]*initiate`)
+	if found := registration.FindAllString(string(src), -1); len(found) != 0 {
+		t.Errorf("router.go registers an initiate route on the DSP listener: %q; "+
+			"these belong on the management listener (DECISIONS.md section 35)", found)
+	}
+}
+
+// What a caller who still has the old URL is told. Not 404: the TCK's own
+// assertion helper throws immediately on a 404 and retries anything else, so
+// a stale URL in a harness configuration produces a slow diagnosis rather
+// than an abrupt one. The 405 comes from the addressed GET route matching
+// with id="initiate", which is why Allow names GET and HEAD rather than POST.
+//
+// Authenticated on purpose: unauthenticated, the wrap answers 401 and the
+// mux is never consulted, so the anonymous form would pin the middleware
+// instead of the routing this test is about.
+//
+// Through a real server rather than a recorder, for the same reason the
+// management listener's shadowing test uses one: a recorder reports what a
+// handler wrote, and what is under test here is which pattern the mux chose.
+func TestTheOldInitiatePathsAnswerMethodNotAllowed(t *testing.T) {
+	handler, priv := authedRouter(t)
+	tok, err := auth.Mint(priv, testPeer, testSelf, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	for _, path := range []string{
+		VersionPath + "/negotiations/initiate",
+		VersionPath + "/transfers/initiate",
+	} {
+		req, err := http.NewRequest("POST", srv.URL+path, strings.NewReader("{}"))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s: got %d, want 405", path, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Allow"); got != "GET, HEAD" {
+			t.Errorf("POST %s: Allow = %q, want %q", path, got, "GET, HEAD")
+		}
+	}
+}
