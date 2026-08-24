@@ -195,5 +195,26 @@ if [ "$($compose ps -q dsbox)" != "$connector_id" ]; then
 	exit 1
 fi
 
+# The suite's result depends on the connector having recorded TCK_PARTICIPANT
+# as the counterparty of every consumer-role exchange: that is what the
+# roster check accepts at initiate time and what the inbound guards compare
+# against. Nothing else in this run would show a mismatch — the initiate
+# handlers log nothing on success and this container's database dies with it
+# — and the symptom of one is suite failures that read like protocol bugs.
+transfers=$(curl -sf http://127.0.0.1:8081/transfers \
+	-H "Authorization: Bearer $token" || true)
+if [ -z "$transfers" ]; then
+	echo "could not read back the transfers to confirm the recorded counterparty" >&2
+	exit 1
+fi
+case "$transfers" in
+	*'"counterpartyId":"TCK_PARTICIPANT"'*) ;;
+	*)
+		echo "the connector did not record TCK_PARTICIPANT as a counterparty; the harness identity and the providerId the TCK sends have diverged" >&2
+		exit 1
+		;;
+esac
+echo 'confirmed the recorded counterparty'
+
 echo "TCK output written to $output"
 echo "connector log will be written to $connector_log"
