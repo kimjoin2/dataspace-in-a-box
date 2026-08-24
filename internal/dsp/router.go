@@ -100,9 +100,9 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	// and live on the management listener; NewRouter returns them so
 	// cmd/dsbox can mount them there. Note what the removal leaves behind: a
 	// POST to either old path now matches the GET route with a path
-	// parameter and answers 405, not 404. The TCK fails immediately on a 404
-	// and retries anything else, so a stale URL in its configuration
-	// produces the slow diagnosis rather than the fast one.
+	// parameter and answers 405, not 404. The TCK retries a 405 rather than
+	// failing on it, and fails immediately on a 404, so a stale URL in its
+	// configuration produces the slow diagnosis rather than the fast one.
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/offers", neg.handleOffers)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/agreement", neg.handleAgreement)
 

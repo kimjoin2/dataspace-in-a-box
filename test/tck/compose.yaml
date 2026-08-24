@@ -42,5 +42,7 @@ services:
       - dsbox
     volumes:
       # The generated copy, not the tracked file: run.sh appends the minted
-      # credential to it after the connector is up.
+      # credential to it before the connector starts. That ordering is not
+      # incidental — the same credential is what reaches the connector as
+      # DSBOX_MGMT_TOKEN above, so it has to exist before the build.
       - ./identities/config.properties:/etc/tck/config.properties:ro
