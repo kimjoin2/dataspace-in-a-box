@@ -1003,7 +1003,7 @@ func TestDataPullLogsWhoCollectedTheData(t *testing.T) {
 }
 
 // The resumed pull is served by a second call site, so it can lose the audit
-// line on its own. README's Status section claims the line covers both
+// line on its own. DECISIONS.md section 34.5 claims the line covers both
 // streaming paths; this is what makes that claim a test rather than a
 // reading. range_start is asserted because a resumed pull that logged the
 // same line as a fresh one would tell an operator the whole dataset was

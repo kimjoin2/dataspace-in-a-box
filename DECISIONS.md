@@ -2164,17 +2164,27 @@ for from a tidiness item to an overdue one. It is still not solved here: a
 retention rule is a decision about operator expectations, not a line of code
 this milestone can add on its way past.
 
-And the shutdown wait can still lose the row it exists to protect. The cap in
-33.6 is five seconds, so a pull whose `expected_bytes` write has not happened
-by then is abandoned exactly as it would have been without any of this. That
-is the better of the two failures available — the alternative to a bounded
-wait is a connector that will not shut down while a counterparty keeps
-dribbling at it, which trades one lost row for an operator holding down
-`SIGKILL`. This paragraph closed by saying the bound was chosen against a
+And the shutdown wait can still lose the row it exists to protect. As this
+milestone shipped it, the cap in 33.6 was five seconds and a pull whose
+`expected_bytes` write had not happened by then was abandoned exactly as it
+would have been without any of this. That was the better of the two failures
+available — the alternative to a bounded wait is a connector that will not
+shut down while a counterparty keeps dribbling at it, which trades one lost
+row for an operator holding down `SIGKILL`.
+
+**§34.3 changed what happens to that pull, and the paragraph above now
+overstates the loss.** A pull caught by shutdown is cancelled rather than
+outlasted: it stops at once and its deferred outcome write lands, so the row
+records the shutdown by name instead of saying nothing. What is *not*
+recorded is `expected_bytes` specifically — a pull cancelled before its
+response headers arrived never learned a length to write, and the column
+keeps whatever it held, which 33.5 already defines as "not known". The
+residual worth stating is no longer the copy but the unwind: §34's *Trade-off
+accepted* records that a cancelled pull's own cleanup can still outrun five
+seconds. This paragraph also closed by saying the bound was chosen against a
 window nobody had measured and that the spec's cancellation would have
-removed the guess rather than sizing it. That is now the only half still
-true: the cancellation was built in §34.3, and the cap it survived into is a
-bound on an unwind rather than on a copy. The window is still unmeasured.
+removed the guess rather than sizing it. The cancellation was built; the
+window is still unmeasured.
 
 ## 34. A pull records what it did, and the provider records who collected it
 
@@ -2239,15 +2249,41 @@ exceeded max_download_bytes". Nothing switches on these strings, and nothing
 should — that is what a code would be for, and adding one is a decision for
 whoever first needs to branch on a failure rather than read it.
 
-The sentence is the same *reason* the log line at that exit records; it is
-not the same string, and claiming otherwise would be a claim the code does
-not support. Every one of the failure exits differs textually from its own
-`slog` call, because the two follow different conventions: a Go log message
-is a short verb phrase with the detail in structured fields
-(`slog.Error("write download", "consumer_pid", …)`), while the column has no
-fields and must therefore say the whole thing. The one string that is shared
-verbatim is `errConnectorShuttingDown`'s, which is both the cancellation
-cause and the recorded reason — one sentence, one source.
+The sentence is the same *reason* the log line at that exit records, and at
+no exit is it the same string. That is measured, not assumed: comparing all
+twenty-one recorded strings against the `slog` message at their own exit
+gives zero matches. But "not the same string" is a weaker relationship than
+it sounds, and the weaker truth is the one worth writing down, because this
+paragraph is what stands in for a test of these sentences.
+
+**At ten of the twenty-one the recorded string is a prefix of its own log
+message** — three of them exactly, seven more once a leading "the" is
+allowed, and three of those seven differ by nothing but those four
+characters. Where the log message is a full sentence, the column is usually
+that sentence with a trailing clause cut off: the log says "the download does
+not match the length the provider stated; leaving the partial download in
+place" and the column says everything before the semicolon. The other eleven
+diverge because the log there follows the short-verb-phrase convention with
+the detail in structured fields (`slog.Error("write download",
+"consumer_pid", …)`), which a column with no fields cannot use.
+
+Two consequences follow, and they are why the measurement is here rather than
+a claim of unrelatedness. Adjacent exits carry near-identical prose, so a
+copy-paste between them would read as correct and is the likeliest way one of
+these sentences goes wrong — anyone editing them should diff neighbours
+rather than read each alone. And the prefix relationship is a convention, not
+a mechanism: nothing checks it, so an edit to a log message silently stops
+the pair matching, which is a drift a reader should expect rather than be
+surprised by.
+
+The one place a string is genuinely shared has nothing to do with the log.
+`errConnectorShuttingDown` is a single `errors.New` value used in two roles —
+the cause `NewRouter` attaches to its cancellation, and the reason recorded
+on the row when a pull reads that cause back — so those two cannot drift
+apart. It is *not* shared with the `slog` message at either of its two exits:
+at one the log reads "the connector shut down before the data endpoint
+responded", and at the other the log is that sentence plus "; leaving the
+partial download in place".
 
 **34.3 Shutdown cancels in-flight pulls, and then waits for them.** §33.6
 promised this re-examination and this is it. That section sized a five-second
@@ -2299,8 +2335,8 @@ stated in the trade-off below rather than left to be discovered.
 **34.4 `GET /transfers` is read-only, lists both roles, and sits behind the
 management token.** It exists for the reason `GET /agreements` exists, stated
 in that route's own doc comment: an operator otherwise has no way to see what
-happened. §25.3 drew a boundary — the management API "is not the beginning of
-a general management CRUD surface" — and this route is inside it, because
+happened. §25.3 drew a boundary — "this is not the start of a general
+management CRUD surface" — and this route is inside it, because
 that boundary is about *writing*. A surface that creates, updates, and
 deletes is what invites a general CRUD API; a second read route is the same
 principle applied a second time, not the boundary moving.
@@ -2345,7 +2381,7 @@ the current version *of*. A table here would be an audit store, with
 retention, growth, and a query surface of its own, which is a larger decision
 than this milestone should make on its way past.
 
-*Trade-off accepted.* Four.
+*Trade-off accepted.* Five.
 
 **Five seconds can still lose an outcome, and cancellation narrows that
 without closing it.** A cancelled pull's own unwind — `body.Stop`,
@@ -2373,6 +2409,19 @@ that outgrows one response is a problem worth having first. There is no
 delete path (§25.3), so this list only ever grows, and the connector that
 runs long enough to find that out will find it out as a large response body
 rather than as a slow query.
+
+**A failed outcome write leaves the row describing the previous attempt —
+the exact hazard 34.1 argues against, reached by a different road.** The
+deferred recorder logs `record pull outcome` and returns when
+`RecordConsumerTransferOutcome` errors, because there is nothing else it can
+do: it is the last act of a goroutine with no caller to report to, and
+retrying against a store that just failed is a loop rather than a recovery.
+So a store error at that moment produces precisely the outcome 34.1's single
+write site exists to prevent — a row that reads as current and describes an
+attempt that is over. The difference is that this one is *logged*, where a
+missed exit would be silent, and it needs the database to fail rather than a
+programmer to forget. Accepted on that basis rather than solved, and stated
+here because 34.1 reads as though the hazard were closed outright.
 
 **The audit line is a log, not a queryable record.** It is subject to
 whatever retention the operator's log stack has, which this connector neither

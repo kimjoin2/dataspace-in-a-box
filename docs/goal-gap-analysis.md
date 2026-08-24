@@ -63,6 +63,36 @@ one place it is not.
 
 ### P2. It moves the right bytes, and keeps no record that it did
 
+> **Superseded in part, 2026-08-24.** Seven of this section's findings are no
+> longer true of the code, and `README.md` now links here from a paragraph
+> that says the opposite — so this notice is the correction rather than a
+> reader's own re-run. **Four were closed by the data-path correctness
+> milestone (`DECISIONS.md` §33, "Plan A")**: the pull no longer goes through
+> `callbackHTTPClient` or inherits its ten-second timeout (it has its own
+> client, `dataPullHTTPClient`, bounded by progress rather than elapsed
+> time — §33.1, §33.3); an expected size *is* recorded and compared
+> (`expected_bytes`, §33.5); the download is `Sync`ed before the rename; and
+> something is written to the database on every pull. **Three more were
+> closed by the recording-and-exposure milestone (§34)**: the management API
+> has four routes, not three, the fourth being `GET /transfers`, which is
+> exactly the "no way to ask whether data arrived" this section names; a
+> failed pull and a successful one are now distinguishable in storage
+> (`data_completed_at` and `data_error`, §34.1); and `handleData`'s success
+> path logs the identity it served (§34.5).
+>
+> **The `file:line` citations below have rotted with the text.**
+> `transfer_consumer_handler.go:334` now lands inside `parseContentRange`,
+> and `callback.go:26` still points at a real ten-second timeout that the
+> data path no longer uses. Treat every line number in this section as
+> unverified.
+>
+> **What survives, and is still the point of this section:** size has no
+> measurement — `make demo` moves kilobytes and the TCK moves none — and
+> there is still no operator retry endpoint. The "Done looks like" paragraph
+> at the end of this section is a fair statement of what is still missing on
+> the retry half. The prose below is left unedited so the measurement can be
+> audited against what was actually found.
+
 `make demo` moves a real file and diffs it, which the TCK never does. That
 evidence stands. What it does not cover is size.
 
@@ -278,8 +308,9 @@ promotion is what pushed three of the four promises out of the document.
    makes validating `providerId` unnecessary rather than difficult, deletes
    the `counterparty_id` asymmetry this repository says it must explain in
    seven places, and closes composition 1 structurally. It is also where
-   P4's "the management API has only three routes" turns out to be the same
-   work seen from the other side.
+   P4's "the management API has only three routes" — four since
+   `GET /transfers` landed — turns out to be the same work seen from the
+   other side.
 
 3. **The roster as a versioned, expiring artifact**, plus clock leeway.
    *Before* any onboarding document is written, or the document describes a
@@ -317,10 +348,14 @@ terms have since stopped holding.
 
 - **The management API has three routes, not four.**
   `GET /.well-known/dspace-version` is a DSP protocol endpoint on the public
-  listener, not a management route.
+  listener, not a management route. *(2026-08-24: three was right when
+  written and is now wrong for a different reason — `GET /transfers` made it
+  four real management routes. `DECISIONS.md` §34.4.)*
 - **The 30 second `WriteTimeout` is not a silent limit.** `cmd/dsbox/main.go`
   carries an explicit comment predicting exactly this. The silent one is the
-  consumer's ten seconds.
+  consumer's ten seconds. *(2026-08-24: the consumer's ten seconds is gone —
+  `DECISIONS.md` §33.1 replaced both bounds with one idle timeout. The
+  `WriteTimeout` stays, for the narrower reason §33.3 gives.)*
 - **"Restart required" is one decision, not several gaps.** Roster (§9),
   token rotation (§11), and dataset changes (§22.1) apply a single recorded
   principle. The roster's real defect is revocation, not the restart.
