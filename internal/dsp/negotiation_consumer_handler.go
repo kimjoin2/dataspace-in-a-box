@@ -58,17 +58,24 @@ func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Reques
 			"connectorAddress is not an address this connector will send to")
 		return
 	}
-	// Last of the validations, deliberately. Every branch here answers 400,
-	// so the order is invisible to a caller — but two sibling tests in the
-	// transfer hook assert only a status code, and a check that ran earlier
-	// would answer their requests first and leave them passing without
-	// testing their own rule.
+	// The roster check is the most general precondition here: the
+	// required-fields check and the address guard above are each about a
+	// specific fact this request must get right, while the roster check
+	// only asks whether providerId names a participant at all. It runs
+	// last, so a request with multiple mistakes is refused for its most
+	// specific one — pinned by
+	// TestHandleInitiateRefusesAnUnsendableAddressBeforeTheRosterCheck,
+	// which sends a request that fails both the roster check and the
+	// address guard and asserts the address guard's rejection is the one
+	// returned.
 	//
-	// Unlike validateOutgoingCallback's reason, this one is echoed. That
-	// silence exists because the address check reports what name resolution
-	// told this connector, which the caller did not know. This reports back
-	// a string the caller just sent, and an operator debugging a typo needs
-	// to see which name was refused.
+	// The rejected providerId is echoed in the response below.
+	// validateOutgoingCallback's rejection above is not: it reports what
+	// name resolution told this connector, information the caller does not
+	// already have, so echoing it would turn this endpoint into a
+	// name-resolution oracle. This check only repeats a string the caller
+	// already sent, so echoing it costs nothing and helps an operator
+	// debugging a typo see which name was refused.
 	if h.knownParticipant != nil && !h.knownParticipant(body.ProviderID) {
 		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
 			"providerId "+body.ProviderID+" is not a participant this connector's roster lists")

@@ -86,9 +86,19 @@ func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.R
 			"no agreement with id "+body.AgreementID)
 		return
 	}
-	// Last, for the reason handleInitiate's equivalent gives — and here it
-	// matters concretely: the agreement lookup above is pinned by a test
-	// that asserts only a status code.
+	// The roster check is the most general precondition here too: the
+	// required-fields check, the address guard, and the agreement lookup
+	// above are each about a specific fact this request must get right,
+	// while the roster check only asks whether providerId names a
+	// participant at all. It runs last, so a request with multiple mistakes
+	// is refused for its most specific one — pinned by
+	// TestTransferInitiateRefusesAnUnknownAgreementBeforeTheRosterCheck,
+	// which sends a request that fails both the roster check and the
+	// agreement lookup and asserts the agreement lookup's rejection is the
+	// one returned.
+	//
+	// The rejected providerId is echoed in the response below, for the same
+	// reason handleInitiate's equivalent check does.
 	if h.knownParticipant != nil && !h.knownParticipant(body.ProviderID) {
 		writeError(w, TransferErrorType, http.StatusBadRequest,
 			"providerId "+body.ProviderID+" is not a participant this connector's roster lists")

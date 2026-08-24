@@ -155,6 +155,30 @@ func TestTransferInitiateRefusesAnUnlistedProviderID(t *testing.T) {
 	}
 }
 
+// TestTransferInitiateRefusesAnUnknownAgreementBeforeTheRosterCheck pins the
+// ordering comment above the roster check in handleTransferInitiate: the
+// agreement lookup is a check about one specific fact (does this connector
+// hold that agreement), and the roster check is the more general one (is
+// providerId a participant at all), so a request that fails both must be
+// refused for the agreement, not the roster.
+func TestTransferInitiateRefusesAnUnknownAgreementBeforeTheRosterCheck(t *testing.T) {
+	h, _ := newTestTransferHandler(t, config.Config{})
+	// Not seeded, and the predicate is armed to refuse everyone — the
+	// agreement lookup above must be what actually answers this request.
+	h.knownParticipant = func(string) bool { return false }
+
+	rec := httptest.NewRecorder()
+	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
+		VersionPath+"/transfers/initiate", initiateBody(fullInitiateFields("http://provider.example/2025-1"))))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "no agreement with id") {
+		t.Errorf("refused for the wrong reason: %s", rec.Body.String())
+	}
+}
+
 func TestTransferRequestMessageShape(t *testing.T) {
 	msg := buildTransferRequestMessage(store.ConsumerTransfer{
 		ConsumerPID: "urn:uuid:c-1",

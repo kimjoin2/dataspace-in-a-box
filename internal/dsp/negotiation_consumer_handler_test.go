@@ -290,13 +290,53 @@ func TestHandleInitiateSkipsTheRosterCheckWhenItIsAbsent(t *testing.T) {
 		store: st,
 	}
 
+	// closedLoopbackURL, not a bare hostname: a 200 here launches
+	// go h.startNegotiation(n) against connectorAddress, and a hostname
+	// that has to be resolved costs a real DNS lookup whose ERROR line can
+	// surface inside a later, unrelated test's output — see that helper's
+	// doc comment in transfer_handler_test.go.
 	rec := httptest.NewRecorder()
-	body := `{"providerId":"anything at all","offerId":"o","datasetId":"d","connectorAddress":"http://provider:8080/2025-1"}`
+	body := `{"providerId":"anything at all","offerId":"o","datasetId":"d","connectorAddress":"` + closedLoopbackURL(t) + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/negotiations/initiate", strings.NewReader(body))
 	h.handleInitiate(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d — a nil predicate is the check being absent", rec.Code, http.StatusOK)
+	}
+}
+
+// TestHandleInitiateRefusesAnUnsendableAddressBeforeTheRosterCheck pins the
+// ordering comment above the roster check in handleInitiate: the address
+// guard is a check about one specific fact (is this address safe to send
+// to), and the roster check is the more general one (is providerId a
+// participant at all), so a request that fails both must be refused for the
+// address, not the roster. validateOutgoingCallback is deliberately not
+// stubbed here — this test needs the real guard to be the thing that fires.
+func TestHandleInitiateRefusesAnUnsendableAddressBeforeTheRosterCheck(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	h := negotiationHandler{
+		cfg:   config.Config{ParticipantID: testSelf, PublicURL: "http://consumer:8080"},
+		store: st,
+		// Armed to refuse every id, so the address guard above is the only
+		// thing that can be answering this request.
+		knownParticipant: func(string) bool { return false },
+	}
+
+	rec := httptest.NewRecorder()
+	body := `{"providerId":"urn:participant:stranger","offerId":"o","datasetId":"d","connectorAddress":"http://127.0.0.1:9999/2025-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/negotiations/initiate", strings.NewReader(body))
+	h.handleInitiate(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "connectorAddress is not an address") {
+		t.Errorf("refused for the wrong reason: %s", rec.Body.String())
 	}
 }
 
