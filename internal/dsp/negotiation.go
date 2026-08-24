@@ -535,11 +535,11 @@ type VerificationMessage struct {
 
 // buildConsumerRequestMessage is the initial ContractRequestMessage this
 // connector sends as consumer. datasetID and offerID are echoed verbatim
-// from what POST /negotiations/initiate received — never regenerated. The
-// TCK's own mock provider recovers datasetID from offerID via its own
-// "offer"+datasetID convention, a different shape from this connector's
-// own provider-role offerIDSuffix convention; conflating the two would
-// break the request the TCK's mock provider needs to parse.
+// from what the management listener's POST /negotiations/initiate received —
+// never regenerated. The TCK's own mock provider recovers datasetID from
+// offerID via its own "offer"+datasetID convention, a different shape from
+// this connector's own provider-role offerIDSuffix convention; conflating the
+// two would break the request the TCK's mock provider needs to parse.
 func buildConsumerRequestMessage(consumerPID, datasetID, offerID, callbackAddress string) ConsumerRequestMessage {
 	return ConsumerRequestMessage{
 		Context:         []string{ContextURL},

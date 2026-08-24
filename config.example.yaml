@@ -14,10 +14,14 @@ dsp_addr: 0.0.0.0:8080
 # a deliberate act, not an accident.
 mgmt_addr: 127.0.0.1:8081
 
-# The single bearer token the management API accepts. Optional. With no token
-# configured the management API refuses every authenticated request — absent
-# never means "no auth required". Minimum 16 characters.
-# DSBOX_MGMT_TOKEN overrides it.
+# The single bearer token the management API accepts. With no token configured
+# the management API refuses every authenticated request — absent never means
+# "no auth required". Minimum 16 characters. DSBOX_MGMT_TOKEN overrides it.
+#
+# It may be left empty, and that costs more than it reads as: the hooks that
+# ask this connector to start a negotiation or a transfer as consumer are on
+# this listener, so a connector with no token cannot start either
+# (DECISIONS.md section 35.1).
 mgmt_token: ""
 
 # Where the connector's SQLite database file lives, at {data_dir}/dsbox.db.
@@ -188,10 +192,10 @@ datasets:
     # simulate_interrupt_after_bytes: 2000
 
 # Optional. Configures this connector's autonomous behavior when it is
-# negotiating as consumer (POST /negotiations/initiate), keyed by the
-# dataset_id it itself requests. An unmatched dataset_id gets every field's
-# default: accept an offer, verify an agreement, wait indefinitely if
-# nothing arrives. Uncomment to try a non-default policy:
+# negotiating as consumer (POST /negotiations/initiate on the management
+# listener), keyed by the dataset_id it itself requests. An unmatched
+# dataset_id gets every field's default: accept an offer, verify an agreement,
+# wait indefinitely if nothing arrives. Uncomment to try a non-default policy:
 # consumer_policies:
 #   - dataset_id: urn:dataset:example
 #     on_offer: accept        # accept (default) | passive | reject | counter

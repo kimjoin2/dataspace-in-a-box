@@ -39,16 +39,16 @@ type transferInitiateBody struct {
 // blocking the response on a network call would make the hook's latency
 // depend on the counterparty.
 //
-// On the public listener, exactly like /negotiations/initiate and for the
-// reason that endpoint's doc comment gives: this is the TCK-shaped hook, not a
-// management feature. It is not exempt from authentication — §27 put every DSP
-// route but the version document behind a participant credential — so with
-// require_auth on it is reachable by any roster participant, and only with it
-// off by anyone. It still gets no ownership check of its own, and
-// DECISIONS.md section 32.3 records why: its caller is this connector's own
-// operator, and the only values there are to compare are ones nobody
-// verified. Until a real management trigger exists, it is also this
-// connector's only way to start a transfer as consumer.
+// On the management listener, exactly like /negotiations/initiate and for
+// the reason DECISIONS.md section 35.1 gives: asking this connector to start
+// an exchange is an operator action, and this connector already had a
+// listener for those. So its caller is the operator rather than any roster
+// participant, and its providerId must name a participant this connector's
+// roster lists (section 35.2) — which is what turns the counterparty it
+// records into something an inbound message can be authorized against
+// (section 35.3). It is this connector's only way to start a transfer as
+// consumer, and it is now the management trigger rather than a stand-in for
+// one.
 func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.Request) {
 	var body transferInitiateBody
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes))
@@ -62,10 +62,12 @@ func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.R
 		return
 	}
 	// The rejection reason is logged, not echoed — validateOutgoingCallback
-	// reports which address a hostname resolved to, and this endpoint is
-	// reachable by any roster participant (by anyone with require_auth off),
-	// so returning that text would make it a name-resolution oracle for the
-	// network this connector sits on.
+	// reports which address a hostname resolved to, a fact this connector
+	// learned and the caller did not supply, so returning that text would
+	// make it a name-resolution oracle for the network this connector sits
+	// on. That is about what the connector discloses rather than about who is
+	// asking, so moving this hook to the management listener does not relax
+	// it; handleInitiate's equivalent comment says the same.
 	if err := validateOutgoingCallback(body.ConnectorAddress); err != nil {
 		slog.Warn("reject transfer initiate", "connector_address", body.ConnectorAddress, "error", err)
 		writeError(w, TransferErrorType, http.StatusBadRequest,

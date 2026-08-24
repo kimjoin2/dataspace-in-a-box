@@ -53,11 +53,19 @@ type Config struct {
 	MgmtAddr string `yaml:"mgmt_addr"`
 
 	// MgmtToken is the single static bearer token the management API accepts
-	// (DECISIONS.md section 11). Optional, and absent means the management
-	// API refuses every authenticated request rather than allowing them: a
-	// missing token must never read as "no auth required", or the localhost
-	// default becomes an open write endpoint the moment mgmt_addr changes.
-	// /health is unauthenticated either way.
+	// (DECISIONS.md section 11). Absent means the management API refuses
+	// every authenticated request rather than allowing them: a missing token
+	// must never read as "no auth required", or the localhost default becomes
+	// an open write endpoint the moment mgmt_addr changes. /health is
+	// unauthenticated either way.
+	//
+	// It is still permitted to be absent, but that is no longer the cheap
+	// choice it reads as. The hooks that ask this connector to start a
+	// negotiation or a transfer as consumer are on this listener (DECISIONS.md
+	// section 35.1), so a connector with no token has no way to start either.
+	// What an absent token switched off used to be an agreement import and
+	// two read routes; it now includes this connector's only way to act as
+	// consumer at all.
 	MgmtToken string `yaml:"mgmt_token"`
 
 	// DataDir is where the connector's SQLite database file lives, at
@@ -81,10 +89,10 @@ type Config struct {
 
 	// ConsumerPolicies configures this connector's autonomous behavior when
 	// it is negotiating as consumer, keyed by the dataset_id this connector
-	// itself requests via POST /negotiations/initiate. A dataset_id with no
-	// matching entry gets every field's default (accept, verify, wait) —
-	// see the design spec's "Why a policy configuration, not a content
-	// rule".
+	// itself requests via the management listener's
+	// POST /negotiations/initiate. A dataset_id with no matching entry gets
+	// every field's default (accept, verify, wait) — see the design spec's
+	// "Why a policy configuration, not a content rule".
 	ConsumerPolicies []ConsumerPolicy `yaml:"consumer_policies"`
 
 	// TransferPolicies configures this connector's autonomous behavior as

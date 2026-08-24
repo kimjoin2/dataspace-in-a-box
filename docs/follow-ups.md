@@ -175,56 +175,26 @@ accepted* records the same conclusion from the other side.
 
 The policy cross-check's three entries are gone: `DECISIONS.md` §32 closed
 them, and the three stale claims recorded alongside them are corrected in
-place. What follows is what §32 did not close — the two consequences §32.3
-defers, and the part of the third cross-check entry whose reasoning is worth
+place. The two consequences §32.3 deferred are gone too — the initiate-hook
+milestone closed both, and `DECISIONS.md` §35 is where they are answered. What
+survives is the part of the third cross-check entry whose reasoning is worth
 more than the finding was.
-
-**A caller-chosen `providerId` becomes the audience of a credential this
-connector signs.** `POST /negotiations/initiate` and `POST /transfers/initiate`
-both take `providerId` out of the request body, record it as the exchange's
-counterparty, and hand it to `mintOutboundCredential` as the audience of a
-token this connector signs — delivered to the `connectorAddress` the same
-caller chose. Neither value is checked against the roster. Both endpoints are on
-the public listener, so this is reachable today by any roster participant, and
-by anyone at all with `require_auth` off.
-
-That is an impersonation primitive against a third participant: name the victim
-as `providerId`, point `connectorAddress` at yourself, and collect a credential
-this connector signed naming that victim as its audience. It needs no
-agreement, no negotiation state, and no second request.
-
-**This is the highest-severity item in this file**, and higher than the entry
-below it, which ends in a database row rather than in a signed credential. It
-is recorded rather than fixed because the fix is not local. Validating
-`providerId` against the roster changes what an initiate call is *allowed to
-say*, which is a compatibility question of its own, and the TCK harness
-demonstrates the cost of getting it wrong: it authenticates as
-`urn:participant:tck` while hardcoding `TCK_PARTICIPANT` as the `providerId` it
-sends, so a roster check written the obvious way loses all fifteen `TP_C`
-results. §32.3 records the same fact from the other side — a row's counterparty
-is an authorization anchor only where this connector verified it. This belongs
-to the initiate-hook milestone `docs/milestone-sequence.md` now names.
-
-**The consumer role's inbound messages stay unauthorized.** `handleOffers` and
-`handleAgreement` resolve only through `GetConsumer`, and §32.3 leaves them
-deliberately unguarded for the reason above: the only counterparty a
-consumer-role row carries is that same unverified `providerId`, and comparing
-against it is not authorization. So a roster participant that learns one of this
-connector's consumer pids can still push an offer or an agreement into that
-negotiation — which is the intake half of the forged-row entry below, and the
-reason that entry's fix had to sit at consumption instead.
-
-Listed separately from the entry above because they are opposite harms with one
-cause: the first is damage this connector can be made to do to a third party,
-the second is damage done to this connector. Both close with the same verified
-`providerId` work, and neither closes without it.
 
 **A forged consumer-role agreement row survives, and four things follow from
 that.** §32.4 refuses to serve data as provider under an agreement this
 connector holds as consumer, which closes the byte exit completely — but it
 closes it at consumption, not at intake, so `handleAgreement` still writes the
 row. It cannot detect the forgery: the message is exactly what an honest
-provider sends in a negotiation the peer legitimately owns. What remains:
+provider sends in a negotiation the peer legitimately owns.
+
+**Who can write one narrowed with §35, and the rest of this entry should be
+read in that light.** `handleAgreement` now refuses a message whose verified
+issuer is not the row's counterparty (§35.3), and that counterparty can only
+be set by the operator, naming a participant the roster lists (§35.1, §35.2).
+So the writer is no longer any roster participant that learned one of this
+connector's consumer pids — it is the participant the operator asked this
+connector to negotiate with, which is why `SECURITY.md` describes it that way.
+What remains:
 
 - **Id squatting.** A row written first under an id its rightful owner meant to
   import makes that id permanently unimportable — `CreateAgreement` refuses
@@ -236,10 +206,17 @@ provider sends in a negotiation the peer legitimately owns. What remains:
   indistinguishable from a real one in `GET /agreements`, which is the only
   view an operator has. §32.5's `counterpartyId` helps for imports and
   negotiated agreements and not here: a forger's row names the forger honestly.
-- **`handleTransferInitiate`'s agreement gate is decorative.** It is satisfied
-  by an id the caller minted, so it is a sanity check rather than an
-  authorization decision — §32.3's deferred verified-`providerId` work is what
-  would change that.
+- **`handleTransferInitiate`'s agreement gate is still a sanity check, and
+  the work that was supposed to change that has landed.** This bullet used to
+  say the gate was decorative because it was satisfied by an id the caller
+  minted, and that the verified-`providerId` work §32.3 deferred was what
+  would change it. That work shipped in §35 and did not: the caller is now
+  the operator on the management listener rather than whoever wrote the row,
+  and the gate still asks only whether this connector holds an agreement with
+  that id, never whether the operator is entitled to it. It compares nothing
+  against the row's own `counterpartyId`. What would change it is the id-space
+  separation this entry's closing paragraph names, not anything §35 was
+  going to do.
 
 Closing these needs the consumer-role agreement id space separated from the
 provider-role one — a second table, or an `(agreement_id, origin)` key — which

@@ -58,7 +58,11 @@ Connectors now authenticate to each other. Every DSP endpoint except the
 version document requires a JWT signed EdDSA over Ed25519 by a participant in
 this connector's roster and addressed to it, and every call this connector
 makes carries one (DECISIONS.md sections 9 and 10). The suite above runs with
-that on; removing the harness's credential fails 63 of the 65.
+that on. Removing the harness's credential failed 63 of the 65 when that was
+measured, at the milestone that added the check — a figure this section does
+not re-measure and which no longer describes today's harness, because the same
+string is now both the credential the TCK presents and the connector's
+management token (DECISIONS.md section 35.4).
 
 And an authenticated caller is now held to the exchanges it is actually party
 to. That used to be one endpoint's check and is now a property of the
@@ -77,11 +81,10 @@ and that flag exists for the migration from anonymous to authenticated, which
 is the upgrade path this repository documents. Agreements negotiated before
 this work have the same empty owner; those are recoverable in principle and
 deliberately not recovered, because this connector has no update path by
-design. And messages arriving about this connector's *consumer-role* exchanges
-are still unchecked, because the only identity available for them is one an
-operator typed rather than one this connector verified — the same unverified
-value it then signs credentials against, which is the sharpest of the open
-items in `docs/follow-ups.md`.
+design. Messages arriving about this connector's *consumer-role* exchanges
+used to be exempt from all of this, because the only identity available for
+them was one an operator typed rather than one this connector verified. They
+are checked now, and the paragraph below is how.
 
 Two limits are worth stating plainly rather than leaving to be discovered.
 `did:web` resolution exists (`dsops resolve <did:web:...>`) but is not part
@@ -143,6 +146,22 @@ length, and the only backstop against one that dribbles slowly enough never
 to go idle. What still has no measurement is size: `make demo` moves kilobytes
 and the TCK moves no bytes, so nothing here proves how large a transfer this
 can actually carry.
+
+**Starting an exchange is an operator action, and only an operator can do
+it.** The hooks that tell this connector to negotiate or transfer as consumer
+used to sit on the public DSP listener, where any roster participant could
+call them — and each took the counterparty's name out of the request
+body, made it the audience of a credential this connector signs, and sent that
+credential to an address the same caller chose. Both now sit on the management
+listener behind its token, alongside `GET /agreements` and `GET /transfers`,
+and both refuse a `providerId` this connector's roster does not list. That is
+what turns the counterparty on a consumer-role exchange into an identity
+rather than a string, so a message arriving about one is checked against it
+the way a provider-role message already was. `DECISIONS.md` section 35 records
+it, including what it does not close: being in this connector's roster is not
+the same as being the participant at the address an initiate call names, so an
+operator who points one at the wrong connector still hands it a signed
+credential.
 
 **A transfer now leaves a record, and an operator can read it.**
 `GET /transfers` lists every transfer this connector holds in both roles,

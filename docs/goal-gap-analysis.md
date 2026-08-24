@@ -74,9 +74,9 @@ one place it is not.
 > (`expected_bytes`, §33.5); the download is `Sync`ed before the rename; and
 > something is written to the database on every pull. **Three more were
 > closed by the recording-and-exposure milestone (§34)**: the management API
-> has four routes, not three, the fourth being `GET /transfers`, which is
-> exactly the "no way to ask whether data arrived" this section names; a
-> failed pull and a successful one are now distinguishable in storage
+> gained `GET /transfers`, which is exactly the "no way to ask whether data
+> arrived" this section names; a failed pull and a successful one are now
+> distinguishable in storage
 > (`data_completed_at` and `data_error`, §34.1); and `handleData`'s success
 > path logs the identity it served (§34.5).
 >
@@ -232,9 +232,27 @@ is written down anywhere, which is the point: this repository's per-milestone
 honesty does not compose by itself.
 
 **1. The initiate hooks are a cross-connector authentication bypass, and §32
-does not blunt it.** §32.3 already names the vector — "an impersonation
-primitive against a third participant" — so the finding is not that it exists.
-The finding is what it composes with.
+does not blunt it.**
+
+> **Closed, 2026-08-24, `DECISIONS.md` §35.** This composition was right and
+> it was acted on. §35.1 moves both hooks to the management listener, which
+> removes the primitive rather than mitigating it: the composition needs an
+> untrusted caller to choose the audience, and after the move the only caller
+> is the operator. §35.2 additionally refuses a `providerId` the roster does
+> not list. Nothing about §28 or about rate limiting changed — what changed is
+> that neither is reachable through this any more. **What survives is the
+> narrower version §35.2 could not close**: being in the roster is not the
+> same as being the participant at `connectorAddress`, so an operator who
+> points an initiate call at the wrong connector still hands a signed
+> credential to whoever is there. The sequence that demonstrates it now begins
+> with the operator being wrong rather than with a request an outsider makes,
+> which is why `SECURITY.md` no longer names this as the sharpest item open.
+> Closing it means binding an address to a participant in the roster, which is
+> ordered item 3 below.
+
+§32.3 already names the vector — "an impersonation primitive against a third
+participant" — so the finding is not that it exists. The finding is what it
+composes with.
 
 `mintOutboundCredential` produces a token signed by this connector's real key
 with `aud` set to a caller-chosen `providerId`, and
@@ -257,10 +275,13 @@ declined replay defense, and an absence of rate limiting that is filed
 nowhere at all.
 
 **2. Tagging a release is a legal act, and doing it before the above is
-fixed is irreversible.** §16 records that tags start the FSL clock. A first
-tag cut today permanently records, as a released version, the item
-`docs/follow-ups.md` calls the highest-severity entry in the file. When this
-was first written nothing in the repository connected the release decision to
+fixed is irreversible.** *(2026-08-24: the specific entry this named is gone —
+`docs/follow-ups.md` deleted it when §35 closed it. The ordering constraint
+below is unaffected, because it is about the act of tagging rather than about
+which gap is open at the time.)* §16 records that tags start the FSL clock. A
+first tag cut today permanently records, as a released version, whatever
+`docs/follow-ups.md` and `SECURITY.md` still carry. When this was first
+written nothing in the repository connected the release decision to
 the security decision; `SECURITY.md` now does, and names the first tag as the
 point where publishing unfixed gaps stops being defensible. The ordering
 constraint below follows from that, and it is the reason the release item sits
@@ -296,7 +317,8 @@ promotion is what pushed three of the four promises out of the document.
    underneath its demo evidence.
 
 2. **The initiate hooks — but the question the sequence poses is the wrong
-   one.** `docs/milestone-sequence.md` frames the milestone as "what an
+   one.** *Done, 2026-08-24, `DECISIONS.md` §35.*
+   `docs/milestone-sequence.md` frames the milestone as "what an
    initiate call may name when the roster does not list it", and calls the
    TCK "worse than neutral" because a naive roster check loses 30 of 65
    results. That constraint dissolves: the harness reaches these hooks
@@ -308,9 +330,19 @@ promotion is what pushed three of the four promises out of the document.
    makes validating `providerId` unnecessary rather than difficult, deletes
    the `counterparty_id` asymmetry this repository says it must explain in
    seven places, and closes composition 1 structurally. It is also where
-   P4's "the management API has only three routes" — four since
-   `GET /transfers` landed — turns out to be the same work seen from the
-   other side.
+   P4's complaint about the size of the management API turns out to be the
+   same work seen from the other side.
+
+   **What the milestone did with this item.** It adopted the framing —
+   §35.1 moves both hooks to the management listener, and the asymmetry is
+   gone rather than better documented. It declined the conclusion: §35.2
+   validates `providerId` anyway, not because the move leaves the hole open
+   but because an unverifiable name accepted at initiate time surfaces
+   later as blanket refusals in someone else's subsystem. And the reason
+   the 30-of-65 constraint dissolved is not the one predicted here — the
+   harness's long-lived credential was necessary but not sufficient. What
+   removed the cost was correcting the harness's own participant identity
+   to the name it already sends (§35.4).
 
 3. **The roster as a versioned, expiring artifact**, plus clock leeway.
    *Before* any onboarding document is written, or the document describes a
@@ -346,11 +378,14 @@ terms have since stopped holding.
 
 ## Corrections to this analysis's first pass
 
-- **The management API has three routes, not four.**
+- **The management API has fewer routes than the first pass counted.**
   `GET /.well-known/dspace-version` is a DSP protocol endpoint on the public
-  listener, not a management route. *(2026-08-24: three was right when
-  written and is now wrong for a different reason — `GET /transfers` made it
-  four real management routes. `DECISIONS.md` §34.4.)*
+  listener, not a management route. *(2026-08-24: the number this bullet
+  once carried has been wrong twice — `GET /transfers` moved it once
+  (`DECISIONS.md` §34.4) and the initiate hooks moved it again (§35.5). The
+  count is removed rather than corrected a third time.
+  `internal/mgmt/router.go` is where the routes are, and it is the only thing
+  that cannot go stale.)*
 - **The 30 second `WriteTimeout` is not a silent limit.** `cmd/dsbox/main.go`
   carries an explicit comment predicting exactly this. The silent one is the
   consumer's ten seconds. *(2026-08-24: the consumer's ten seconds is gone —

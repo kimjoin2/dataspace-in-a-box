@@ -59,19 +59,28 @@ type ConsumerNegotiation struct {
 	// ProviderPID is empty until the initial request's synchronous response
 	// reveals it.
 	ProviderPID string
-	// ProviderBaseURL is the connectorAddress POST /negotiations/initiate
-	// supplied — every subsequent outbound call this connector makes as
-	// consumer for this negotiation is addressed relative to it.
+	// ProviderBaseURL is the connectorAddress the management listener's
+	// POST /negotiations/initiate supplied — every subsequent outbound call
+	// this connector makes as consumer for this negotiation is addressed
+	// relative to it.
 	ProviderBaseURL string
 	State           string
 	DatasetID       string
 	OfferID         string
-	// CounterpartyID is the participant this row is with, recorded so an
-	// outbound message can be addressed to them. Addressing only: it comes
-	// from the providerId of an operator's own initiate call, a string the
-	// caller chose rather than an identity this connector verified, so nothing
-	// authorizes an inbound request against it — DECISIONS.md section 32.3.
-	// Empty on rows written before authentication existed.
+	// CounterpartyID is the participant this row is with, and it is two
+	// things rather than one: the address an outbound message is sent to,
+	// and the anchor an inbound message about this negotiation is authorized
+	// against (auth_middleware.go's refuseIfNotParty). It comes from the
+	// providerId of an operator's own initiate call on the management
+	// listener, which with authentication on may only name a participant the
+	// roster lists — DECISIONS.md section 35.2, which is what makes the
+	// second of those two things possible. Section 32.3 recorded this field
+	// as addressing only, and that was true while any roster participant
+	// could choose it.
+	//
+	// Empty on rows written before authentication existed. With
+	// authentication on, an empty counterparty refuses every inbound message
+	// about this row rather than admitting anyone (section 35.3).
 	CounterpartyID string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -84,10 +93,10 @@ type ConsumerNegotiation struct {
 //
 // It is the single source of truth for "does this agreement exist" as both
 // roles of the transfer protocol ask it: the provider role refuses a
-// transfer citing an agreement with no row, and POST /transfers/initiate
-// refuses to start one as consumer for the same reason. That symmetry is why
-// the consumer role became the third writer rather than keeping a record of
-// its own — one table, one rule.
+// transfer citing an agreement with no row, and the management listener's
+// POST /transfers/initiate refuses to start one as consumer for the same
+// reason. That symmetry is why the consumer role became the third writer
+// rather than keeping a record of its own — one table, one rule.
 type Agreement struct {
 	AgreementID string
 	DatasetID   string
@@ -786,12 +795,20 @@ type ConsumerTransfer struct {
 	AgreementID     string
 	Format          string
 	State           string
-	// CounterpartyID is the participant this row is with, recorded so an
-	// outbound message can be addressed to them. Addressing only: it comes
-	// from the providerId of an operator's own initiate call, a string the
-	// caller chose rather than an identity this connector verified, so nothing
-	// authorizes an inbound request against it — DECISIONS.md section 32.3.
-	// Empty on rows written before authentication existed.
+	// CounterpartyID is the participant this row is with, and it is two
+	// things rather than one: the address an outbound message is sent to,
+	// and the anchor an inbound message about this transfer is authorized
+	// against (auth_middleware.go's refuseIfNotParty). It comes from the
+	// providerId of an operator's own initiate call on the management
+	// listener, which with authentication on may only name a participant the
+	// roster lists — DECISIONS.md section 35.2, which is what makes the
+	// second of those two things possible. Section 32.3 recorded this field
+	// as addressing only, and that was true while any roster participant
+	// could choose it.
+	//
+	// Empty on rows written before authentication existed. With
+	// authentication on, an empty counterparty refuses every inbound message
+	// about this row rather than admitting anyone (section 35.3).
 	CounterpartyID string
 	// ExpectedBytes is the complete length the counterparty stated for this
 	// transfer's data, recorded on the first attempt so a later one can tell

@@ -42,6 +42,18 @@ oversight:
   can reconstruct it — and stays open to any roster participant that knows its
   id. That residual is a known gap, not an expected consequence, and a report
   finding it worse than §32 describes is in scope.
+
+  **What the flag reaches got smaller**, and this bullet says so rather than
+  reading broader than it is. The hooks that ask this connector to start an
+  exchange as consumer are on the management listener behind `mgmt_token`
+  (`DECISIONS.md` §35.1), which `require_auth` does not touch — so turning
+  authentication off no longer opens them to anyone. What it still switches
+  off is every comparison on the DSP listener: `refuseIfNotParty` permits
+  while the flag is false, and the roster check on an initiate call is
+  *absent* rather than false, so a consumer-role row written during that
+  window carries a counterparty nobody verified. Turning the flag back on
+  refuses that exchange rather than trusting it, which is the safe direction
+  and is still worth knowing before flipping it.
 - **Constraints this connector refuses to evaluate.** Policy evaluation is
   deliberately limited to two shapes (`DECISIONS.md` §14). A constraint that
   is not enforced is rejected rather than ignored, which is the intended
@@ -50,11 +62,36 @@ oversight:
 ## Known unfixed issues are published, on purpose
 
 `docs/follow-ups.md` and `DECISIONS.md` describe unfixed security gaps in
-enough detail to act on, including the sharpest one currently open — the
-`initiate` hooks accept an unvalidated `providerId` and make it the audience
-of a credential this connector signs. `docs/goal-gap-analysis.md` records how
-that composes with the absence of replay defense (`DECISIONS.md` §28) and of
-rate limiting.
+enough detail to act on. **The sharpest one currently open is the forged
+consumer-role agreement row** `docs/follow-ups.md` records. The counterparty
+of a negotiation this connector's operator started chooses the agreement's
+`@id` verbatim and `handleAgreement` writes it down; `CreateAgreement` refuses
+duplicates and `DECISIONS.md` §25.3 guarantees no delete path, so that
+participant can permanently squat an id its rightful owner meant to import —
+and `GET /agreements`, the only audit view an operator has, cannot tell the
+row from a real one.
+
+It is sharpest for a narrow reason worth stating, because it is not the most
+alarming thing this file has ever named. It is the only item left that an
+outsider can trigger alone, with no mistake by the operator, using a message
+that is exactly what an honest counterparty sends. The alternatives are not
+that. `DECISIONS.md` §35.2 leaves a real gap — being in the roster is not the
+same as being the participant at `connectorAddress`, so an operator who points
+an initiate call at the wrong connector still hands a credential this
+connector signed to whoever is there — but the smallest sequence that
+demonstrates it begins with the operator being wrong rather than with a
+request anyone makes. And rate limiting is absent on the public listener,
+which costs this connector work rather than handing anyone anything that
+lasts; `docs/goal-gap-analysis.md` notes it is filed nowhere else.
+
+**What this section used to name is closed**, and saying so is part of the
+practice below. The `initiate` hooks accepting an unvalidated `providerId` and
+making it the audience of a credential this connector signs is fixed by
+`DECISIONS.md` §35 — the hooks moved to the management listener, so the
+composition `docs/goal-gap-analysis.md` built from that, the absence of replay
+defense (§28), and the absence of rate limiting no longer has an untrusted
+caller to start it. The item above ends in a database row, where that one
+ended in a signed credential handed to whoever asked for it.
 
 This is a deliberate trade-off and it deserves stating plainly rather than
 being left to be inferred:
@@ -77,7 +114,9 @@ being left to be inferred:
 `docs/follow-ups.md` is the maintained list — it carries the rule "delete an
 entry when it is fixed" — so check it first. `docs/goal-gap-analysis.md` is a
 dated measurement and says of itself that it goes stale. Whoever closes the
-initiate-hook gap should correct this section too.
+forged-row gap should correct this section too, the way §35 corrected it: name
+what is sharpest *after* the fix, and do not leave this section describing a
+gap that is shut.
 
 So: reporting something already described in those files tells the project
 nothing it does not know. Reporting something that is **not** in them, or

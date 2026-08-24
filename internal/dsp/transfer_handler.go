@@ -628,8 +628,8 @@ func (r resolvedTransfer) id() string {
 }
 
 // lookup resolves {id} to a stored transfer in either role, refuses a caller
-// that is not party to a provider-role one, and writes the appropriate error
-// response, returning ok=false in either case.
+// that is not party to it, and writes the appropriate error response,
+// returning ok=false in either case.
 //
 // The consumer table is tried first. That is this function's own order and not
 // a shared convention: the three negotiation handlers that dispatch on role —
@@ -650,9 +650,9 @@ func (r resolvedTransfer) id() string {
 //
 // {id} is a pid this connector generated itself — the provider pid it
 // returned in the acknowledgment to POST /transfers/request, or the consumer
-// pid it minted at POST /transfers/initiate — so an id in neither table
-// names a transfer that never existed, and 404 is the honest answer. It is
-// also the only 404 this protocol produces.
+// pid it minted at the management listener's POST /transfers/initiate — so an
+// id in neither table names a transfer that never existed, and 404 is the
+// honest answer. It is also the only 404 this protocol produces.
 func (h transferHandler) lookup(w http.ResponseWriter, r *http.Request) (resolvedTransfer, bool) {
 	id := r.PathValue("id")
 

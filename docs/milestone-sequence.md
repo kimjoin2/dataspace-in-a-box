@@ -20,18 +20,27 @@ paragraph above — order by *what can still verify the work* — is the general
 one, and it does reach those axes. `docs/goal-gap-analysis.md` measures all
 four promises against the goal and proposes an order across them.
 
-**It also disputes this document, and not only its coverage.** That document's
-second item argues the next milestone below is framed around the wrong
-question — that before asking what an initiate call may name, the question is
-which listener it belongs on, because moving those hooks to the management
-listener makes validating `providerId` unnecessary rather than difficult.
-Read it before starting the milestone, not after. Nothing here has been
-rewritten to match, because the two arguments should be settled by whoever
-starts the work rather than by whoever noticed the conflict.
+**It also disputed this document, and not only its coverage.** That document's
+second item argued the milestone below was framed around the wrong question —
+that before asking what an initiate call may name, the question is which
+listener it belongs on, because moving those hooks to the management listener
+makes validating `providerId` unnecessary rather than difficult.
+
+**Settled by whoever started the work, which is how this note said it should
+go.** `DECISIONS.md` §35.1 adopts the gap analysis's framing: the prior
+question is which listener, and moving the hooks there is what removes the
+impersonation primitive rather than mitigating it. It does not follow the gap
+analysis to its conclusion — §35.2 validates `providerId` anyway, on a
+diagnostic argument rather than a security one, so that an operator who names
+a participant this connector cannot verify is refused at the point of the
+mistake instead of watching every later inbound message on that exchange be
+refused with a log line as the only clue. Nothing below has been rewritten to
+match; the entry in the next section records the outcome and the argument
+below is kept as it stood.
 
 ## What has been done since this was written
 
-**All four milestones below are complete, and three more shipped that this
+**All four milestones below are complete, and more have shipped that this
 document never listed.** That is the reason to correct it in place: the section
 after this one is still the argument that ordered the work, and it should not
 keep reading as the current plan.
@@ -77,7 +86,7 @@ single exempted test" below implies: the test was failing on a config gap
 unrelated to termination, and finding that meant decompiling the pinned image's
 own test methods (§29.2).
 
-Three more shipped that this document did not plan, listed because a sequence
+More shipped that this document did not plan, listed because a sequence
 document that omits shipped work stops being usable as one.
 
 **Roster signing and `did:web` resolution** (2026-08-20, `DECISIONS.md` §27).
@@ -119,11 +128,46 @@ The regression risk was concrete enough to specify before writing: a check
 placed on the wrong side of the transfer lookup's consumer branch compiles,
 reads correctly, and silently refuses all fifteen `TP_C` results.
 
-## What is next: authorizing the initiate hooks
+**Authorizing the initiate hooks** (2026-08-24, `DECISIONS.md` §35). The
+section below is this milestone, and it is done. Both hooks moved off the DSP
+listener onto the management listener, so their caller is the operator rather
+than any roster participant; an initiate call may only name a participant the
+roster lists; and `refuseIfNotParty` runs at every consumer-role resolver
+rather than at the provider-role ones alone, which is the half §32 recorded as
+deliberately open.
 
-> The framing of this section is disputed — see the note above and
-> `docs/goal-gap-analysis.md`'s second ordered item. What follows is the
-> argument as it stood before that dispute.
+**Its verification situation is the one this document could not predict, and
+the prediction it did make was wrong in a useful way.** The section below
+calls the TCK "worse than neutral" — a constraint on the design rather than
+evidence for it — because a roster check written the obvious way loses most of
+the consumer-role results. That cost was real, and it was never a property of
+roster validation: it was the price of the harness authenticating under one
+name while hardcoding another as the `providerId` it sends. Correcting the
+harness's own identity dissolves it, and `make tck` stays at 65 of 65 (§35.4).
+So this milestone is the first where the TCK turned out to be *better* than
+the forecast rather than worse.
+
+What the section below got right is the other half of that paragraph. Neither
+harness can show a refusal, so every refusal this milestone adds rests on unit
+tests — milestone 1's shape, arriving again. And the pass side is no longer
+green by accident: the harness now presents the identity it claims, and
+`test/tck/run.sh` reads the recorded counterparty back through the management
+API's `GET /transfers` and fails the run if the connector recorded anything
+other than the name the TCK sends.
+
+## The milestone that was next: authorizing the initiate hooks — done, `DECISIONS.md` §35
+
+> The framing of this section was disputed and is now settled — see the note
+> at the top of this document and `docs/goal-gap-analysis.md`'s second ordered
+> item. What follows is the argument as it stood before that dispute, kept as
+> written. Its closing instruction — settle, before starting, what an
+> initiate call may name when the roster does not list it — is answered
+> **nothing** (§35.2). Some of its other claims did not survive either: the
+> TCK is not "worse than neutral" (§35.4), and the `counterparty_id`
+> asymmetry it says must be explained in seven places is gone rather than
+> better documented, because a consumer-role counterparty now comes from an
+> authenticated operator and names a roster participant, so it means what a
+> provider-role one means.
 
 **Every milestone above reads done, and until this section this document had no
 forward entry at all** — which is the exact failure a sequencing document exists

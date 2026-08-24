@@ -16,8 +16,11 @@ import (
 
 // initiateRequestBody is the plain-JSON (not JSON-LD) body the TCK's own
 // negotiation.initiate.url hook POSTs to trigger this connector to start a
-// negotiation as consumer. Not a DSP protocol message — see the design
-// spec's "The initiate endpoint is not a management feature".
+// negotiation as consumer. Not a DSP protocol message: no @context and no
+// @type. The consumer negotiation design spec has a heading calling this
+// "not a management feature", and DECISIONS.md section 35.1 overturns it —
+// that was a true statement about what DSP standardises and a misleading one
+// about this connector, which serves this hook on the management listener.
 type initiateRequestBody struct {
 	ProviderID       string `json:"providerId"`
 	OfferID          string `json:"offerId"`
@@ -44,14 +47,14 @@ func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// The rejection reason is logged, not echoed. validateOutgoingCallback
-	// reports which address a hostname resolved to, and this endpoint is
-	// reachable by any roster participant — §24.2 called it "open to anonymous
-	// callers", which stopped being true at §27, when every DSP route but the
-	// version document went behind a participant credential; with require_auth
-	// off it is open to anyone. Either way, returning that text would make it
-	// a name-resolution oracle for the network this connector sits on. The
-	// provider role's equivalent rejection (pushAndStore) logs for the same
-	// reason.
+	// reports which address a hostname resolved to — a fact this connector
+	// learned and the caller did not supply — so returning that text would
+	// make this a name-resolution oracle for the network this connector sits
+	// on. That argument is about what the connector discloses rather than
+	// about who is asking, so it is unchanged by this hook moving to the
+	// management listener behind the operator's token (DECISIONS.md section
+	// 35.1). The provider role's equivalent rejection (pushAndStore) logs for
+	// the same reason.
 	if err := validateOutgoingCallback(body.ConnectorAddress); err != nil {
 		slog.Warn("reject initiate", "connector_address", body.ConnectorAddress, "error", err)
 		writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,

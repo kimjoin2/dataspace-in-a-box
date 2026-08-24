@@ -791,6 +791,20 @@ close what §23.11 predicted it would. What §32 does *not* change is this
 endpoint's lack of an ownership check of its own; §32.3 records why it gets
 none.
 
+**Corrected again by §35, in the two halves §32 left.** The listener in the
+headline above is no longer the right one: §35.1 moves this hook and its
+transfer twin off the DSP listener onto the management listener, behind the
+operator's token, and a roster participant reaching them now needs that token
+rather than a participant credential. And what §32 declined to change has
+changed — §35.2 refuses a `providerId` the roster does not list, and §35.3
+applies `refuseIfNotParty` at every consumer-role resolver, so what this
+endpoint records as a counterparty is an authorization anchor rather than a
+string a caller chose. The trade-off above goes with them: this is still the
+only way to start a negotiation as consumer, and it is now the management
+trigger rather than a stand-in for one, so "a real management-API trigger is
+deliberately not built" reads as what it is, a statement about a milestone
+that has since passed.
+
 **24.3 The initial outbound `ContractRequestMessage` is sent once, with no
 retry — the only outbound call in this connector that is not routed through
 `pushCallback`.** §23.7's retry schedule exists to survive a race on the
@@ -1822,6 +1836,20 @@ through `POST /negotiations/initiate` with no agreement at all. Nothing here
 creates it, and it is the sharpest reason the initiate hooks deserve a
 milestone of their own.
 
+**Both closed by §35** (2026-08-24), which is the milestone the paragraph
+above asks for. §35.2 validates `providerId` against the roster at initiate
+time; §35.1 moves both hooks to the management listener, which removes the
+impersonation primitive rather than narrowing it, because the primitive needs
+an untrusted caller. §35.3 then applies `refuseIfNotParty` at every
+consumer-role resolver — including ones this section's own list does not
+reach, and §35.3 records why finding them mattered.
+
+**The cost measured above did not have to be paid, and §35.4 records why.**
+The result count this section arrives at was never a property of roster
+validation. It was the price of the harness authenticating under one name
+while sending another, and correcting the harness's own identity is what
+dissolves it.
+
 **32.4 Serving data as provider under a consumer-role agreement is refused, and
 that is where the forging path closes.** A roster participant can initiate a
 negotiation naming itself as provider, read this connector's own consumer pid
@@ -2449,3 +2477,371 @@ knows nor configures — `main` writes JSON to stdout and stops there. An
 operator who needs to answer "who collected dataset X last quarter" needs a
 log pipeline; nothing in this repository provides one, and 34.5's reasoning
 for not building a table is also the reason that question has no answer here.
+
+## 35. The initiate hooks move to the operator's listener, and a consumer-role counterparty becomes an identity
+
+**Decision.** `POST /negotiations/initiate` and `POST /transfers/initiate` are
+removed from the DSP listener and mounted on the management listener, behind
+the same static token `/agreements` and `/transfers` already sit behind. Both
+refuse a `providerId` the roster does not list. With a consumer-role row's
+counterparty now supplied by an authenticated operator and constrained to a
+name this connector can verify a message from, `refuseIfNotParty` is applied
+at every resolver that reaches such a row from an inbound DSP request — which
+§32.3 recorded as deliberately unguarded, and which this section makes false
+on purpose. The TCK harness's own participant identity is corrected to the
+name it already sends. The design spec is
+`docs/superpowers/specs/2026-08-24-initiate-hook-authorization-design.md`.
+
+What it closes is what `docs/follow-ups.md` called its highest-severity entry
+and §32.3 called the sharpest reason these hooks deserved a milestone: a
+caller-chosen `providerId` becoming the audience of a credential this
+connector signs, delivered to a `connectorAddress` the same caller chose.
+Severity was high rather than critical for the reason §32 gives — there is no
+release, no tag, and no deployment known beyond this repository's own
+harnesses.
+
+**35.1 The hooks move to the management listener, and the prior question was
+which listener rather than what a call may name.**
+`docs/milestone-sequence.md` framed this milestone as *what an initiate call
+may name when the roster does not list it*. `docs/goal-gap-analysis.md`'s
+second ordered item disputed the framing: the prior question is who may call
+them at all — that is, which listener they belong on. The gap analysis is
+right about the framing and this section adopts it.
+
+An initiate call is not a DSP message. It carries no `@context`, no `@type`,
+and no `dspace:` anything; it is a plain JSON object saying "start an exchange
+on my behalf". `handleTransferInitiate`'s doc comment used to call it "the
+TCK-shaped hook, not a management feature", and §24.2's headline put it on the
+*public* listener for the same reason. That was a true statement about what
+the DSP specification standardises and a misleading one about this connector:
+whatever the specification declines to standardise, an endpoint that tells
+this connector to go negotiate with somebody is an operator action, and this
+connector already has a listener for operator actions.
+
+**Putting them there is not a mitigation of the impersonation primitive. It is
+its removal.** The primitive requires an untrusted caller, and after the move
+the only caller is an operator holding `mgmt_token`.
+
+The final path segments are kept and no `/2025-1` prefix is added, because the
+management listener carries no protocol version on any route. The verb is kept
+deliberately: §25.3 bounded this API with a rule rather than with code, and
+`initiate` is a trigger, which is easier to hold that line against than a
+resource-creating `POST /negotiations` would be.
+
+**The handlers stay in `internal/dsp` as code.** They are methods on
+unexported types using package-private machinery — `validateOutgoingCallback`,
+`writeError`, and the outbound clients that attach a minted credential — so
+they cannot move to `internal/mgmt`. Nothing needs exporting either: a method
+value on an unexported type is assignable to an exported `http.Handler` field.
+`dsp.NewRouter` returns them in `Routers.Initiate` and `cmd/dsbox` hands them
+to `mgmt.NewRouter`. Routing through `main` is a layering choice rather than
+cycle avoidance — nothing imports `internal/dsp` except `cmd/dsbox`, so `mgmt`
+could import it without a cycle — and the reason is that `main` already
+mediates the roster and the signing key, and `mgmt` having no opinion about
+the protocol package is worth keeping.
+
+**The old paths answer 405, not 404, and that is worth knowing.** Removing the
+two registrations leaves `POST /2025-1/negotiations/initiate` matching
+`GET /2025-1/negotiations/{id}` with `{id}` = `initiate`, so the mux answers
+405 with `Allow: GET, HEAD`; the transfer path behaves the same way. Measured
+against the real router rather than reasoned about. It matters because of how
+the TCK treats status codes: a 404 throws immediately, while any other non-2xx
+is retried with backoff first. A harness configuration left pointing at an old
+path therefore produces a slow, confusing failure rather than a fast one.
+Nothing is added to change that — it is recorded so whoever meets it
+recognises it.
+
+**A guard was lost and is replaced.** `auth_middleware_test.go` parses
+`router.go` as text and asserts every DSP route is behind authentication, and
+its assertions needed no editing: removing routes removes them from both sides
+of its comparison, so the two simply left its reach. The equivalent assertion
+on the management side is new. `internal/mgmt/route_coverage_test.go` parses
+both `mux.Handle` and `mux.HandleFunc` registrations — this listener uses both
+forms and the `Handle` form is precisely the one carrying the token, so a
+parser that saw one form would prove nothing about the other — and asserts
+that every route except `/health` refuses an unauthenticated request with 401
+and a `WWW-Authenticate` challenge. Further tests cover what that one cannot:
+that the new POST patterns and the existing `GET /transfers` do not shadow
+each other, and that each initiate route reaches the hook it belongs to, since
+`mgmt.NewRouter` takes them as positional `http.Handler` values and a swapped
+pair would compile.
+
+**35.2 `providerId` must name a roster participant, and the check reaches the
+handlers as a nil-able predicate.** Both hooks refuse with 400 a `providerId`
+the roster does not list. This answers the sequence document's question with
+**nothing**, on this repository's own rule — "never accept a constraint that
+is not enforced" — applied to identity: a name the roster does not carry is
+one this connector cannot authenticate a message from and cannot meaningfully
+address a credential to. After 35.1 the only caller who can be refused is the
+operator, who can read the error.
+
+**The gap analysis concluded this check would be unnecessary rather than
+difficult, and this section validates anyway.** The reason is diagnostic
+rather than security: after 35.1 the impersonation primitive is gone whether
+or not `providerId` is checked. What the check buys is that an operator who
+names a participant this connector cannot verify gets a 400 at the point of
+the mistake, instead of a successful initiate followed by every inbound
+message on that exchange refused by 35.3, with a log line as the only clue.
+
+**A predicate, not a roster, and that shape is load-bearing.** Neither handler
+struct carries a roster; the roster exists in `internal/dsp` only as a
+`NewRouter` parameter. Both structs gain `knownParticipant func(string) bool`,
+set from the roster when authentication is on and left nil when it is off,
+and each handler skips the check when it is nil. A `roster auth.Roster`
+field would compile, and every way it differs is a way it is worse.
+`auth.Roster`'s key map is unexported and `LoadRoster` is its only
+constructor, so a zero `auth.Roster` answers "not a participant" for every
+id — it fails **closed** where the default has to be open. The handler-struct
+literals in this package's tests leave new fields zero against a
+`config.Config{}` whose `AuthRequired()` is true by default, so gating on
+`AuthRequired()` would not have spared them either. A nil predicate is the
+check being *absent*, which is both the correct default and the same thing
+`NewRouter` already says about a disabled check: a disabled check is absent,
+not silently true. A test that
+wants the check would also have had to build a signed roster file on disk,
+where a closure is two lines. And a predicate needs no new exported API on
+`internal/auth`, whose only lookup returns a key rather than a boolean. A
+package-level variable armed in `NewRouter` — the shape
+`mintOutboundCredential` uses — was rejected because tests in this package run
+in parallel and CI runs with `-race`.
+
+**`NewRouter` returns from two places and both populate the handlers**, which
+`TestNewRouterReturnsInitiateHandlersWithAuthenticationOff` pins. Populating
+only the authenticated return would ship nil handlers in development mode that
+nothing catches: the management listener wraps them in `authenticated`, which
+is non-nil, so registration succeeds and the panic arrives at request time,
+after the token check passes, as a connection reset with no error document.
+The management route-coverage test would not catch it either, because a nil
+handler still answers 401 to an unauthenticated request, and neither harness
+runs with authentication off.
+
+**The check runs last**, after required fields, `validateOutgoingCallback`,
+and — in the transfer hook — the agreement lookup. That is a unit-test
+constraint rather than a protocol one: every branch involved answers 400, so
+no ordering changes anything the TCK sees. But existing tests asserted only a
+status code — one pinning that an unknown agreement is refused, another that
+an unsendable address is — and placed earlier, the roster check would answer
+their requests first and leave them testing nothing.
+`TestHandleInitiateRefusesAnUnsendableAddressBeforeTheRosterCheck` and
+`TestTransferInitiateRefusesAnUnknownAgreementBeforeTheRosterCheck` pin the
+ordering, and both older tests now assert the reason they are about so the
+next reordering cannot silently void them.
+
+**The refusal names the rejected `providerId`, and the endpoint's other
+refusal still does not.** `validateOutgoingCallback`'s reason is logged and
+never echoed because it reports which address a hostname resolved to, which
+would make the endpoint a name-resolution oracle for the network this
+connector sits on — an argument about what the *connector* learned and the
+caller did not. A roster refusal repeats a string the caller just sent and
+tells them one bit they could learn by trying any other name. There is nothing
+to disclose, and an operator debugging a typo needs to see which name was
+refused. The departure is deliberate, and both hooks carry a comment saying
+so, because otherwise it reads as an oversight.
+
+**35.3 Every consumer-role resolver carries `refuseIfNotParty`, and §32.3's
+account of them is short.** With 35.1 and 35.2 in place, a consumer-role row's
+`counterparty_id` is supplied by an authenticated operator and constrained to
+a roster participant — which is exactly what §32.3 said the comparison needed
+before it could mean anything. So `refuseIfNotParty`, unchanged, is applied at
+every point that resolves a consumer-role row from an inbound DSP request.
+Measured against the tree on 2026-08-24, those are `handleOffers`,
+`handleAgreement`, `handleConsumerFinalizedEvent`, and
+`handleConsumerTermination` in `negotiation_consumer_handler.go`,
+`handleGetNegotiation`'s consumer branch in `negotiation_handler.go`, and
+`transferHandler.lookup`'s consumer branch in `transfer_handler.go`. The error
+type is `ContractNegotiationErrorType` at the negotiation points and
+`TransferErrorType` at the transfer one, matching what each function already
+emits.
+
+**§32.3 accounts for `handleOffers`, `handleAgreement`, and the transfer
+lookup's consumer branch, and that is not the whole set.** The rest are
+reached by role dispatch rather than through a `lookup` helper: `handleEvent`
+and `handleTermination` each try the provider table, then the consumer table,
+and hand off to a consumer-role branch whose provider-role sibling *does*
+carry the check; `handleGetNegotiation` carries it on its provider branch and
+not on its consumer branch, in the same function. Every prior reading of this
+code missed them, including the first draft of this milestone's own design
+spec.
+
+**Guarding only the resolvers §32.3 names would have been worse than guarding
+none.** This section rewrites `refuseIfNotParty`'s doc comment to say a
+consumer-role counterparty is an authorization anchor. Had the
+dispatch-reached resolvers been left out, that sentence would have stood next
+to resolvers that did not compare against it, and a roster participant that is
+not the counterparty could still have read a consumer-role negotiation's
+state, finalized it, and terminated it, which the design spec measured on a
+throwaway copy with only the named resolvers guarded. The state before this
+milestone was safer than that, because there the asymmetry was documented
+where a reader met it.
+The rule is the one this milestone's spec states in its §7: the documentation
+must not claim a property the code does not have.
+
+**The placement in `transferHandler.lookup` is deliberate and its doc comment
+still says so.** `resolvedTransfer` carries `CounterpartyID` for consumer rows
+too, so a check written against the value that function returns — or hoisted
+above the branch split — would apply the provider-role comparison to consumer
+rows. That happens to be right after this section and would have been
+catastrophically wrong before it, which is why the warning is preserved in
+rewritten form rather than deleted along with the part that went obsolete.
+
+**No empty-counterparty clause, and the consequence is stated rather than
+discovered.** `counterparty_id` was added by
+`ALTER TABLE ... ADD COLUMN ... DEFAULT ''`, so consumer-role rows written
+before §27 carry an empty string, and `refuseIfNotParty` has no empty-stored
+clause. An empty counterparty means the row predates verification, and the
+safe direction for a row nobody can authorize is to refuse. So a deployment
+upgraded across this change refuses inbound messages on consumer-role
+exchanges that were in flight before the upgrade, and those exchanges have to
+be re-initiated. Testing it needed no migration fixture: the column appears in
+no `CREATE` literal for the consumer tables, so every fresh database runs that
+`ALTER` and a row's counterparty is empty simply by leaving the field unset
+(`TestHandleOffersRefusesARowWithNoCounterparty`).
+
+**A fixture accident is worth naming**, because the unit suite gives this
+change less coverage than a green run suggests. The consumer-role tests that
+were already there survive because their fixtures leave `CounterpartyID`
+empty, so the comparison is `"" == ""`. The dispatch-reached resolvers
+therefore needed tests written for them; nothing that existed would have
+caught their omission.
+
+**35.4 The harness's identity is corrected rather than worked around.**
+`test/tck/run.sh` minted the TCK's credential with `-iss urn:participant:tck`
+and wrote that id into the roster it generates, while the TCK hardcodes
+`TCK_PARTICIPANT` as the `providerId` in both initiate bodies — confirmed by
+disassembling the digest-pinned image, from the `ConstantValue` attribute on
+`DspConstants.TCK_PARTICIPANT_ID` and at every call site, where javac has
+inlined it. It is not configurable. The two names differed for no reason:
+`urn:participant:tck` was chosen by `run.sh`. Both roster heredocs and the
+mint now say `TCK_PARTICIPANT`, and they have to change together or the
+signature check fails and the connector refuses to start.
+
+**This is a fixture correction, not a harness bend**, and the same disassembly
+says so from several directions. The TCK verifies no inbound credential —
+every class that mentions `Authorization` does so on an outbound path, and the
+terminal inbound handler takes the request headers as a parameter and never
+reads them. It has no property naming its own participant id. And it already
+calls itself
+`TCK_PARTICIPANT` in message payloads, passing that constant to
+`createAgreement` as its own side of the agreement.
+
+**This is what dissolves the cost §32.3 measured** and
+`docs/milestone-sequence.md` repeated. That result count was never a property
+of roster validation. It was the price of one harness having two names, and
+correcting the harness's own identity is what removes it. The visible
+consequence is that agreements the *provider*-role negotiation suite
+concludes now carry `assignee: "TCK_PARTICIPANT"`, because the provider role
+fills
+`Assignee` from the verified issuer — safe on evidence already in this
+repository, since the exchange-authorization design records that suite passing
+with a bare UUID in that field, which is not even an IRI.
+
+**One credential has to satisfy both listeners.** The TCK registers
+`dataspacetck.dsp.connector.http.headers.authorization` as a process-wide
+static interceptor, and `HttpFunctions` is the only class in the runtime that
+constructs an HTTP client: both initiate clients call the four-argument
+`postJson`, which falls back to that interceptor, and no call site uses the
+overload that would override it. So the header does reach the moved routes,
+and the same value reaches every other endpoint — the TCK cannot express two
+credentials. `run.sh` therefore mints one credential before
+`docker compose up`, with a long `-ttl`, and passes it both as the TCK's
+authorization header and as the connector's `mgmt_token` through the existing
+`DSBOX_MGMT_TOKEN` override. `mgmt_token` is removed from
+`test/tck/dsbox.yaml` so a missing `compose.yaml` passthrough fails at the
+first seeded agreement with an explicit message, rather than silently and much
+later as a lost suite result.
+
+**And the counterparty the connector records is now observable in a run.** The
+initiate handlers log nothing on success and the container's database dies
+with it, so nothing in a passing run showed that `TCK_PARTICIPANT` was what
+got recorded — while a silent divergence would present as every consumer-role
+result failing on what reads like a protocol bug. `run.sh` reads it back
+through the management API's `GET /transfers` after the suite and fails the
+run if it is not what this section expects.
+
+**35.5 The management API takes on write routes, and this is the answer §34.4
+asked for.** §34.4 recorded that `GET /transfers` was admitted by the same
+narrowing §25.3 made when it admitted `GET /agreements` — that the boundary is
+about *writing* — and said whoever added the next route should be made to say
+why the management API is still small. This is that milestone.
+
+The answer: these routes are not new capability. An operator could already
+tell this connector to start a negotiation or a transfer as consumer. This
+section changes where that lives and who may use it, so the management API
+grows by nothing an operator could not already do — and what is new is that
+nobody else can do it. Measured by what an untrusted caller can reach, the
+connector's surface shrank.
+
+§25.3's rule stands unchanged: a later milestone wanting a general CRUD
+surface argues for it on its own merits. What is worth holding onto as
+precedent for whoever comes next is why these were admissible. They are
+triggers rather than resources — `initiate` is a verb, and the boundary is
+easier to hold against a verb than against a resource-creating
+`POST /negotiations`. And they arrived by *subtraction* from another listener
+rather than by addition; a route that cannot say the same is asking for
+something these did not ask for.
+
+**These routes answer with JSON-LD error documents while the rest of this
+listener answers plain text, and that is accepted rather than fixed.** The
+handlers keep this connector's negotiation and transfer error types, which are
+unprefixed for the reason `internal/dsp/transfer.go` records. Changing them
+would be churn with no reader — nothing consumes those bodies, and the TCK
+asserts only on the status code — so the inconsistency is recorded here as a
+decision instead of being tidied.
+
+*Trade-off accepted.* Stated rather than left to be discovered.
+
+**A roster participant is not necessarily the participant at
+`connectorAddress`.** 35.2 constrains the name an initiate call may give;
+nothing binds that name to the address the same call chooses. An operator who
+names a roster participant and points the address at a different connector
+still gets a row whose counterparty is wrong, and after 35.3 every inbound
+message on that exchange is refused with only a log line to explain it. This
+narrows the hole; it does not close it. Closing it means putting an address in
+the roster, which is a schema change to a signed artifact and belongs with the
+roster milestone `docs/goal-gap-analysis.md` puts next.
+
+**The harness stops demonstrating the five-minute credential lifetime §10
+set.** Nothing in the connector changes — `credentialTTL` is untouched, and
+the DSP listener still enforces expiry on every other request the suite makes.
+But `run.sh` now mints before `docker compose up`, because the same string has
+to be the connector's `mgmt_token` at startup, and the token has to outlive a
+cold image build and the pull of a digest-pinned image. So it is minted with a
+long `-ttl`, and what is lost is that the harness no longer exercises the
+value §10 chose.
+
+**The management token becomes a string the DSP listener also accepts.** In
+the harness, this connector's administrative secret is exactly the credential
+the TCK presents to the protocol listener. It is contained by the harness
+being a closed network with one counterparty, and it is an inversion of this
+section's own premise, so it is named here rather than left for someone to
+notice. `internal/mgmt`'s `authenticated` carries a comment saying what it is
+actually doing: comparing a shared secret with `subtle.ConstantTimeCompare`
+and never parsing it, so it keeps accepting that string after the credential
+inside it has expired.
+
+**The harness's roster identity is now a function of a constant in a
+digest-pinned upstream image.** If that pin moves and the constant changes,
+the failure presents as every consumer-role result failing on a refusal that
+reads like a protocol bug. The roster heredoc in `run.sh` carries a comment
+saying so. Accepted because the alternative is what §32.3 already paid for:
+one harness with two names.
+
+**`make demo` loses the only self-issued operator credential in either
+harness.** `demo/run.sh` used to mint a credential the consumer signed from
+itself to itself, purely to reach these hooks on its own DSP port. Those calls
+now go to the management port with the management token the script already
+used for `GET /agreements`, and the minting step and its explanatory comment
+block are deleted. That credential was the only place in either harness where
+a client this repository controls presents a participant credential to the DSP
+listener, and nothing in `make demo` exercises that shape any more.
+
+**An upgraded deployment's in-flight consumer-role exchanges stop working.**
+35.3. Accepted because there are no deployments, and because the alternative
+is a permit-on-empty clause that would outlive the reason for it.
+
+**Neither harness can show a refusal, so the refusal side is unit tests
+only.** This is the same situation §32 had, arriving again: `make tck` at 65
+of 65 and `make demo` are evidence that the pass side still works — and after
+35.4 the TCK result is a meaningful gate rather than a fixture accident,
+because the harness now presents the identity it claims. Everything this
+section refuses is covered by unit tests and by nothing else.
