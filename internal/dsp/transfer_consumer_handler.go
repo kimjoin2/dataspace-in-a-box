@@ -280,6 +280,18 @@ var dataPullHTTPClient = &http.Client{
 	},
 }
 
+// errConnectorShuttingDown is the reason a pull records when the connector's
+// context is cancelled out from under it, so an operator reading a
+// half-finished transfer sees why it stopped rather than a bare cancellation.
+//
+// Not a context cause, which is where it differs from errIdleTimeout: the
+// connector shuts pulls down through a plain context.CancelFunc, so what the
+// context actually carries is context.Canceled and this is the sentence that
+// stands in for it. It lives here rather than beside errIdleTimeout in
+// idle_reader.go for the same reason — that one belongs to the reader that
+// raises it, this one to the pull.
+var errConnectorShuttingDown = errors.New("the connector shut down while the pull was running")
+
 // downloadDir is where pulled bytes land, under the one directory this
 // connector already owns. A second configurable path would be a second thing
 // to get wrong, and this milestone gains nothing from it.
@@ -423,7 +435,17 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	// The cancel is what the idle reader below pulls to stop a body that has
 	// gone quiet: cancelling the request's context closes the connection
 	// underneath the read, and the cause says why for the log.
-	ctx, cancel := context.WithCancelCause(context.Background())
+	//
+	// The parent is the connector's lifetime, so shutdown ends this copy
+	// instead of leaving it to run the shutdown cap out and be abandoned
+	// before the deferred outcome write above ever runs. Background when
+	// there is no connector — the handler's field is nil in tests that do
+	// not exercise shutdown, and a nil parent would panic.
+	parent := h.pullCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, addr.Endpoint, nil)
@@ -452,6 +474,12 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			slog.Error("data endpoint sent no response within the idle timeout",
 				"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint)
 			outcome.fail("the data endpoint sent no response within the idle timeout")
+			return
+		}
+		if errors.Is(context.Cause(ctx), context.Canceled) || parent.Err() != nil {
+			slog.Warn("the connector shut down before the data endpoint responded",
+				"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint)
+			outcome.fail(errConnectorShuttingDown.Error())
 			return
 		}
 		slog.Error("data pull", "consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "error", err)
@@ -597,6 +625,12 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			slog.Error("data pull made no progress within the idle timeout; leaving the partial download in place",
 				"consumer_pid", t.ConsumerPID, "had_bytes", existingSize, "appended_bytes", n)
 			outcome.fail("the data pull made no progress within the idle timeout")
+			return
+		}
+		if errors.Is(context.Cause(ctx), context.Canceled) || parent.Err() != nil {
+			outcome.fail(errConnectorShuttingDown.Error())
+			slog.Warn("the connector shut down while the pull was running; leaving the partial download in place",
+				"consumer_pid", t.ConsumerPID, "had_bytes", existingSize, "appended_bytes", n)
 			return
 		}
 		slog.Error("write download", "consumer_pid", t.ConsumerPID, "error", err)

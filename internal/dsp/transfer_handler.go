@@ -1,6 +1,7 @@
 package dsp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,14 +81,20 @@ type transferHandler struct {
 	// pulls counts in-flight pullTransferData goroutines so the connector
 	// can wait for them at shutdown (DECISIONS.md section 33.6).
 	//
-	// What it protects is narrower than "a pull's store write": that write
-	// records expected_bytes and happens as soon as the response headers
-	// arrive, so only a pull caught between dispatch and its first response
-	// could land it after run()'s deferred st.Close(). Past that point the
-	// wait is holding the door for the copy and the rename, not for the
-	// store. It becomes last-act protection if a pull ever writes its
-	// outcome at the end.
+	// It is last-act protection now, which it was not when it was written: a
+	// pull records its outcome from a deferred write that runs after the
+	// copy, so a pull that never reaches that defer leaves the row still
+	// describing a previous attempt. The wait holds run()'s deferred
+	// st.Close() open for it. What makes the wait short enough to be worth
+	// bounding is pullCtx below — without the cancellation, a pull caught
+	// mid-copy runs the whole cap out and is abandoned unwritten anyway.
 	pulls *sync.WaitGroup
+	// pullCtx is the connector's lifetime. A pull derives its own cancellable
+	// context from this one, so shutdown can end an in-flight copy rather
+	// than wait out its cap and abandon it — which, now that a pull records
+	// its outcome after the copy, would lose exactly the row the wait exists
+	// to protect. Nil in tests that do not exercise shutdown.
+	pullCtx context.Context
 }
 
 // handleTransferRequest serves POST /transfers/request, the only entry point

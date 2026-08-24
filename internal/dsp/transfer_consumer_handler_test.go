@@ -2,6 +2,7 @@ package dsp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1305,7 +1306,10 @@ func TestShutdownWaitCoversAnInFlightPull(t *testing.T) {
 		DevMode:          true,
 		RequireAuth:      new(bool),
 	}
-	handler, pulls := NewRouter(cfg, st, auth.Roster{}, nil)
+	handler, pulls, cancelPulls := NewRouter(cfg, st, auth.Roster{}, nil)
+	// Not the subject here — this test is about the wait, and cancelling at
+	// the end only keeps the pull context from outliving the test.
+	t.Cleanup(cancelPulls)
 
 	id := seedConsumerTransferFor(t, st, TransferRequested, "urn:uuid:a-wait", "http://provider.example.org")
 
@@ -1524,4 +1528,143 @@ func TestPullRecordsItsOutcomeOnEveryPath(t *testing.T) {
 			t.Error("DataCompletedAt is set after a failure")
 		}
 	})
+}
+
+// TestCancellingPullsRecordsAnAbandonedOutcome pins the half of shutdown the
+// WaitGroup cannot cover. The wait holds the store open for a pull's outcome
+// write, but the write is the pull's last act, so a pull still copying when
+// shutdown starts reaches it only if something ends the copy. Cancelling the
+// connector's context is that something, and this test is what proves the
+// cancellation reaches the pull: the provider below sends headers and a few
+// bytes and then never sends the rest, so nothing but the cancellation can
+// end this copy — the idle timeout is set to a minute precisely so it cannot
+// be the thing that does.
+//
+// The assertions are what "abandoned" has to mean on the row: it says why it
+// stopped, it does not claim a completion it never reached, and its byte
+// count shows the cancellation landed mid-copy rather than in the header
+// wait — which is a different branch and has its own test below.
+func TestCancellingPullsRecordsAnAbandonedOutcome(t *testing.T) {
+	dir := t.TempDir()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	sent := strings.Repeat("c", 500)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sent))
+		w.(http.Flusher).Flush()
+		close(started)
+		<-release // never sends the rest
+	}))
+	defer func() { close(release); provider.Close() }()
+
+	// A generous idle timeout, so nothing but the cancellation can end this.
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: time.Minute})
+	ctx, cancel := context.WithCancel(context.Background())
+	h.pullCtx = ctx
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+
+	done := make(chan struct{})
+	go func() {
+		h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: provider.URL})
+		close(done)
+	}()
+
+	<-started
+	// Waiting for the provider's flush is not enough to be mid-copy: the
+	// client still has to read those headers, and cancelling the instant the
+	// handler flushes wins that race every time — measured 30 runs out of 30
+	// landing in the header wait instead. The partial file is the only
+	// signal from outside that io.Copy has actually run, so this waits for
+	// the bytes to be on disk before pulling the plug.
+	waitForFileSize(t, filepath.Join(dir, downloadDir, ".partial-"+pid), int64(len(sent)))
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling the connector context did not end the pull; shutdown would have to wait out its cap")
+	}
+
+	row, _, err := st.GetConsumerTransfer(pid)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !strings.Contains(row.DataError, "shut") {
+		t.Errorf("DataError = %q, want the sentence naming shutdown — an abandoned pull must say why", row.DataError)
+	}
+	if !row.DataCompletedAt.IsZero() {
+		t.Error("DataCompletedAt is set on a pull that was abandoned")
+	}
+	// Which branch recorded the reason, stated as a number. Without this the
+	// test passes on the header-wait branch too, and the mid-copy case — the
+	// one the whole cancellation exists for — goes unexercised.
+	if row.ReceivedBytes != int64(len(sent)) {
+		t.Errorf("ReceivedBytes = %d, want %d — the pull was not mid-copy when it was cancelled, so this test did not exercise the branch it is for",
+			row.ReceivedBytes, len(sent))
+	}
+}
+
+// TestCancellingAPullWaitingOnHeadersRecordsTheSameOutcome is the other half:
+// a pull cancelled before any response arrived. It reads the same to an
+// operator on purpose — a transfer that stopped because the connector went
+// down says so whether or not the counterparty had answered yet — and the
+// branch that makes it read that way is a separate one, in the Do error
+// handling rather than the copy's, which the test above cannot reach.
+func TestCancellingAPullWaitingOnHeadersRecordsTheSameOutcome(t *testing.T) {
+	dir := t.TempDir()
+	release := make(chan struct{})
+	reached := make(chan struct{})
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(reached)
+		<-release // never answers
+	}))
+	defer func() { close(release); provider.Close() }()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: time.Minute})
+	ctx, cancel := context.WithCancel(context.Background())
+	h.pullCtx = ctx
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+
+	done := make(chan struct{})
+	go func() {
+		h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: provider.URL})
+		close(done)
+	}()
+
+	<-reached
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling the connector context did not end a pull waiting on response headers")
+	}
+
+	row, _, err := st.GetConsumerTransfer(pid)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !strings.Contains(row.DataError, "shut") {
+		t.Errorf("DataError = %q, want the sentence naming shutdown", row.DataError)
+	}
+	if row.ReceivedBytes != 0 {
+		t.Errorf("ReceivedBytes = %d, want 0 — nothing had arrived, so this is not the branch under test", row.ReceivedBytes)
+	}
+}
+
+// waitForFileSize blocks until path is exactly size bytes long. waitForFile
+// cannot serve here: a pull's partial file appears before anything is copied
+// into it, so mere existence says nothing about whether the copy has begun.
+func waitForFileSize(t *testing.T, path string, size int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if info, err := os.Stat(path); err == nil && info.Size() == size {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%s never reached %d bytes", path, size)
 }

@@ -101,10 +101,11 @@ func run() error {
 	}
 	defer st.Close()
 
-	// pulls counts the data pulls the router has in flight. Waited on at
-	// shutdown, below, so a pull that has not yet recorded what it expects,
-	// or has not yet placed its file, gets the chance to.
-	dspHandler, pulls := dsp.NewRouter(cfg, st, roster, signKey)
+	// pulls counts the data pulls the router has in flight, and cancelPulls
+	// ends them. Both are used at shutdown, below, in that order: a pull
+	// records its outcome on the way out, so it has to be stopped before it
+	// can be waited for.
+	dspHandler, pulls, cancelPulls := dsp.NewRouter(cfg, st, roster, signKey)
 
 	// These timeouts bound how long a connection can sit idle at each phase,
 	// so a client that dribbles headers (or never sends any) cannot hold a
@@ -181,25 +182,25 @@ func run() error {
 	}
 	wg.Wait()
 
-	// In-flight pulls touch the store, so they have to finish before the
-	// deferred st.Close() above. What that protects is narrower than it may
-	// look, and DECISIONS.md section 33.6 has the detail: a pull records
-	// expected_bytes as soon as the response headers arrive — its first
-	// store act, not its last — so only a pull still waiting on that
-	// response could lose the write. Past it the wait is holding the door
-	// for the copy and the rename, and a pull writes nothing else. It
-	// becomes last-act protection if a pull ever records its outcome at the
-	// end.
+	// In-flight pulls write their outcome to the store when they finish, so
+	// they have to finish before the deferred st.Close() above. Cancelling
+	// first is what makes the cap below adequate: a cancelled pull stops
+	// copying at once and its deferred write lands immediately, where an
+	// uncancelled one would copy for as long as the counterparty kept
+	// dribbling, run the cap out, and lose the row. DECISIONS.md section
+	// 34.3 has the argument, and section 33.6 is where the cap was first set
+	// and flagged for exactly this re-examination.
 	//
-	// Bounded rather than indefinite: a pull still going after this is
-	// abandoned mid-copy, which is better than a connector that will not
-	// shut down while a counterparty keeps dribbling at it.
+	// Still bounded rather than indefinite. The cap is now a backstop for a
+	// pull stuck somewhere cancellation does not reach — a blocking syscall
+	// on the file it is writing — not the ordinary path.
+	cancelPulls()
 	pullsDone := make(chan struct{})
 	go func() { pulls.Wait(); close(pullsDone) }()
 	select {
 	case <-pullsDone:
 	case <-time.After(5 * time.Second):
-		slog.Warn("shutting down with data pulls still in flight; their downloads are abandoned and will restart from the partial file on the next start message")
+		slog.Warn("shutting down with data pulls still in flight; their outcome will not be recorded")
 	}
 	return err
 }
