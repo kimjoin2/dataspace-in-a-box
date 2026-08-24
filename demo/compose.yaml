@@ -1,7 +1,7 @@
 # Two connectors with distinct identities and one shared roster. They reach
-# each other by service name on this network, which is why neither needs a
-# published port for the protocol itself — only the management listeners are
-# published, and only so demo.sh can drive them.
+# each other by service name on this network, so nothing on the host has to
+# reach a DSP port for the demo to work; run.sh drives both connectors
+# through their management listeners alone.
 services:
   provider:
     build:
@@ -18,9 +18,16 @@ services:
       - ./generated/sample.csv:/etc/dsbox/data/sample.csv:ro
       - ./generated/sample-resume.csv:/etc/dsbox/data/sample-resume.csv:ro
     ports:
-      # Both listeners are published so run.sh can drive this connector from
-      # the host. The image is distroless — no shell, no wget — so there is no
-      # driving it from inside.
+      # The management listener is published because that is where run.sh
+      # drives a connector from — on this one only the readiness probe, since
+      # the exchange is driven from the consumer's side. The image is
+      # distroless — no shell, no wget — so there is no driving it from
+      # inside.
+      #
+      # The DSP listener is published as well, and nothing in run.sh reaches
+      # it: the connectors address each other by service name. It stays open
+      # so a reader can look at the protocol surface by hand — the version
+      # endpoint, a catalog request — while the demo runs.
       - "127.0.0.1:9180:8080"
       - "127.0.0.1:9181:8081"
 

@@ -34,8 +34,7 @@ func newRouterForTest(t *testing.T, cfg config.Config) http.Handler {
 	// every catalog assertion for no added coverage.
 	cfg.RequireAuth = new(bool)
 	cfg.DevMode = true
-	handler, _, _ := NewRouter(cfg, st, auth.Roster{}, nil)
-	return handler
+	return NewRouter(cfg, st, auth.Roster{}, nil).Protocol
 }
 
 func post(t *testing.T, cfg config.Config, body string) *httptest.ResponseRecorder {

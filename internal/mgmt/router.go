@@ -20,9 +20,11 @@ import (
 const maxAgreementBodyBytes = 4 << 10
 
 // NewRouter returns the handler for the management listener. It takes the
-// configuration for the bearer token and the store because importing an
-// agreement writes to it.
-func NewRouter(cfg config.Config, st *store.Store) http.Handler {
+// configuration for the bearer token, the store because importing an
+// agreement writes to it, and the initiate hooks as plain http.Handler
+// values: this package mounts them behind the operator's token and holds no
+// opinion about the protocol package they came from.
+func NewRouter(cfg config.Config, st *store.Store, negotiationInitiate, transferInitiate http.Handler) http.Handler {
 	mux := http.NewServeMux()
 
 	// /health is deliberately unauthenticated: it carries no information and
@@ -37,6 +39,17 @@ func NewRouter(cfg config.Config, st *store.Store) http.Handler {
 	mux.Handle("GET /agreements", authenticated(cfg.MgmtToken, http.HandlerFunc(h.listAgreements)))
 	mux.Handle("GET /transfers", authenticated(cfg.MgmtToken, http.HandlerFunc(h.listTransfers)))
 
+	// The hooks that ask this connector to start an exchange as consumer.
+	// They live in package dsp as code and here as routes: starting an
+	// exchange is an operator action, and before this they sat on the
+	// protocol listener where any roster participant could call them.
+	// DECISIONS.md section 35 has the argument.
+	//
+	// No /2025-1 prefix: this listener carries no protocol version on any
+	// route.
+	mux.Handle("POST /negotiations/initiate", authenticated(cfg.MgmtToken, negotiationInitiate))
+	mux.Handle("POST /transfers/initiate", authenticated(cfg.MgmtToken, transferInitiate))
+
 	return mux
 }
 
@@ -49,6 +62,13 @@ const bearerPrefix = "Bearer "
 // as "no auth required", or the localhost default becomes an open write
 // endpoint the moment mgmt_addr changes.
 func authenticated(token string, next http.Handler) http.Handler {
+	// This compares a shared secret; it does not verify a credential. The
+	// distinction matters because the TCK harness sets this token to a
+	// minted participant credential — one string has to satisfy this
+	// listener and the protocol listener, and the TCK can express only one
+	// Authorization value. A string that looks like a credential is still
+	// compared byte for byte here, so it keeps being accepted after the
+	// credential inside it has expired.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		presented, ok := cutBearerPrefix(r.Header.Get("Authorization"))
 		if token == "" || !ok || subtle.ConstantTimeCompare([]byte(presented), []byte(token)) != 1 {

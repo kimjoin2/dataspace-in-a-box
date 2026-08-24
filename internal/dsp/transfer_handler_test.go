@@ -1233,9 +1233,10 @@ func TestTransferLookupAllowsTheParty(t *testing.T) {
 }
 
 // A consumer-role row is compared like a provider-role one. Its counterparty
-// came from an initiate call that only accepts a participant the roster
-// lists, so it is an identity. Before that roster check existed this test
-// asserted the opposite, and the assertion was correct then.
+// came from an initiate call that only the operator can make and that only
+// accepts a participant the roster lists, so it is an identity. Before those
+// checks existed this test asserted the opposite, and the assertion was
+// correct then.
 func TestTransferLookupChecksConsumerRows(t *testing.T) {
 	t.Parallel()
 	st, err := store.Open(":memory:")

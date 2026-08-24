@@ -1417,10 +1417,11 @@ func TestShutdownWaitCoversAnInFlightPull(t *testing.T) {
 		DevMode:          true,
 		RequireAuth:      new(bool),
 	}
-	handler, pulls, cancelPulls := NewRouter(cfg, st, auth.Roster{}, nil)
+	routers := NewRouter(cfg, st, auth.Roster{}, nil)
+	handler, pulls := routers.Protocol, routers.Pulls
 	// Not the subject here — this test is about the wait, and cancelling at
 	// the end only keeps the pull context from outliving the test.
-	t.Cleanup(cancelPulls)
+	t.Cleanup(routers.CancelPulls)
 
 	id := seedConsumerTransferFor(t, st, TransferRequested, "urn:uuid:a-wait", "http://provider.example.org")
 

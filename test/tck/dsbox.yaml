@@ -12,10 +12,12 @@ dsp_addr: 0.0.0.0:8080
 # This is a test-only relaxation of the localhost default.
 mgmt_addr: 0.0.0.0:8081
 
-# The TCK harness imports its fixture agreements through the management API
-# before the suite runs (see run.sh). Any value at least 16 characters works;
-# this one is not a secret and never leaves the compose network.
-mgmt_token: tck-harness-token-0
+# mgmt_token is not set here. run.sh mints one credential and passes it in
+# through DSBOX_MGMT_TOKEN, because the TCK sends a single Authorization
+# value to every endpoint and some of them are now on this listener. Leaving
+# the key out is deliberate: an absent token rejects every authenticated
+# request, so a missing environment passthrough fails at the first seeded
+# agreement instead of silently, much later, as a suite result.
 
 # Negotiation state lives here. The harness container gets a fresh one on
 # every run: no compose volume is mounted for it, so it dies with the
@@ -33,10 +35,10 @@ participant_id: urn:participant:dsbox-test
 # TCK_PARTICIPANT with a credential run.sh mints for it.
 participant_key: /etc/dsbox/participant.key
 roster: /etc/dsbox/roster.json
-# roster_signer is not set here: unlike the two paths above, which are
-# always the same mount point, the signer is a fresh key every run — run.sh
-# passes its value through compose.yaml's environment instead
-# (DSBOX_ROSTER_SIGNER).
+# roster_signer is not set here: unlike the paths above, which are always the
+# same mount point, the signer is a fresh key every run — run.sh passes its
+# value through compose.yaml's environment instead (DSBOX_ROSTER_SIGNER), the
+# same route mgmt_token now takes.
 datasets:
   - id: urn:dataset:tck-catalog
   - id: urn:dataset:tck-request

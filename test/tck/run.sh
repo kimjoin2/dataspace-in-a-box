@@ -24,9 +24,8 @@ trap cleanup EXIT
 
 # Identities, before the connector starts: it loads the roster once at
 # startup, so both keys and the roster have to exist first. The TCK's
-# credential is minted later, after seeding — a cold image build here can take
-# minutes, and a token minted now would spend its five-minute life on the
-# build rather than on the suite.
+# credential is minted here too, just below the roster — see that block for
+# why it can no longer wait until after the build.
 #
 # Generated into a gitignored directory. No key material is ever committed,
 # and the harness makes its own rather than carrying a fixture.
@@ -76,6 +75,28 @@ cat >"$identity/roster.json" <<EOF
 EOF
 export DSBOX_ROSTER_SIGNER="$operator_pub"
 
+# Minted before the build, not after, because one string now has to satisfy
+# both listeners: the TCK registers a single Authorization value as a
+# process-wide interceptor and sends it everywhere, including to the initiate
+# hooks, which now live on the management listener. That listener compares it
+# against mgmt_token, so both have to be the same string.
+#
+# 30m rather than the five minutes DECISIONS.md section 10 sets for a real
+# credential: a cold image build plus the pull of the pinned TCK image now
+# sits inside this token's life. The connector's own credentialTTL is
+# unchanged; what is relaxed is only what this harness mints for itself.
+#
+# No stray whitespace around the value below. The listeners are not equally
+# forgiving: the protocol listener trims the credential after the scheme and
+# the management listener compares it byte for byte, so a trailing space
+# would pass one and 401 the other.
+token=$("$identity/dsops" token -key "$identity/tck.key" \
+	-iss TCK_PARTICIPANT -aud urn:participant:dsbox-test -ttl 30m)
+export DSBOX_MGMT_TOKEN="$token"
+cat "$dir/config.properties" >"$identity/config.properties"
+printf '\ndataspacetck.dsp.connector.http.headers.authorization=Bearer %s\n' \
+	"$token" >>"$identity/config.properties"
+
 $compose up -d --build dsbox
 # Recorded so the check after the TCK run can prove this is still the
 # container that gets seeded below. See that check for what it guards.
@@ -117,7 +138,7 @@ echo ' ready'
 seed_agreement() {
 	code=$(curl -s -o /dev/null -w '%{http_code}' \
 		-X POST http://127.0.0.1:8081/agreements \
-		-H 'Authorization: Bearer tck-harness-token-0' \
+		-H "Authorization: Bearer $token" \
 		-H 'Content-Type: application/json' \
 		-d "{\"agreementId\":\"$1\",\"datasetId\":\"urn:dataset:tck-transfer\"}") || true
 	if [ "$code" != "201" ]; then
@@ -146,17 +167,6 @@ seed_agreement urn:uuid:tck-tpc-02-02
 seed_agreement urn:uuid:tck-tpc-02-03
 seed_agreement urn:uuid:tck-tpc-02-05
 echo 'seeded 12 transfer agreements'
-
-# The TCK's credential, minted now that everything slow is behind us. It is a
-# static string for the whole run: DspSystemLauncher registers it as an
-# interceptor once and cannot refresh it. A suite takes about 54 seconds
-# against a five-minute life, so the margin is the build time this deliberately
-# sits after.
-token=$("$identity/dsops" token -key "$identity/tck.key" \
-	-iss TCK_PARTICIPANT -aud urn:participant:dsbox-test)
-cat "$dir/config.properties" >"$identity/config.properties"
-printf '\ndataspacetck.dsp.connector.http.headers.authorization=Bearer %s\n' \
-	"$token" >>"$identity/config.properties"
 
 # --use-aliases: `compose run` does not register the service's own name as a
 # network alias by default (only `up` does), so without this flag the

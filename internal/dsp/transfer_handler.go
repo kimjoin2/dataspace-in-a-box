@@ -642,10 +642,11 @@ func (r resolvedTransfer) id() string {
 // purpose. resolvedTransfer carries CounterpartyID for consumer rows too, so
 // a single comparison written against the value this function returns — or
 // hoisted above the branch split — would apply the provider-role rule to
-// consumer rows. That happens to be correct now, because an initiate call may
-// only name a participant the roster lists, but it was catastrophically wrong
-// before that roster check existed: it would have refused every consumer-role
-// transfer the TCK drives. The placement is deliberate, not incidental.
+// consumer rows. That happens to be correct now, because only the operator
+// can make an initiate call and it may only name a participant the roster
+// lists, but it was catastrophically wrong before those checks existed: it
+// would have refused every consumer-role transfer the TCK drives. The
+// placement is deliberate, not incidental.
 //
 // {id} is a pid this connector generated itself — the provider pid it
 // returned in the acknowledgment to POST /transfers/request, or the consumer

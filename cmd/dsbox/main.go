@@ -101,11 +101,15 @@ func run() error {
 	}
 	defer st.Close()
 
-	// pulls counts the data pulls the router has in flight, and cancelPulls
-	// ends them. Both are used at shutdown, below, in that order: a pull
-	// records its outcome on the way out, so it has to be stopped before it
-	// can be waited for.
-	dspHandler, pulls, cancelPulls := dsp.NewRouter(cfg, st, roster, signKey)
+	// routers.Pulls counts the data pulls the protocol router has in flight,
+	// and routers.CancelPulls ends them. Both are used at shutdown, below, in
+	// that order: a pull records its outcome on the way out, so it has to be
+	// stopped before it can be waited for.
+	//
+	// routers.Initiate is unpacked at the mgmt.NewRouter call below rather
+	// than passed whole, so internal/mgmt takes http.Handler values and never
+	// imports internal/dsp.
+	routers := dsp.NewRouter(cfg, st, roster, signKey)
 
 	// These timeouts bound how long a connection can sit idle at each phase,
 	// so a client that dribbles headers (or never sends any) cannot hold a
@@ -127,7 +131,7 @@ func run() error {
 	// connection.
 	dspSrv := &http.Server{
 		Addr:              cfg.DSPAddr,
-		Handler:           dspHandler,
+		Handler:           routers.Protocol,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -135,7 +139,7 @@ func run() error {
 	}
 	mgmtSrv := &http.Server{
 		Addr:              cfg.MgmtAddr,
-		Handler:           mgmt.NewRouter(cfg, st),
+		Handler:           mgmt.NewRouter(cfg, st, routers.Initiate.Negotiation, routers.Initiate.Transfer),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -184,7 +188,7 @@ func run() error {
 
 	// In-flight pulls write their outcome to the store when they finish, so
 	// they have to finish before the deferred st.Close() above.
-	if !drainPulls(cancelPulls, pulls, pullDrainBudget) {
+	if !drainPulls(routers.CancelPulls, routers.Pulls, pullDrainBudget) {
 		slog.Warn("shutting down with data pulls still in flight; their outcome will not be recorded")
 	}
 	return err

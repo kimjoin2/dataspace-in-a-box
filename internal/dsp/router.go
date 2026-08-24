@@ -13,26 +13,53 @@ import (
 	"github.com/kimjoin2/dataspace-in-a-box/internal/store"
 )
 
-// NewRouter returns the handler for the public DSP listener, the WaitGroup
-// counting the data pulls it has in flight, and the function that cancels
-// them. It takes the configuration because the catalog is served from it, and
-// the store because negotiation state is persisted there.
+// Routers is what NewRouter returns. It is a struct rather than a longer
+// return list because a flat list would hand a call site several
+// http.Handler values in a row with nothing to tell them apart by.
+type Routers struct {
+	// Protocol serves the DSP listener.
+	Protocol http.Handler
+	// Initiate holds the hooks that belong on the management listener: they
+	// ask this connector to start an exchange, which is an operator action,
+	// not a message from a counterparty. cmd/dsbox hands them to
+	// internal/mgmt, so that package needs no opinion about this one.
+	Initiate InitiateHandlers
+	// Pulls counts the data pulls the protocol handler has in flight, and
+	// CancelPulls ends them. The caller uses them in one order: cancel, then
+	// wait. DECISIONS.md section 34.3 has the argument.
+	Pulls       *sync.WaitGroup
+	CancelPulls context.CancelFunc
+}
+
+// InitiateHandlers carries the initiate hooks by name. They are handlers on
+// unexported types, which is fine: a method value is assignable to
+// http.Handler without exporting anything.
+type InitiateHandlers struct {
+	Negotiation http.Handler
+	Transfer    http.Handler
+}
+
+// NewRouter returns the handler for the public DSP listener, the initiate
+// hooks that belong on the management listener, the WaitGroup counting the
+// data pulls the protocol handler has in flight, and the function that
+// cancels them. It takes the configuration because the catalog is served
+// from it, and the store because negotiation state is persisted there.
 //
-// The last two are returned rather than kept inside because the thing that
-// uses them lives outside: a pull writes to the store on its way out, so the
-// caller has to hold the store open until every pull it started has
-// finished — and has to end those pulls first, or the wait is a wait for a
-// copy the counterparty controls the length of. Nothing else in this package
-// outlives a request.
+// The WaitGroup and the cancel are returned rather than kept inside because
+// the thing that uses them lives outside: a pull writes to the store on its
+// way out, so the caller has to hold the store open until every pull it
+// started has finished — and has to end those pulls first, or the wait is a
+// wait for a copy the counterparty controls the length of. Nothing else in
+// this package outlives a request.
 //
-// The two are one mechanism and the caller uses them in one order: cancel,
+// They are one mechanism and the caller uses them in one order: cancel,
 // then wait. DECISIONS.md section 34.3 has the argument.
 //
 // The cancel carries a cause rather than being a bare one, which is what
 // lets a pull tell a shutdown apart from every other reason its context
 // could end. The returned closure is still a context.CancelFunc — that type
 // is func() — so the caller holds one function and calls it once.
-func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey ed25519.PrivateKey) (http.Handler, *sync.WaitGroup, context.CancelFunc) {
+func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey ed25519.PrivateKey) Routers {
 	mux := http.NewServeMux()
 	pulls := &sync.WaitGroup{}
 	// The connector's lifetime, as every pull sees it. Cancelled by the
@@ -69,7 +96,13 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/agreement/verification", neg.handleVerification)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/termination", neg.handleTermination)
 	mux.HandleFunc("GET "+VersionPath+"/negotiations/{id}", neg.handleGetNegotiation)
-	mux.HandleFunc("POST "+VersionPath+"/negotiations/initiate", neg.handleInitiate)
+	// The initiate hooks are not registered here. They are operator actions
+	// and live on the management listener; NewRouter returns them so
+	// cmd/dsbox can mount them there. Note what the removal leaves behind: a
+	// POST to either old path now matches the GET route with a path
+	// parameter and answers 405, not 404. The TCK fails immediately on a 404
+	// and retries anything else, so a stale URL in its configuration
+	// produces the slow diagnosis rather than the fast one.
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/offers", neg.handleOffers)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/agreement", neg.handleAgreement)
 
@@ -78,7 +111,6 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	// negotiation routes above use.
 	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}, pulls: pulls, pullCtx: pullCtx, knownParticipant: knownParticipant}
 	mux.HandleFunc("POST "+VersionPath+"/transfers/request", tr.handleTransferRequest)
-	mux.HandleFunc("POST "+VersionPath+"/transfers/initiate", tr.handleTransferInitiate)
 
 	data := dataHandler{cfg: cfg, store: st}
 	mux.HandleFunc("GET "+VersionPath+"/data/{id}", data.handleData)
@@ -88,6 +120,15 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/suspension", tr.handleTransferSuspension)
 	mux.HandleFunc("POST "+VersionPath+"/transfers/{id}/termination", tr.handleTransferTermination)
 
+	// Built above the early return below, not inside the authenticated
+	// branch: with authentication off these still have to be non-nil, or the
+	// management listener registers a route whose handler panics the moment
+	// a caller gets past the token check.
+	initiate := InitiateHandlers{
+		Negotiation: http.HandlerFunc(neg.handleInitiate),
+		Transfer:    http.HandlerFunc(tr.handleTransferInitiate),
+	}
+
 	if !cfg.AuthRequired() {
 		// A disabled check is absent, not silently true. Installing a
 		// middleware that always passes would leave a reader unable to tell
@@ -95,7 +136,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 		outer := http.NewServeMux()
 		mountVersionEndpoint(outer)
 		outer.Handle("/", mux)
-		return outer, pulls, cancelPulls
+		return Routers{Protocol: outer, Initiate: initiate, Pulls: pulls, CancelPulls: cancelPulls}
 	}
 
 	// Outbound is armed here rather than in each client, so "authentication
@@ -126,7 +167,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	outer := http.NewServeMux()
 	mountVersionEndpoint(outer)
 	outer.Handle("/", requireParticipant(roster, cfg.ParticipantID, mux))
-	return outer, pulls, cancelPulls
+	return Routers{Protocol: outer, Initiate: initiate, Pulls: pulls, CancelPulls: cancelPulls}
 }
 
 // mountVersionEndpoint puts the version document on a mux, in two patterns.

@@ -92,21 +92,15 @@ wait_ready() {
 wait_ready 9181 provider
 wait_ready 9281 consumer
 
-# The initiate hooks are on the protocol listener and behind the same
-# credential as everything else there (see the connector authentication
-# design). An operator driving their own connector therefore presents a
-# self-issued one: signed by this connector's key, addressed to itself. It
-# verifies because the issuer is in the roster and the audience is this
-# connector, which is exactly what the middleware asks.
-operator=$("$gen/dsops" token -key "$gen/consumer.key" \
-	-iss urn:participant:consumer -aud urn:participant:consumer)
-
 echo "==> negotiate"
 # Driven from the host over the published ports: the image is distroless, so
-# there is no shell inside to drive it from. connectorAddress is the in-network
-# name, because that is the address the connectors use to reach each other.
-curl -sf -X POST http://127.0.0.1:9280/2025-1/negotiations/initiate \
-	-H "Authorization: Bearer $operator" \
+# there is no shell inside to drive it from. The initiate hooks are on the
+# consumer's management listener, so this is its management port and its
+# management token — asking a connector to start an exchange is an operator
+# action. connectorAddress is the in-network name, because that is the
+# address the connectors use to reach each other.
+curl -sf -X POST http://127.0.0.1:9281/negotiations/initiate \
+	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
 	-d '{"providerId":"urn:participant:provider","offerId":"urn:dataset:sample#offer","datasetId":"urn:dataset:sample","connectorAddress":"http://provider:8080/2025-1"}' \
 	>/dev/null
@@ -130,8 +124,8 @@ fi
 echo "    agreement $agreement"
 
 echo "==> transfer"
-curl -sf -X POST http://127.0.0.1:9280/2025-1/transfers/initiate \
-	-H "Authorization: Bearer $operator" \
+curl -sf -X POST http://127.0.0.1:9281/transfers/initiate \
+	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
 	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$agreement\",\"format\":\"HTTP-PULL\",\"connectorAddress\":\"http://provider:8080/2025-1\"}" \
 	>/dev/null
@@ -165,8 +159,8 @@ echo "  received: $downloaded"
 
 echo
 echo "==> negotiate (resume scenario)"
-curl -sf -X POST http://127.0.0.1:9280/2025-1/negotiations/initiate \
-	-H "Authorization: Bearer $operator" \
+curl -sf -X POST http://127.0.0.1:9281/negotiations/initiate \
+	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
 	-d '{"providerId":"urn:participant:provider","offerId":"urn:dataset:sample-resume#offer","datasetId":"urn:dataset:sample-resume","connectorAddress":"http://provider:8080/2025-1"}' \
 	>/dev/null
@@ -190,8 +184,8 @@ fi
 echo "    agreement $resume_agreement"
 
 echo "==> transfer (resume scenario)"
-curl -sf -X POST http://127.0.0.1:9280/2025-1/transfers/initiate \
-	-H "Authorization: Bearer $operator" \
+curl -sf -X POST http://127.0.0.1:9281/transfers/initiate \
+	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
 	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$resume_agreement\",\"format\":\"HTTP-PULL\",\"connectorAddress\":\"http://provider:8080/2025-1\"}" \
 	>/dev/null

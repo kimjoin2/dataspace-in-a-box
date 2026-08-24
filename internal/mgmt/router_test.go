@@ -16,6 +16,28 @@ import (
 
 const testToken = "0123456789abcdef"
 
+// stubInitiate stands in for one of the initiate hooks package dsp supplies,
+// answering with the name it was given.
+//
+// Non-nil on purpose: a nil handler compiles and is still wrapped by
+// authenticated, which is non-nil, so registration succeeds and the panic
+// waits until a caller gets past the token check. Named on purpose too:
+// NewRouter takes the hooks as positional http.Handler values, so a swapped
+// pair is invisible to the compiler and to every assertion that only reads a
+// status code.
+func stubInitiate(name string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(name))
+	})
+}
+
+// The names the stubs answer with, shared so the routing assertions in
+// route_coverage_test.go compare against the same strings wired in here.
+const (
+	negotiationHook = "negotiation-initiate"
+	transferHook    = "transfer-initiate"
+)
+
 func newTestRouter(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
 	st, err := store.Open(":memory:")
@@ -23,7 +45,8 @@ func newTestRouter(t *testing.T) (http.Handler, *store.Store) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return NewRouter(config.Config{MgmtToken: testToken}, st), st
+	return NewRouter(config.Config{MgmtToken: testToken}, st,
+		stubInitiate(negotiationHook), stubInitiate(transferHook)), st
 }
 
 // TestHealthReturnsOK sends no Authorization header, so it also pins that
@@ -184,7 +207,8 @@ func TestPostAgreementsIs401WhenNoTokenIsConfigured(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	h := NewRouter(config.Config{}, st) // no token configured
+	// no token configured
+	h := NewRouter(config.Config{}, st, stubInitiate(negotiationHook), stubInitiate(transferHook))
 	body := strings.NewReader(`{"agreementId":"urn:uuid:a-1","datasetId":"urn:dataset:a"}`)
 	req := httptest.NewRequest(http.MethodPost, "/agreements", body)
 	req.Header.Set("Authorization", "Bearer ")
@@ -237,7 +261,8 @@ func TestImportAgreementRecordsAnOptionalCounterparty(t *testing.T) {
 				t.Fatalf("store.Open: %v", err)
 			}
 			t.Cleanup(func() { st.Close() })
-			h := NewRouter(config.Config{MgmtToken: "t"}, st)
+			h := NewRouter(config.Config{MgmtToken: "t"}, st,
+				stubInitiate(negotiationHook), stubInitiate(transferHook))
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/agreements", strings.NewReader(tc.body))
 			req.Header.Set("Authorization", "Bearer t")

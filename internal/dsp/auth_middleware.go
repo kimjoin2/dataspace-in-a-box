@@ -83,12 +83,12 @@ func cutBearer(header string) (string, bool) {
 // stored is the participant this row's exchange is with. Provider-role rows
 // take it from the verified issuer of the request that created them.
 // Consumer-role rows take it from the providerId of an initiate call — which
-// is an authorization anchor because an initiate call may only name a
-// participant the roster lists, so the stored counterparty is a name this
-// connector can verify a message from. Before that roster check existed,
-// providerId was a string any caller could choose, which is why DECISIONS.md
-// section 32.3 recorded the consumer role's resolvers as deliberately
-// unguarded.
+// is an authorization anchor because only the operator can make an initiate
+// call, and it may only name a participant the roster lists, so the stored
+// counterparty is a name this connector can verify a message from and no
+// counterparty chose it. Before those checks existed, providerId was a
+// string any caller could choose, which is why DECISIONS.md section 32.3
+// recorded the consumer role's resolvers as deliberately unguarded.
 //
 // Every control-plane resolver that reaches a row of either role carries
 // this call — handleData resolves a transfer row too, but keeps its own
