@@ -119,7 +119,7 @@ worth doing when there is a real TCK run available to verify it against.
 **Two `dsbox` instances on `127.0.0.1` cannot negotiate with each other.**
 `dev_mode` (`internal/config/config.go:401-402`) relaxes only the `https`
 requirement on `public_url`; it does not reach `isDisallowedCallbackIP`
-(`internal/dsp/callback.go:175-178`), so `POST /negotiations/initiate` with
+(`internal/dsp/callback.go:192-195`), so `POST /negotiations/initiate` with
 `connectorAddress: http://127.0.0.1:8090` is rejected `400`. Pre-existing —
 §23.6 chose that guard's reach deliberately, and widening it is a design
 decision rather than a cleanup, which is why this is recorded and not fixed

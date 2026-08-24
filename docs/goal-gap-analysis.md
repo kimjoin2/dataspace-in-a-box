@@ -334,8 +334,18 @@ promotion is what pushed three of the four promises out of the document.
    same work seen from the other side.
 
    **What the milestone did with this item.** It adopted the framing —
-   §35.1 moves both hooks to the management listener, and the asymmetry is
-   gone rather than better documented. It declined the conclusion: §35.2
+   §35.1 moves both hooks to the management listener, and what went away is
+   the asymmetry in *authorization weight*: after §35.3 a consumer-role
+   counterparty is something an inbound message is compared against, which is
+   what a provider-role one already was. The asymmetry in **provenance**
+   remains, and is still explained on purpose in `refuseIfNotParty`
+   (`internal/dsp/auth_middleware.go`), both `CounterpartyID` doc comments in
+   `internal/store/store.go`, `transferHandler.lookup`'s placement warning
+   (`internal/dsp/transfer_handler.go`), and
+   `internal/dsp/transfer_consumer_handler.go` — a provider-role
+   counterparty is a verified issuer, a consumer-role one is an operator's
+   assertion, and §35.5 records that a roster name is not necessarily the
+   participant at `connectorAddress`. It declined the conclusion: §35.2
    validates `providerId` anyway, not because the move leaves the hole open
    but because an unverifiable name accepted at initiate time surfaces
    later as blanket refusals in someone else's subsystem. And the reason
@@ -378,7 +388,7 @@ terms have since stopped holding.
 
 ## Corrections to this analysis's first pass
 
-- **The management API has fewer routes than the first pass counted.**
+- **The first pass miscounted the management API's routes.**
   `GET /.well-known/dspace-version` is a DSP protocol endpoint on the public
   listener, not a management route. *(2026-08-24: the number this bullet
   once carried has been wrong twice — `GET /transfers` moved it once

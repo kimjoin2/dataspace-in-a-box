@@ -1894,6 +1894,18 @@ signature to carry a reason was not worth the ripple for a path only a
 pre-existing `transfer_processes` row can reach. What distinguishes the two
 `409`s is a log line written for that purpose.
 
+**Corrected by §35, in the opening sentence.** A roster participant cannot
+initiate a negotiation any more: §35.1 moved both initiate hooks off the DSP
+listener onto the management listener, so the first step of the path above now
+needs `mgmt_token` rather than a participant credential. The path is left as
+written because it is the argument for `servableAsProvider`, and the move does
+not retire that argument — an operator who initiates with a real roster
+participant leaves that participant able to post a `ContractAgreementMessage`
+back on the negotiation it legitimately owns, which `handleAgreement`
+(`internal/dsp/negotiation_consumer_handler.go`) records verbatim with
+`OriginAgreed`, and to cite the resulting row in a transfer request. Refusing
+that request is what this section is about, and it is unchanged.
+
 **32.5 A third column-add does not earn a migration tool.** §23.1 left that
 open — "a second schema change is what decides whether a real migration tool
 earns its place". The answer is no, and the way this column actually landed is
@@ -2564,7 +2576,13 @@ and a `WWW-Authenticate` challenge. Further tests cover what that one cannot:
 that the new POST patterns and the existing `GET /transfers` do not shadow
 each other, and that each initiate route reaches the hook it belongs to, since
 `mgmt.NewRouter` takes them as positional `http.Handler` values and a swapped
-pair would compile.
+pair would compile. `TestEachInitiateRouteReachesItsOwnHook` builds the router
+itself, so what it pins is the wiring **inside** `mgmt.NewRouter`;
+`cmd/dsbox/main.go` passes `routers.Initiate.Negotiation` and
+`routers.Initiate.Transfer` into that same call positionally, and a swap
+*there* is invisible to this package and to `cmd/dsbox`'s own tests —
+transposed on 2026-08-24 and `go test -count=1 ./...` stayed green, so only
+`make tck` and `make demo` cover it.
 
 **35.2 `providerId` must name a roster participant, and the check reaches the
 handlers as a nil-able predicate.** Both hooks refuse with 400 a `providerId`
@@ -2754,7 +2772,39 @@ with it, so nothing in a passing run showed that `TCK_PARTICIPANT` was what
 got recorded — while a silent divergence would present as every consumer-role
 result failing on what reads like a protocol bug. `run.sh` reads it back
 through the management API's `GET /transfers` after the suite and fails the
-run if it is not what this section expects.
+run unless a **consumer-role** row names `TCK_PARTICIPANT`.
+
+**The role anchor is what makes that check falsifiable, and the version this
+one replaces had none.** `GET /transfers` returns provider-role rows alongside
+consumer-role ones (`listTransfers` in `internal/mgmt/router.go`), and a
+provider-role counterparty comes from the verified issuer of the request that
+created the row — which in this harness is `TCK_PARTICIPANT` as well, because
+the credential above is minted with `-iss TCK_PARTICIPANT`. A response
+captured from a passing run on 2026-08-24 carries provider-role and
+consumer-role rows alike, every one of them naming `TCK_PARTICIPANT`. So a
+bare substring match on `"counterpartyId":"TCK_PARTICIPANT"` was satisfied by
+rows the check is not about, and stayed green in precisely the situation it
+was commissioned for: the pinned image's constant moving, §35.2 refusing every
+initiate call, and no consumer-role row written at all. Replaying that
+captured response with its consumer-role rows removed, the old pattern still
+matched and the current one does not.
+
+**The pattern anchors both fields inside one row.** It requires
+`"role":"consumer"` and `"counterpartyId":"TCK_PARTICIPANT"` separated by
+`[^}]*`. `transferView` declares `Role` ahead of `CounterpartyID` and nests no
+object, so between those two fields a row carries scalar fields only, and
+`[^}]*` cannot cross the brace that ends one.
+
+**It was proved to fail, which the version it replaces never was.** Rewriting
+`run.sh`'s roster heredocs to name something other than `TCK_PARTICIPANT`
+while leaving the mint's `-iss` alone makes §35.2 refuse every initiate call,
+so no consumer-role row is written. Run that way on 2026-08-24 the read-back
+reported the divergence and `make tck` stopped before the gate; run unmodified
+it printed its confirmation and the gate passed. That mutation costs the
+provider-role rows too — the roster no longer authenticates the TCK's inbound
+messages either — so it shows the check can fail without isolating the anchor.
+The captured-response replay above is what isolates the anchor, and together
+they are why this check is not another one that cannot fail.
 
 **35.5 The management API takes on write routes, and this is the answer §34.4
 asked for.** §34.4 recorded that `GET /transfers` was admitted by the same

@@ -207,13 +207,26 @@ if [ -z "$transfers" ]; then
 	echo "could not read back the transfers to confirm the recorded counterparty" >&2
 	exit 1
 fi
-case "$transfers" in
-	*'"counterpartyId":"TCK_PARTICIPANT"'*) ;;
-	*)
-		echo "the connector did not record TCK_PARTICIPANT as a counterparty; the harness identity and the providerId the TCK sends have diverged" >&2
-		exit 1
-		;;
-esac
+# Anchored on the role and the counterparty together, inside one row. This
+# response carries provider-role rows as well, and a provider-role
+# counterparty comes from the verified issuer of the request that created the
+# row — which in this harness is TCK_PARTICIPANT too, because the credential
+# above is minted with -iss TCK_PARTICIPANT, and the provider-role suites
+# accept transfer requests on every run. So matching the counterparty alone
+# was satisfied by rows this check is not about, and stayed green in exactly
+# the situation it exists to catch: the pinned image's constant moving, the
+# roster check refusing every initiate call, and no consumer-role row being
+# written at all.
+#
+# transferView in internal/mgmt/router.go declares Role ahead of
+# CounterpartyID and nests no object, so within a row the two are separated
+# by scalar fields only. [^}]* is what holds "within a row" together: it
+# cannot cross the brace that ends one.
+if ! printf '%s' "$transfers" |
+	grep -q '"role":"consumer"[^}]*"counterpartyId":"TCK_PARTICIPANT"'; then
+	echo "the connector recorded no consumer-role transfer whose counterparty is TCK_PARTICIPANT; the harness identity and the providerId the TCK sends have diverged" >&2
+	exit 1
+fi
 echo 'confirmed the recorded counterparty'
 
 echo "TCK output written to $output"

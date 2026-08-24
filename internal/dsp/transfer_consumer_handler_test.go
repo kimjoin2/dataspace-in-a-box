@@ -63,7 +63,7 @@ func TestTransferInitiateStartsAConsumerTransfer(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
-		VersionPath+"/transfers/initiate", initiateBody(fullInitiateFields(provider.URL))))
+		"/transfers/initiate", initiateBody(fullInitiateFields(provider.URL))))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body)
@@ -83,7 +83,7 @@ func TestTransferInitiateRejectsMissingFields(t *testing.T) {
 		}
 		rec := httptest.NewRecorder()
 		h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
-			VersionPath+"/transfers/initiate", initiateBody(partial)))
+			"/transfers/initiate", initiateBody(partial)))
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("without %s: got %d, want 400", missing, rec.Code)
 		}
@@ -101,7 +101,7 @@ func TestTransferInitiateRejectsAnUnknownAgreement(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
-		VersionPath+"/transfers/initiate", initiateBody(fields)))
+		"/transfers/initiate", initiateBody(fields)))
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400", rec.Code)
 	}
@@ -120,7 +120,7 @@ func TestTransferInitiateRejectsAnUnsendableAddress(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
-		VersionPath+"/transfers/initiate",
+		"/transfers/initiate",
 		initiateBody(fullInitiateFields("http://127.0.0.1:9999/2025-1"))))
 
 	if rec.Code != http.StatusBadRequest {
@@ -145,7 +145,7 @@ func TestTransferInitiateRefusesAnUnlistedProviderID(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
-		VersionPath+"/transfers/initiate", initiateBody(fields)))
+		"/transfers/initiate", initiateBody(fields)))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -169,7 +169,7 @@ func TestTransferInitiateRefusesAnUnknownAgreementBeforeTheRosterCheck(t *testin
 
 	rec := httptest.NewRecorder()
 	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
-		VersionPath+"/transfers/initiate", initiateBody(fullInitiateFields("http://provider.example/2025-1"))))
+		"/transfers/initiate", initiateBody(fullInitiateFields("http://provider.example/2025-1"))))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)

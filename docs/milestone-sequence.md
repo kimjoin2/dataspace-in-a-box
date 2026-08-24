@@ -132,10 +132,9 @@ reads correctly, and silently refuses all fifteen `TP_C` results.
 section below is this milestone, and it is done. Both hooks moved off the DSP
 listener onto the management listener, so their caller is the operator rather
 than any roster participant; an initiate call may only name a participant the
-roster lists, wherever authentication is on to consult a roster at all; and
-`refuseIfNotParty` runs at every consumer-role resolver
-rather than at the provider-role ones alone, which is the half §32 recorded as
-deliberately open.
+roster lists, wherever authentication is on, so there is a roster to consult;
+and `refuseIfNotParty` runs at every consumer-role resolver rather than at the
+provider-role ones alone, which is the half §32 recorded as deliberately open.
 
 **Its verification situation is the one this document could not predict, and
 the prediction it did make was wrong in a useful way.** The section below
@@ -153,8 +152,15 @@ harness can show a refusal, so every refusal this milestone adds rests on unit
 tests — milestone 1's shape, arriving again. And the pass side is no longer
 green by accident: the harness now presents the identity it claims, and
 `test/tck/run.sh` reads the recorded counterparty back through the management
-API's `GET /transfers` and fails the run if the connector recorded anything
-other than the name the TCK sends.
+API's `GET /transfers` and fails the run unless a **consumer-role** row names
+the participant the TCK sends.
+
+The role anchor is that check rather than a detail of it. `GET /transfers`
+returns provider-role rows too, and a provider-role counterparty comes from
+the verified issuer — the same name in this harness — so a match on the
+counterparty alone would have held even with no consumer-role row written at
+all, which is the one divergence the check exists for. It was mutated on
+2026-08-24 and it failed for that reason (§35.4).
 
 ## The milestone that was next: authorizing the initiate hooks — done, `DECISIONS.md` §35
 
@@ -164,11 +170,20 @@ other than the name the TCK sends.
 > written. Its closing instruction — settle, before starting, what an
 > initiate call may name when the roster does not list it — is answered
 > **nothing** (§35.2). Some of its other claims did not survive either: the
-> TCK is not "worse than neutral" (§35.4), and the `counterparty_id`
-> asymmetry it says must be explained in seven places is gone rather than
-> better documented, because a consumer-role counterparty now comes from an
-> authenticated operator and names a roster participant, so it means what a
-> provider-role one means.
+> TCK is not "worse than neutral" (§35.4). And the `counterparty_id`
+> asymmetry it says must be explained in several places is no longer an
+> asymmetry in *authorization weight*: a consumer-role counterparty now comes
+> from an authenticated operator and names a roster participant, so both roles'
+> counterparties are something an inbound message is compared against
+> (§35.3). The asymmetry in **provenance** is still there and is still
+> explained on purpose — `refuseIfNotParty` in
+> `internal/dsp/auth_middleware.go`, both `CounterpartyID` doc comments in
+> `internal/store/store.go`, `transferHandler.lookup`'s preserved placement
+> warning in `internal/dsp/transfer_handler.go`, and
+> `internal/dsp/transfer_consumer_handler.go` — because a provider-role
+> counterparty is a verified issuer while a consumer-role one stays an
+> operator's assertion, which §35.5 sharpens: a roster name is not
+> necessarily the participant at `connectorAddress`.
 
 **Every milestone above reads done, and until this section this document had no
 forward entry at all** — which is the exact failure a sequencing document exists
