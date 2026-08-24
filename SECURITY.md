@@ -31,7 +31,12 @@ oversight:
   findings; reports that it leaks something a proxy cannot fix are.
 - **The management listener bound to a public address.** Splitting the ports
   and binding the management one to localhost is `DECISIONS.md` §12; moving it
-  is a deliberate operator act.
+  is a deliberate operator act. Note what that act now exposes: `DECISIONS.md`
+  §35 put the initiate hooks on this listener, so a publicly bound management
+  port is where the credential-minting endpoints are reachable, behind a
+  shared secret rather than a participant credential. That is the trade the
+  move made — the primitive described below stops having an untrusted caller
+  only for as long as this listener has none.
 - **`require_auth: false`, while it is set.** This turns
   connector-to-connector authentication off. It exists for the migration from
   anonymous to authenticated and is permitted only alongside `dev_mode: true`,

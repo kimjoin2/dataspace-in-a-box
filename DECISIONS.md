@@ -1421,10 +1421,12 @@ than editing §10 or the design spec's original text.
 **Rationale.** `test/tck/run.sh` mints exactly one token per suite run and
 sets it as a static configuration property, `dataspacetck.dsp.connector.
 http.headers.authorization`, that `DspSystemLauncher` attaches to every
-request the TCK makes — the script's own comment already says so: "It is a
-static string for the whole run: DspSystemLauncher registers it as an
-interceptor once and cannot refresh it." A TCK run is dozens of authenticated
-requests across 65 tests, all carrying the identical credential. That is not
+request the TCK makes: it is registered once as a process-wide interceptor
+and cannot be refreshed mid-run. (This paragraph used to quote a comment in
+`test/tck/run.sh` saying so. §35.4 rewrote that comment block — the same
+property is now what forces one string to satisfy both listeners — so the
+fact is stated here rather than attributed there.) A TCK run is dozens of
+authenticated requests across 65 tests, all carrying the identical credential. That is not
 an artifact of this project's harness; it is the TCK exercising the
 credential the way DECISIONS.md section 10 designed it to be used — a
 short-lived *bearer* token, valid for repeated calls within its window, not

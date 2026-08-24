@@ -172,8 +172,11 @@ does.
 > item. What follows is the argument as it stood before that dispute, kept as
 > written. Its closing instruction — settle, before starting, what an
 > initiate call may name when the roster does not list it — is answered
-> **nothing** (§35.2). Some of its other claims did not survive either: the
-> TCK is not "worse than neutral" (§35.4). And the `counterparty_id`
+> **nothing** (§35.2). Some of its other claims did not survive either. The
+> largest is its premise: "both endpoints are on the public listener" is no
+> longer true of either one — §35.1 moved them to the management listener, so
+> the sentence below describing where they sit describes where they sat. The
+> TCK is not "worse than neutral" either (§35.4). And the `counterparty_id`
 > asymmetry it says must be explained in several places is no longer an
 > asymmetry in *authorization weight*: a consumer-role counterparty now comes
 > from an authenticated operator and names a roster participant, so both roles'
@@ -334,6 +337,14 @@ that point — rather than before `docker compose`. A cold image build ahead of
 the suite can take minutes, and a token minted before it would be spending its
 expiry on the build. Minted at the seeding step, the whole five minutes is
 available to a fifty-four-second suite.
+
+> **Inverted by §35.4, and this paragraph is now the wrong instruction to
+> follow.** `test/tck/run.sh` mints before `docker compose up`, because the
+> same string has to reach the connector as `DSBOX_MGMT_TOKEN` before it
+> starts. The build-time objection above was real and is paid for with
+> `-ttl 30m` instead of §10's five minutes — a relaxation of what the harness
+> mints for itself, not of `credentialTTL`. The claim in the paragraph before
+> it, that "the harness needs no special credential", went the same way.
 
 Still open: whether outbound authentication ships in the same milestone.
 

@@ -50,10 +50,11 @@ The practical consequence is larger than the missing code. Without discovery,
 a consumer has to learn `datasetId` and `offerId` out of band, and the offer
 identifier is derived by a convention private to this implementation —
 `offerIDSuffix = "#offer"` (`internal/dsp/catalog.go:41`), which
-`demo/run.sh:111` hardcodes as `urn:dataset:sample#offer`. Combined with an
-authentication profile that DSP does not specify and this project invented
-(roster plus self-signed JWT, `DECISIONS.md` §10), **the only counterparties
-this connector can transact with today are another `dsbox` and the TCK.**
+`demo/run.sh` hardcodes as `urn:dataset:sample#offer` in each of its
+negotiate calls. Combined with an authentication profile that DSP does not
+specify and this project invented (roster plus self-signed JWT,
+`DECISIONS.md` §10), **the only counterparties this connector can transact
+with today are another `dsbox` and the TCK.**
 
 Done looks like: a catalog client, and a `README.md` table that names the
 role for every protocol. It already names roles for `CN`/`CN_C` and
@@ -84,7 +85,11 @@ one place it is not.
 > `transfer_consumer_handler.go:334` now lands inside `parseContentRange`,
 > and `callback.go:26` still points at a real ten-second timeout that the
 > data path no longer uses. Treat every line number in this section as
-> unverified.
+> unverified. The management API's route count below has rotted the same way,
+> twice over — `GET /transfers` (§34.4) and the initiate hooks (§35.5) both
+> moved it — and it is left standing for the same reason the rest of this
+> prose is: `internal/mgmt/router.go` is the only statement of it that cannot
+> go stale.
 >
 > **What survives, and is still the point of this section:** size has no
 > measurement — `make demo` moves kilobytes and the TCK moves none — and

@@ -101,10 +101,11 @@ through.
 **`handleProviderAcceptedEvent` and `handleConsumerFinalizedEvent` declare an
 identical anonymous decode struct.** Three fields (`@context`, `@type`,
 `eventType`), byte-for-byte the same in both. Extracting a named
-`eventEnvelope` next to `envelope` would remove the duplication, but with
-exactly two call sites in one file it would also be an abstraction introduced
-before a third case exists to shape it. Worth doing if a third event handler
-ever appears — not before.
+`eventEnvelope` next to `envelope` would remove the duplication, but with a
+call site in each of `negotiation_handler.go` and
+`negotiation_consumer_handler.go` and nowhere else, it would also be an
+abstraction introduced before a third case exists to shape it. Worth doing if
+a third event handler ever appears — not before.
 
 **Constraint-triggered terminations carry no `reason`, only `code: "1"`.**
 `buildConsumerTerminationMessage` sets no `Reason`, so a counterparty whose
@@ -119,8 +120,10 @@ worth doing when there is a real TCK run available to verify it against.
 **Two `dsbox` instances on `127.0.0.1` cannot negotiate with each other.**
 `dev_mode` (`internal/config/config.go:401-402`) relaxes only the `https`
 requirement on `public_url`; it does not reach `isDisallowedCallbackIP`
-(`internal/dsp/callback.go:192-195`), so `POST /negotiations/initiate` with
-`connectorAddress: http://127.0.0.1:8090` is rejected `400`. Pre-existing —
+(`internal/dsp/callback.go:192-195`), so an initiate call naming
+`connectorAddress: http://127.0.0.1:8090` is rejected `400` — on the
+management listener now (`DECISIONS.md` §35.1), which changes who makes the
+call and not what it is told. Pre-existing —
 §23.6 chose that guard's reach deliberately, and widening it is a design
 decision rather than a cleanup, which is why this is recorded and not fixed
 here. It still deserves attention: for a project promising "clone, run,

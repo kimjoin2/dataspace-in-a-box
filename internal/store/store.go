@@ -262,9 +262,12 @@ var (
 // Open opens (creating if necessary) the SQLite file at path, sets its
 // journal mode, ensures the schema exists, and applies this project's schema
 // migrations (see migrate). Not "the one migration this project has", which
-// this line claimed until the counterparty column landed: it is now six
-// column-adds across five tables. path may be ":memory:" for tests —
-// DECISIONS.md section 8 reserves that for tests only, never a runtime path.
+// this line claimed until the counterparty column landed: migrate now adds
+// columns across several tables, and the count this line used to carry was
+// wrong by the time anyone read it. migrate itself is the inventory.
+//
+// path may be ":memory:" for tests — DECISIONS.md section 8 reserves that
+// for tests only, never a runtime path.
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
