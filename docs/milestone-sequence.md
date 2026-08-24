@@ -160,7 +160,10 @@ returns provider-role rows too, and a provider-role counterparty comes from
 the verified issuer — the same name in this harness — so a match on the
 counterparty alone would have held even with no consumer-role row written at
 all, which is the one divergence the check exists for. It was mutated on
-2026-08-24 and it failed for that reason (§35.4).
+2026-08-24 and did fail, but that mutation also breaks inbound
+authentication and takes the provider-role rows with it, so on its own it
+does not isolate the anchor — §35.4 has the fuller account, including what
+does.
 
 ## The milestone that was next: authorizing the initiate hooks — done, `DECISIONS.md` §35
 
@@ -177,7 +180,8 @@ all, which is the one divergence the check exists for. It was mutated on
 > counterparties are something an inbound message is compared against
 > (§35.3). The asymmetry in **provenance** is still there and is still
 > explained on purpose — `refuseIfNotParty` in
-> `internal/dsp/auth_middleware.go`, both `CounterpartyID` doc comments in
+> `internal/dsp/auth_middleware.go`, the `CounterpartyID` doc comments on
+> `store.ConsumerNegotiation` and `store.ConsumerTransfer` in
 > `internal/store/store.go`, `transferHandler.lookup`'s preserved placement
 > warning in `internal/dsp/transfer_handler.go`, and
 > `internal/dsp/transfer_consumer_handler.go` — because a provider-role

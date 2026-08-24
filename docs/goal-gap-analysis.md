@@ -339,7 +339,8 @@ promotion is what pushed three of the four promises out of the document.
    counterparty is something an inbound message is compared against, which is
    what a provider-role one already was. The asymmetry in **provenance**
    remains, and is still explained on purpose in `refuseIfNotParty`
-   (`internal/dsp/auth_middleware.go`), both `CounterpartyID` doc comments in
+   (`internal/dsp/auth_middleware.go`), the `CounterpartyID` doc comments on
+   `store.ConsumerNegotiation` and `store.ConsumerTransfer` in
    `internal/store/store.go`, `transferHandler.lookup`'s placement warning
    (`internal/dsp/transfer_handler.go`), and
    `internal/dsp/transfer_consumer_handler.go` — a provider-role
