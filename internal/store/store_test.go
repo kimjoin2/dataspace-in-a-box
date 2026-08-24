@@ -1248,3 +1248,114 @@ func TestListTransfersReturnsBothRolesInOrder(t *testing.T) {
 		t.Errorf("got %d provider transfers, want 0 — none were created", len(providers))
 	}
 }
+
+// TestOpenMigratesADatabaseMissingTheDataColumns covers the ALTER branch
+// nothing else in this repository reaches. The five data columns are in
+// consumerTransferSchema *and* in migrate's loop, so every other test and
+// both gates build them from the CREATE literal and never run an ALTER at
+// all. The branch that does run is the one every existing deployment takes
+// on its first boot after an upgrade, and it is the branch where a mistake
+// is expensive: addColumnIfMissing keys off the pragma name, so a name that
+// disagrees with its own statement would re-run the ALTER on every start and
+// fail the second one with "duplicate column name".
+//
+// One old table covers all five, because a database predating this
+// milestone's four also predates expected_bytes.
+func TestOpenMigratesADatabaseMissingTheDataColumns(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/dsbox.db"
+
+	// consumer_transfer_processes exactly as a build before the data
+	// columns created it. counterparty_id is present because that column
+	// shipped earlier; leaving it out would test two migrations at once and
+	// blur which one failed.
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open the old database: %v", err)
+	}
+	if _, err := old.Exec(`
+CREATE TABLE consumer_transfer_processes (
+    consumer_pid      TEXT PRIMARY KEY,
+    provider_pid      TEXT NOT NULL DEFAULT '',
+    provider_base_url TEXT NOT NULL,
+    agreement_id      TEXT NOT NULL,
+    format            TEXT NOT NULL,
+    state             TEXT NOT NULL,
+    counterparty_id   TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);`); err != nil {
+		t.Fatalf("create the old schema: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close the old database: %v", err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on a database missing the data columns: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.CreateConsumerTransfer(ConsumerTransfer{
+		ConsumerPID: "urn:uuid:o1", ProviderBaseURL: "http://p", AgreementID: "urn:uuid:a1",
+		Format: "HttpData-PULL", State: "STARTED", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateConsumerTransfer after migrating: %v", err)
+	}
+	if err := s.SetConsumerTransferExpectedBytes("urn:uuid:o1", 4096); err != nil {
+		t.Fatalf("SetConsumerTransferExpectedBytes after migrating: %v", err)
+	}
+	if err := s.RecordConsumerTransferOutcome("urn:uuid:o1", 4096, "/data/o1", now, ""); err != nil {
+		t.Fatalf("RecordConsumerTransferOutcome after migrating: %v", err)
+	}
+
+	// Every one of the five read back through the real query, because a
+	// column that migrated but is missing from a SELECT fails there and
+	// nowhere else.
+	got, found, err := s.GetConsumerTransfer("urn:uuid:o1")
+	if err != nil || !found {
+		t.Fatalf("GetConsumerTransfer after migrating: %v found=%v", err, found)
+	}
+	if got.ExpectedBytes != 4096 {
+		t.Errorf("ExpectedBytes = %d, want 4096 — the migrated column is not being written or not being read",
+			got.ExpectedBytes)
+	}
+	if got.ReceivedBytes != 4096 {
+		t.Errorf("ReceivedBytes = %d, want 4096", got.ReceivedBytes)
+	}
+	if got.DataPath != "/data/o1" {
+		t.Errorf("DataPath = %q, want /data/o1", got.DataPath)
+	}
+	if got.DataCompletedAt.IsZero() {
+		t.Error("DataCompletedAt is zero after an outcome that recorded one")
+	}
+	if got.DataError != "" {
+		t.Errorf("DataError = %q, want empty", got.DataError)
+	}
+
+	// ListConsumerTransfers names all five in its own SELECT, separately
+	// from GetConsumerTransfer's, and it is what GET /transfers calls.
+	list, err := s.ListConsumerTransfers()
+	if err != nil {
+		t.Fatalf("ListConsumerTransfers after migrating: %v", err)
+	}
+	if len(list) != 1 || list[0].ReceivedBytes != 4096 {
+		t.Errorf("ListConsumerTransfers = %+v, want one row carrying the migrated columns", list)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// The second boot. addColumnIfMissing must now find every column and
+	// skip its ALTER; if it does not, this is where "duplicate column name"
+	// surfaces — on the restart after the upgrade, not on the upgrade.
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open on the migrated database: %v — the migration is not idempotent", err)
+	}
+	defer s2.Close()
+	if _, found, err := s2.GetConsumerTransfer("urn:uuid:o1"); err != nil || !found {
+		t.Fatalf("GetConsumerTransfer after the second Open: %v found=%v", err, found)
+	}
+}
