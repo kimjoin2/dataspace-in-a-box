@@ -47,11 +47,20 @@ operator_pub=$("$identity/dsops" keygen -out "$identity/operator.key")
 # itself: this file is regenerated every run and deleted with $identity
 # afterward, unlike a real operator's key.
 chmod 644 "$identity/connector.key"
+# The TCK's id is TCK_PARTICIPANT because that is the string the harness
+# hardcodes as the providerId in both initiate bodies
+# (DspConstants.TCK_PARTICIPANT_ID in the pinned image, inlined at every call
+# site and not configurable). Its authenticated identity has to equal the
+# name it claims, or the connector records a counterparty no inbound request
+# will ever present. That coupling is to a constant in an upstream image; it
+# is safe because compose.yaml pins that image by digest, and if the pin ever
+# moves and the constant changes, the symptom is every CN_C and TP_C result
+# failing on a refusal that reads like a protocol bug.
 cat >"$identity/roster.json" <<EOF
 {
   "participants": [
     {"id": "urn:participant:dsbox-test", "public_key": "$connector_pub"},
-    {"id": "urn:participant:tck", "public_key": "$tck_pub"}
+    {"id": "TCK_PARTICIPANT", "public_key": "$tck_pub"}
   ]
 }
 EOF
@@ -60,7 +69,7 @@ cat >"$identity/roster.json" <<EOF
 {
   "participants": [
     {"id": "urn:participant:dsbox-test", "public_key": "$connector_pub"},
-    {"id": "urn:participant:tck", "public_key": "$tck_pub"}
+    {"id": "TCK_PARTICIPANT", "public_key": "$tck_pub"}
   ],
   "signature": "$signature"
 }
@@ -144,7 +153,7 @@ echo 'seeded 12 transfer agreements'
 # against a five-minute life, so the margin is the build time this deliberately
 # sits after.
 token=$("$identity/dsops" token -key "$identity/tck.key" \
-	-iss urn:participant:tck -aud urn:participant:dsbox-test)
+	-iss TCK_PARTICIPANT -aud urn:participant:dsbox-test)
 cat "$dir/config.properties" >"$identity/config.properties"
 printf '\ndataspacetck.dsp.connector.http.headers.authorization=Bearer %s\n' \
 	"$token" >>"$identity/config.properties"
