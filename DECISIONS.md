@@ -2259,13 +2259,27 @@ paragraph is what stands in for a test of these sentences.
 **At ten of the twenty-one the recorded string is a prefix of its own log
 message** — three of them exactly, seven more once a leading "the" is
 allowed, and three of those seven differ by nothing but those four
-characters. Where the log message is a full sentence, the column is usually
-that sentence with a trailing clause cut off: the log says "the download does
-not match the length the provider stated; leaving the partial download in
-place" and the column says everything before the semicolon. The other eleven
-diverge because the log there follows the short-verb-phrase convention with
-the detail in structured fields (`slog.Error("write download",
-"consumer_pid", …)`), which a column with no fields cannot use.
+characters. The three that differ by only "the " are named so this is
+checkable by reading rather than by re-measuring: "the start message carried
+no data endpoint", "the data endpoint sent no response within the idle
+timeout", and "the data endpoint refused the pull". Where the log message is
+a full sentence, the column is usually that sentence with a trailing clause
+cut off: the log says "the download does not match the length the provider
+stated; leaving the partial download in place" and the column says everything
+before the semicolon.
+
+Of the eleven that are not prefixes, **nine** diverge because the log there
+follows the short-verb-phrase convention with the detail in structured fields
+(`slog.Error("write download", "consumer_pid", …)`), which a column with no
+fields cannot use. The remaining **two** are neither: their log is a full
+sentence that simply says something different from the recorded reason. They
+are the shutdown caught while waiting on response headers — logged as "the
+connector shut down before the data endpoint responded" — and the 206 whose
+`Content-Range` did not match, logged as "206 response's Content-Range does
+not start where this connector's partial download left off; …". Nine of
+eleven is a majority and not a rule, which is the same shape of
+over-generalisation this paragraph was rewritten to remove; it is stated as
+a count for that reason.
 
 Two consequences follow, and they are why the measurement is here rather than
 a claim of unrelatedness. Adjacent exits carry near-identical prose, so a
@@ -2280,10 +2294,16 @@ The one place a string is genuinely shared has nothing to do with the log.
 `errConnectorShuttingDown` is a single `errors.New` value used in two roles —
 the cause `NewRouter` attaches to its cancellation, and the reason recorded
 on the row when a pull reads that cause back — so those two cannot drift
-apart. It is *not* shared with the `slog` message at either of its two exits:
-at one the log reads "the connector shut down before the data endpoint
-responded", and at the other the log is that sentence plus "; leaving the
-partial download in place".
+apart. That is the sharing being claimed, and it is the only one.
+
+Its relationship to the `slog` calls is the ordinary one, and differs between
+its two exits — which is worth spelling out, because this value is the single
+place a reader is most likely to assume the column and the log are the same
+string. At the exit caught while waiting on response headers the log says
+something else entirely: "the connector shut down before the data endpoint
+responded". At the exit caught mid-copy the log is the recorded sentence plus
+"; leaving the partial download in place" — one of the three exact prefixes
+counted above, not an exception to them.
 
 **34.3 Shutdown cancels in-flight pulls, and then waits for them.** §33.6
 promised this re-examination and this is it. That section sized a five-second
