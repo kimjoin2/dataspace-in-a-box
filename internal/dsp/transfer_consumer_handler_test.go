@@ -3,6 +3,7 @@ package dsp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1395,4 +1396,99 @@ func TestThePullDoesNotBorrowTheCallbackClientsConnections(t *testing.T) {
 		t.Error("the data pull reused the callback client's pooled connection, so the call site is using callbackHTTPClient — " +
 			"whose ten-second Timeout covers the whole response body and caps a transfer at whatever the link moves in it")
 	}
+}
+
+// TestPullRecordsItsOutcomeOnEveryPath is the reason the recorder is
+// deferred rather than written at each exit: it pins that a representative
+// failure, a representative success, and a refusal before any request all
+// leave the row describing what happened.
+func TestPullRecordsItsOutcomeOnEveryPath(t *testing.T) {
+	t.Run("a success records the bytes, the path, and no failure", func(t *testing.T) {
+		dir := t.TempDir()
+		body := strings.Repeat("y", 2048)
+		provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(body))
+		}))
+		defer provider.Close()
+
+		h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+		pid := seedConsumerTransfer(t, st, "STARTED")
+		h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: provider.URL})
+
+		row, _, err := st.GetConsumerTransfer(pid)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if row.ReceivedBytes != int64(len(body)) {
+			t.Errorf("ReceivedBytes = %d, want %d", row.ReceivedBytes, len(body))
+		}
+		if row.DataPath == "" {
+			t.Error("DataPath is empty after a published download")
+		}
+		if row.DataCompletedAt.IsZero() {
+			t.Error("DataCompletedAt is zero after a published download")
+		}
+		if row.DataError != "" {
+			t.Errorf("DataError = %q, want empty on a success", row.DataError)
+		}
+	})
+
+	t.Run("an idle cutoff records the reason and no completion", func(t *testing.T) {
+		dir := t.TempDir()
+		release := make(chan struct{})
+		provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(strings.Repeat("s", 500)))
+			w.(http.Flusher).Flush()
+			<-release
+		}))
+		defer func() { close(release); provider.Close() }()
+
+		h, st := newTestTransferHandler(t, config.Config{DataDir: dir, DataIdleTimeout: 150 * time.Millisecond})
+		pid := seedConsumerTransfer(t, st, "STARTED")
+		h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: provider.URL})
+
+		row, _, err := st.GetConsumerTransfer(pid)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if row.DataError == "" {
+			t.Fatal("DataError is empty after a pull that was cut off — a failed pull and a successful one must be distinguishable in storage")
+		}
+		if !strings.Contains(row.DataError, "idle") {
+			t.Errorf("DataError = %q, want the sentence naming the idle timeout", row.DataError)
+		}
+		if !row.DataCompletedAt.IsZero() {
+			t.Error("DataCompletedAt is set after a failure")
+		}
+		if row.DataPath != "" {
+			t.Errorf("DataPath = %q, want empty — nothing was published", row.DataPath)
+		}
+	})
+
+	t.Run("a refusal before any request still records", func(t *testing.T) {
+		dir := t.TempDir()
+		h, st := newTestTransferHandler(t, config.Config{DataDir: dir})
+		pid := seedConsumerTransfer(t, st, "STARTED")
+
+		// An endpoint the outgoing-callback guard rejects, so the pull
+		// returns before it ever builds a request. This is the exit a
+		// per-site recorder is most likely to miss, because it is nowhere
+		// near the copy.
+		orig := validateOutgoingCallback
+		validateOutgoingCallback = func(string) error { return errors.New("refused by the guard") }
+		t.Cleanup(func() { validateOutgoingCallback = orig })
+
+		h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: "http://example.invalid/x"})
+
+		row, _, err := st.GetConsumerTransfer(pid)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if row.DataError == "" {
+			t.Error("DataError is empty after a pull refused before it started")
+		}
+	})
 }

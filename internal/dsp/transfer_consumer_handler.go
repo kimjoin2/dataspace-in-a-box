@@ -325,6 +325,40 @@ func parseContentRange(header string) (first int64, hasFirst bool, complete int6
 	return first, hasFirst, complete, hasComplete
 }
 
+// pullOutcome is what a pull leaves behind on its transfer's row. It exists
+// so there is exactly one write site: pullTransferData has many failure
+// exits and one success, and a recorder called at each would be that many
+// chances to miss one with nothing to catch the miss. Every exit sets a
+// field or two on this value; the deferred write in pullTransferData turns
+// it into a row.
+//
+// The zero value is a failure with no reason, which is the right default for
+// a function that can return from anywhere: an exit that forgets to say why
+// still records that the pull did not finish, rather than silently leaving
+// the row describing a previous attempt.
+type pullOutcome struct {
+	received  int64
+	path      string
+	completed time.Time
+	failure   string
+}
+
+// fail records why a pull stopped. The sentence is the one that goes to the
+// log, because DECISIONS.md section 34 records that this column holds a
+// reason rather than a code and an operator reading it needs the sentence.
+func (o *pullOutcome) fail(reason string) {
+	o.failure = reason
+}
+
+// succeed records a published download and clears any reason a previous
+// attempt left. Setting the completion and clearing the reason together is
+// what keeps a row from ever reading as both completed and failed: the store
+// writes all four columns from this one value, so no caller can hand it a
+// completion and a reason at the same time.
+func (o *pullOutcome) succeed(received int64, path string, at time.Time) {
+	o.received, o.path, o.completed, o.failure = received, path, at, ""
+}
+
 // pullTransferData fetches what a dataAddress points at and writes it under
 // data_dir, resuming from a previous attempt when one left bytes behind.
 // Called whenever a start message carrying an address arrives — the first
@@ -344,6 +378,17 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		}
 		defer h.pulling.Delete(t.ConsumerPID)
 	}
+	outcome := pullOutcome{failure: "the pull ended without recording a reason"}
+	defer func() {
+		if h.store == nil {
+			return
+		}
+		if err := h.store.RecordConsumerTransferOutcome(
+			t.ConsumerPID, outcome.received, outcome.path, outcome.completed, outcome.failure,
+		); err != nil {
+			slog.Error("record pull outcome", "consumer_pid", t.ConsumerPID, "error", err)
+		}
+	}()
 	if addr == nil || addr.Endpoint == "" {
 		return
 	}
@@ -351,12 +396,14 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	// guard as every other address this connector is told to contact.
 	if err := validateOutgoingCallback(addr.Endpoint); err != nil {
 		slog.Error("refuse data endpoint", "consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "error", err)
+		outcome.fail("the data endpoint was refused by the outgoing-address guard")
 		return
 	}
 
 	dir := filepath.Join(h.cfg.DataDir, downloadDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		slog.Error("create download directory", "dir", dir, "error", err)
+		outcome.fail("the download directory could not be created")
 		return
 	}
 	// A fixed name rather than os.CreateTemp's random one, so a later
@@ -378,6 +425,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, addr.Endpoint, nil)
 	if err != nil {
 		slog.Error("build data pull", "consumer_pid", t.ConsumerPID, "error", err)
+		outcome.fail("the data pull request could not be built")
 		return
 	}
 	if authorization := mintOutboundCredential(t.CounterpartyID); authorization != "" {
@@ -399,9 +447,11 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		if errors.Is(context.Cause(ctx), errIdleTimeout) {
 			slog.Error("data endpoint sent no response within the idle timeout",
 				"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint)
+			outcome.fail("the data endpoint sent no response within the idle timeout")
 			return
 		}
 		slog.Error("data pull", "consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "error", err)
+		outcome.fail("the data pull failed before any bytes arrived")
 		return
 	}
 	defer resp.Body.Close()
@@ -433,6 +483,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			if !hasFirst || first != existingSize {
 				slog.Error("206 response's Content-Range does not start where this connector's partial download left off; leaving the partial download in place",
 					"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "content_range", contentRange, "had_bytes", existingSize)
+				outcome.fail("the provider's 206 did not start where this connector's partial download left off")
 				return
 			}
 			// A counterparty stating a different complete length is
@@ -445,6 +496,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 				if err := os.Remove(partial); err != nil {
 					slog.Error("remove stale partial download", "path", partial, "error", err)
 				}
+				outcome.fail("the provider states a different complete length than this transfer recorded")
 				return
 			}
 			// fall through to the append below
@@ -457,6 +509,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			if err := os.Remove(partial); err != nil {
 				slog.Error("remove stale partial download", "path", partial, "error", err)
 			}
+			outcome.fail("the provider's file is no longer past what this connector already has")
 			return
 		default:
 			// Any other answer to a resumed pull, including an unexpected
@@ -467,11 +520,13 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			// file. Safer to abort and leave the partial exactly as it was.
 			slog.Error("data endpoint gave an unexpected answer to a resumed pull; leaving the partial download in place",
 				"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "status", resp.StatusCode, "had_bytes", existingSize)
+			outcome.fail("the data endpoint gave an unexpected answer to a resumed pull")
 			return
 		}
 	} else if resp.StatusCode >= 300 {
 		slog.Error("data endpoint refused the pull",
 			"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "status", resp.StatusCode)
+		outcome.fail("the data endpoint refused the pull")
 		return
 	}
 
@@ -515,6 +570,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	out, err := os.OpenFile(partial, flag, 0o600)
 	if err != nil {
 		slog.Error("open download file", "path", partial, "error", err)
+		outcome.fail("the download file could not be opened")
 		return
 	}
 	body := newIdleTimeoutReader(resp.Body, h.cfg.DataIdleTimeout, cancel)
@@ -529,9 +585,11 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		if cause := context.Cause(ctx); errors.Is(cause, errIdleTimeout) || errors.Is(err, errIdleTimeout) {
 			slog.Error("data pull made no progress within the idle timeout; leaving the partial download in place",
 				"consumer_pid", t.ConsumerPID, "had_bytes", existingSize, "appended_bytes", n)
+			outcome.fail("the data pull made no progress within the idle timeout")
 			return
 		}
 		slog.Error("write download", "consumer_pid", t.ConsumerPID, "error", err)
+		outcome.fail("the download could not be written")
 		return
 	}
 	if n > remaining {
@@ -543,6 +601,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		slog.Error("data pull exceeded max_download_bytes; leaving the partial download in place — "+
 			"raise max_download_bytes and restart the transfer to resume from the bytes already fetched",
 			"consumer_pid", t.ConsumerPID, "limit", h.cfg.MaxDownloadBytes, "have_bytes", existingSize+n)
+		outcome.fail("the data pull exceeded max_download_bytes")
 		return
 	}
 	// Sync before the rename. A rename that outruns its data turns a crash
@@ -551,10 +610,12 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	if err := out.Sync(); err != nil {
 		out.Close()
 		slog.Error("sync download", "consumer_pid", t.ConsumerPID, "error", err)
+		outcome.fail("the download could not be synced")
 		return
 	}
 	if err := out.Close(); err != nil {
 		slog.Error("close download", "consumer_pid", t.ConsumerPID, "error", err)
+		outcome.fail("the download could not be closed")
 		return
 	}
 
@@ -562,6 +623,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	if expected > 0 && total != expected {
 		slog.Error("the download does not match the length the provider stated; leaving the partial download in place",
 			"consumer_pid", t.ConsumerPID, "have", total, "stated", expected)
+		outcome.fail("the download does not match the length the provider stated")
 		return
 	}
 	if resuming {
@@ -570,7 +632,9 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	final := filepath.Join(dir, t.ConsumerPID)
 	if err := os.Rename(partial, final); err != nil {
 		slog.Error("place download", "path", final, "error", err)
+		outcome.fail("the download could not be placed")
 		return
 	}
+	outcome.succeed(total, final, time.Now().UTC())
 	slog.Info("pulled transfer data", "consumer_pid", t.ConsumerPID, "path", final, "bytes", total, "expected", expected)
 }
