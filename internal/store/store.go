@@ -944,7 +944,7 @@ func (s *Store) SetConsumerTransferExpectedBytes(consumerPID string, expected in
 // a failure passes the reason and a zero time, and each overwrites whatever
 // the last attempt left.
 //
-// A missing row is not an error. Seventeen tests drive pullTransferData
+// A missing row is not an error. Many tests drive pullTransferData
 // directly with no row behind it, and in production there is always one —
 // lookup found it, and there is no delete path. Surfacing "not found" here
 // would add noise to the tests and tell production nothing it could act on.

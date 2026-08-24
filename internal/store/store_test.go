@@ -1200,7 +1200,7 @@ func TestRecordConsumerTransferOutcomeOnAMissingRowIsNotAnError(t *testing.T) {
 	}
 	defer st.Close()
 
-	// Seventeen tests call pullTransferData directly with no seeded row, and
+	// Many tests call pullTransferData directly with no seeded row, and
 	// the deferred recorder Task 2 adds runs on every one of them. This must
 	// stay a silent no-op or all of them start failing.
 	if err := st.RecordConsumerTransferOutcome("urn:uuid:absent", 1, "/x", time.Now().UTC(), ""); err != nil {
