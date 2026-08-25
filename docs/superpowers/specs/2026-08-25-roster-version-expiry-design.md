@@ -7,13 +7,15 @@ mutation §11 prescribes. What all of that measured is in §12.
 
 **Ordered item 3** of `docs/goal-gap-analysis.md`.
 
-**What it closes:** that document's P3 bullet, which says revocation "is not
-slow; it is undetectable" — but see §1.3, which is precise about which half of
-that this closes and which half it only bounds.
+**What it acts on:** that document's P3 bullet, which says revocation "is not
+slow; it is undetectable". That bullet lists what the roster lacks — a
+version, an issue time, an expiry, and a dataspace identifier; this adds the
+version and the expiry, which are the ones revocation turns on, and leaves the
+other two for whoever needs them. §1.3 is precise about which half of
+"undetectable" this closes and which half it only bounds.
 
-**What it amends:** `DECISIONS.md` §25.1's standing rule that every rejection
-a DSP endpoint emits is in `[400, 500)`. §5.1 has the exception and its
-reasoning.
+**What it does not amend:** `DECISIONS.md` §25.1. An earlier draft proposed an
+exception for a `503`; §5.1 records why that was withdrawn.
 
 ---
 
@@ -104,11 +106,20 @@ These documents assign this to the roster milestone —
 `docs/superpowers/specs/2026-08-24-initiate-hook-authorization-design.md:690-693`.
 It moves to ordered item 4, discovery, and all of them are corrected (§9).
 
-The argument: this milestone changes what the roster document *is* — it gains
-a revision and a lifetime — while an address changes what an *entry* means.
-An address is only checkable once something resolves one and contacts it,
-which is what item 4 builds. Shipping it here would add a field nothing can
-verify.
+The argument is scope, and it is worth stating accurately because a first
+draft of this spec got it wrong. It is *not* that the field would be
+unverifiable here: `handleInitiate` already takes `providerId` and
+`connectorAddress` in the same body and validates both
+(`internal/dsp/negotiation_consumer_handler.go`), so a roster address could be
+compared at exactly that point with no discovery client.
+
+The reason is that this milestone changes the document's *lifecycle* — a
+revision and a lifetime, both about the roster as a whole — while an address
+changes what an *entry* means and carries its own operational cost: every
+roster would have to carry every participant's address, and an address change
+would then need a re-signed roster and a fleet restart. That is a second
+decision with a second set of trade-offs, and item 4 is where something
+actually consumes an address.
 
 ---
 
@@ -163,9 +174,14 @@ bytes as zero and the signature already fails. It is *not* the operator's
 main safety net either, because §8 makes `dsops roster sign` refuse to
 produce such a file.
 
-What it buys is a clear error for a hand-edited file that was never signed
-through the tool, in place of "signature does not verify". That is worth one
-check and it is not worth more claim than that.
+So it is defence in depth and nothing grander. Because §3.5 puts it after the
+signature verifies, it fires only for a roster whose signature is good and
+whose fields are still wrong — a file signed by an older `dsops`, or one
+signed through some other path. Every roster that exists today fails the
+signature check first, not this one.
+
+**Which means every existing roster must be re-signed**, and §9 records that
+as the upgrade step it is.
 
 ### 3.5 The check runs after the signature verifies
 
@@ -208,6 +224,13 @@ expired, an initiate call returned 200, authorized its `providerId` against
 that expired roster through `knownParticipant`, and dispatched an outbound
 message signed with this connector's real key. A connector that has stopped
 answering must not still be starting exchanges and signing.
+
+**The expiry check runs first in these handlers**, ahead of the required
+fields and the address guard, because it is about this connector rather than
+about the request: no correction to the body would make the call succeed.
+`TestHandleInitiateRefusesAnUnsendableAddressBeforeTheRosterCheck` pins the
+relative order of two *request-specific* checks and is unaffected — its roster
+is not expired.
 
 ### 4.4 On everything this connector sends
 
@@ -257,8 +280,18 @@ which are reached in both branches of `NewRouter`. It does **not** apply to
 middleware at all (`router.go:132-140`), so the earlier draft's reasoning
 about it was wrong.
 
-A zero `auth.Roster` must not read as expired. Its zero expiry would
-otherwise break `require_auth: false` on a deployment that has no roster.
+**Absence is expressed by a nil predicate and never by a zero timestamp.** A
+zero `auth.Roster` must not read as expired, or `require_auth: false` breaks
+on a deployment that has no roster — but the fix is that the predicate is not
+built at all, not that the zero time is treated as "never expires". Those two
+implementations differ where it matters: the second makes
+`"expires_at": "0001-01-01T00:00:00Z"` a permanently valid roster, and §8
+would sign it. `LoadRoster` takes the current time as a parameter rather than
+reading the clock, matching `Verify`'s existing shape, so this is testable
+without waiting.
+
+The expiry boundary is exclusive: a roster is unusable once the instant named
+by `expires_at` has passed, and usable at every instant before it.
 
 ### 4.6 Parsed once
 
@@ -292,26 +325,39 @@ kind of sentence this repository has had to correct before.
 
 ## 5. What an expired connector says
 
-### 5.1 `503`, and the `DECISIONS.md` §25.1 amendment
+### 5.1 `409` on the DSP listener, and why not `503`
 
 **Not `401`.** The caller's credential may be perfect and the fault is
 entirely local; answering "a valid participant credential is required" sends
 their operator hunting their own credential across an organizational
 boundary, where they cannot read this connector's log.
 
-**`503`, which is outside §25.1's `[400, 500)`.** That rule is amended rather
-than worked around, because the reason §25.1 records is entirely about `404`:
-"Its own client checks for `404` *before* it consults whether an error was
-expected, so a `404` raises immediately and aborts the exchange instead of
-being read as the refusal it is." `503` has no such problem — the TCK's own
-client retries a non-`404` non-2xx — and an expired roster is not a rejection
-of the message at all. It is this connector being unable to serve anyone. The
-amendment states that: the `[400, 500)` rule governs refusals *of a message*,
-and `404` remains forbidden outright.
+**Not `503` either, and this reversed a decision.** An earlier draft chose
+`503` and proposed amending §25.1's `[400, 500)` rule, arguing that the rule's
+recorded reason is entirely about `404` — which is true — and that `503`
+carries no such risk — which is false. This repository's own bytecode-confirmed
+wire contract says the opposite:
+`docs/superpowers/specs/2026-08-16-transfer-process-tck-wire-contract.md:165`
+records that on the negative paths "400 and 409 both pass. 2xx, 3xx, 5xx and
+404 all raise `AssertionError`"; `:257` fixes the retry at "only for
+4xx-non-404, only when `expectError=false`"; and `:150` says the state poll
+"aborts on the first poll" for any non-2xx and "ignores nothing".
+A `503` from a DSP endpoint is therefore exactly as fatal as the `404` §25.1
+exists to forbid. §25.1 stands unamended and this refusal stays inside it.
 
-The body says the roster expired. That is not reconnaissance: it discloses a
-fact about this connector's own configuration, not about the caller and not
-about who else is in the roster.
+**`409`.** It is confirmed to pass, and it has a precedent in this connector:
+the data endpoint already answers `409` for "the access window for this
+transfer's dataset has closed" (`internal/dsp/data_handler.go`). An expired
+roster is the same kind of fact — a window this connector was operating in
+has closed — rather than a judgement about the caller.
+
+The body says the roster expired. That is not reconnaissance about the caller
+or about who else is in the roster. It is a disclosure, and §10.8 records what
+it is.
+
+**A correction this milestone also makes.** `DECISIONS.md` §35 states that
+"any other non-2xx is retried with backoff first". That is over-broad and the
+wire contract contradicts it; the sentence is corrected as part of §9.
 
 ### 5.2 `/health`
 
@@ -324,18 +370,26 @@ this package holds no opinion about `internal/dsp` and takes plain values from
 `cmd/dsbox`. It takes the same predicate, as a plain function, by the same
 route the initiate handlers already travel.
 
-Two consequences to record rather than discover:
+**`503` here, and §25.1 does not reach it.** That rule governs what a DSP
+endpoint emits; `/health` is on the management listener and answers a probe,
+not a counterparty. `503` is the right code for a probe and carries none of
+§5.1's problem.
+
+Three consequences to record rather than discover:
 
 - The comment on that route says it is unauthenticated because "it carries no
-  information". That stops being true, and §9 lists it. The disclosure is the
-  same one §5.1 argues is fine.
+  information". That stops being true, and §9 lists it.
 - **Both harnesses poll `/health` for readiness** (`test/tck/run.sh:107`,
-  `demo/run.sh:85`) with `curl -sf`. A roster that is already expired kills
-  the process at load, so the probe fails on a refused connection and the
-  harness prints its own timeout message — the real reason appears only in
-  the dumped container logs. A roster that expires *during* a run would hang
-  the probe. Neither is a defect of this design, but the first is a
-  diagnosis trap and the harness comment should say so.
+  `demo/run.sh:85`) with `curl -sf`, which exits non-zero on a `503`, so the
+  `until` loop never breaks. Measured: with an expired demo roster, `make
+  demo` fails after the loop's cap prints "provider did not become ready",
+  and the real reason is only in the dumped container log. A roster already
+  expired at boot kills the process anyway, so this is reached only by one
+  that expires mid-run — but the diagnosis trap is real and the harness
+  comment says so.
+- The predicate reaches this package from `cmd/dsbox`, which is also where
+  `internal/dsp` hands it over. Both listeners must answer from the same
+  value; building a second one here would let the two disagree.
 
 ### 5.3 One warning, not one per request
 
@@ -357,12 +411,17 @@ version four has no way to learn that a connector is still on three.
 
 ### 5.5 A warning before expiry, and its limit
 
-If the roster expires within a week, the boot log says so.
+If the roster expires within thirty days, the boot log says so. One
+comparison, sharing the `time.Now()` that already decided the load check.
 
-That is the whole of it, and the limit is stated because §10.1 leans on it: a
-connector that has been up for a month gets no warning, because warning while
-running needs a timer and this design has none. An operator who restarts
-rarely learns nothing from this.
+**The limit is the point and §10.1 leans on it.** A connector that has been up
+for a month gets no warning at all. This is not because a running warning
+would need a timer — §4.2 already evaluates the expiry per request, so it
+would not — but because a warning is only useful if someone reads it, and the
+boot log is the one place this project already expects an operator to look.
+A per-request warning is the log firehose §5.3 exists to prevent. An operator
+who restarts rarely learns nothing from this, and that is the weakest part of
+§10.1's argument against a grace period.
 
 ---
 
@@ -371,10 +430,12 @@ rarely learns nothing from this.
 ### 6.1 Where the state lives
 
 `auth.LoadRoster` stays stateless and the returned `Roster` carries its
-version. The store keeps a single-row table `roster_version` with one column,
-`highest INTEGER NOT NULL`. A lower version is refused at startup. An equal or
-higher one is accepted, and only a higher one writes — equal is a no-op, so
-the ordinary restart path does not touch the database.
+version. The store keeps a table `roster_version` constrained to one row —
+`id INTEGER PRIMARY KEY CHECK (id = 1)` beside `highest INTEGER NOT NULL` —
+because "single-row by convention" makes `SELECT highest` arbitrary the first
+time a second row appears. A lower version is refused at startup. An equal or
+higher one is accepted, and only a higher one writes: equal is a no-op, so the
+ordinary restart path does not touch the database.
 
 Equal must be accepted, or an ordinary restart with an unchanged roster fails
 to boot.
@@ -382,6 +443,12 @@ to boot.
 **The check runs after `store.Open` and before `dsp.NewRouter`**, so a
 rollback is refused before the outbound minter global is armed and before the
 pull context exists.
+
+**It runs only when there is a roster.** With `require_auth: false` there is
+no version to record, so the check and the boot log's roster fields both sit
+inside the same `cfg.AuthRequired()` condition the roster load already uses
+(`cmd/dsbox/main.go:73-93`). §10.7 records that the whole milestone is inert
+under that flag.
 
 ### 6.2 Why `internal/auth` does not reach the store
 
@@ -451,8 +518,11 @@ reasoning that put the harness credential at `-ttl 30m` — and short enough
 that it is a real timestamp computed per run rather than a far-future
 constant that would leave the field decorative.
 
-`date` is not portable for this: GNU takes `-d`, macOS takes `-v`. A two-way
-fallback, written once per script.
+`date` is not portable for this: GNU takes `-d`, macOS takes `-v`, and POSIX
+has no relative-date form at all. A two-way fallback, written once per script.
+Measured: busybox accepts neither and the script aborts under `set -eu` — a
+loud failure rather than a wrong timestamp, and neither CI nor a development
+machine here is busybox, so it is recorded rather than solved.
 
 ### 7.3 What the harnesses cannot verify
 
@@ -481,8 +551,11 @@ available ordering.
 
 It applies the same required-field rules as `LoadRoster`, **including parsing
 `expires_at`** so a malformed timestamp is caught at signing rather than at a
-boot during a recovery, and **excluding the expiry comparison**: signing a
-roster that expires next week is exactly what an operator does.
+boot during a recovery. It also **refuses an expiry already in the past**:
+"next week" and "last week" are distinguishable, and printing a signature for
+a roster that cannot be loaded is the same worst-available-ordering this
+section exists to eliminate. What it does not do is judge how far in the
+future the expiry is — that is the operator's policy (§10.1).
 
 The CLI surface does not change and it still writes nothing, so §27.3's
 print-don't-write principle is intact — validating is not managing. The
@@ -510,21 +583,34 @@ wording.
   column addition" and `migrate`'s "no version table".
 - `internal/mgmt/router.go` — `/health`'s "it carries no information".
 - `cmd/dsbox/main.go` — the boot log line, and the roster-load block, which
-  gains a third fatal failure that cannot live in it because the store is not
-  open yet.
+  gains a roster failure that cannot live in it, because the store is not open
+  yet.
 - `DECISIONS.md` §9's trade-off, which gains an upper bound and the cost that
   bound carries; §25.1, per §5.1.
 - `config.example.yaml:75-76`, which shows the roster JSON inline and is the
   only onboarding document that does, and `:82-86`, which says an unusable
   roster fails "at boot, not by refusing every request later" — refusing
   every request later is now deliberate.
-- The three `connectorAddress` assignments in §2.3.
+- The `connectorAddress` assignments listed in §2.3.
 - `docs/goal-gap-analysis.md`'s P3 revocation bullet, which proposed this fix,
   and its ordered item 3, which still bundles the clock work §2.2 splits out.
 - `README.md`'s description of the roster and of what the DSP listener
   requires.
-- `test/tck/dsbox.yaml` and `test/tck/compose.yaml` comments about the roster
-  being read once at startup, which is still true and no longer sufficient.
+- `test/tck/compose.yaml:24-25`, which says the connector reads the roster
+  once at startup — still true and no longer sufficient. (`test/tck/dsbox.yaml`
+  carries no such sentence; an earlier draft listed it and was wrong.)
+- `DECISIONS.md` §35's "any other non-2xx is retried with backoff first",
+  which the wire contract at
+  `docs/superpowers/specs/2026-08-16-transfer-process-tck-wire-contract.md:165`
+  and `:257` contradicts. §5.1 depends on getting this right, and the sentence is the
+  reason an earlier draft got it wrong.
+- `test/tck/run.sh` and `demo/run.sh` readiness-loop comments, per §5.2.
+
+**The upgrade step, which is not a documentation edit but belongs in the same
+list:** every existing roster must be re-signed with the two new fields. There
+is no compatibility path and none is wanted — §3.3 and §3.4 explain why — but
+the operator has to be told, so `config.example.yaml` says it and the load
+error names it.
 
 ---
 
@@ -536,6 +622,13 @@ Every connector shares one `expires_at`. Recovery needs a signature from
 `roster_signer`, a key §27.1 deliberately places outside every participant,
 plus redistribution and a restart.
 
+**The interval is the operator's, and this milestone does not pick it for
+them — but it names one.** `config.example.yaml` recommends ninety days and
+says what the choice trades: the interval *is* the upper bound §1.3 claims, so
+a shorter one is a stronger revocation guarantee and a more frequent
+fleet-wide restart. Nothing enforces a maximum, because a maximum is a second
+policy the signature does not carry.
+
 **The recovery sequence, written down because it has to be possible:** the
 operator edits the roster's `version` (if a participant changed) and
 `expires_at`, runs `dsops roster sign`, pastes the signature, distributes the
@@ -544,6 +637,12 @@ fields.
 
 **A revocation must bump `version`.** An expiry-only re-issue need not: equal
 is accepted, and the older document's earlier expiry limits it on its own.
+
+**The high-water mark only goes up, so a typo costs a number, not a
+connector.** An operator who signs `40` where they meant `4` has to keep
+going from `41`; there is no reset, and none is added, because a reset is
+exactly the capability the mark exists to deny. The load error names both
+versions so the operator can see what happened.
 
 **There is no grace period.** A grace period is a second expiry the signature
 does not cover, so its length would vary per deployment and an attacker
@@ -571,6 +670,13 @@ a message that will not be sent (§4.4, §4.7). Both are pre-existing shapes
 this milestone declines to change; both are named here so that "everything
 stops" is not read as more than §4.7 says.
 
+A third: when the minter refuses a data pull, the consumer records the failure
+over whatever the row held, and `internal/mgmt/router.go` already warns that
+this "writes an empty path and a reason over what a successful earlier attempt
+recorded". So an expiry can overwrite the record of a transfer that had
+already succeeded. The file on disk is untouched; the row's account of it is
+not.
+
 ### 10.5 The clock arrives in the milestone that defers the clock
 
 Startup now depends on the wall clock: a boot before NTP converges can refuse
@@ -589,14 +695,40 @@ numbering is refused forever, which compounds the absent key-rotation path
 No roster, no version recorded, no expiry enforced. That matches the router's
 existing rule and belongs in `SECURITY.md`'s paragraph on that flag.
 
+### 10.8 A new unauthenticated disclosure
+
+Before this, a connector with an unusable roster refused to start and a prober
+got a connection refused. After it, a live connector answers `409` on the DSP
+listener and `503` on `/health`, both saying the roster expired, to anyone who
+asks. Since §10.1 makes `expires_at` fleet-wide, that is a fact about the
+dataspace's governance and not only about this connector — which is more than
+§5.1's "its own configuration" framing admits.
+
+It is accepted because the alternative is a refusal that misdescribes itself,
+and because an expired roster is not a secret an attacker can act on: it names
+no participant and it opens nothing. `SECURITY.md` gets the sentence.
+
+### 10.9 What the adversary model actually is
+
+`version` defends against a superseded roster being placed where this
+connector will read it. §27.1 puts `roster_signer`'s public half in
+`config.yaml` under the same "this file's integrity is already assumed"
+reasoning, so an attacker who can write that file, or delete `dsbox.db`,
+defeats both halves of this milestone. The adversary this closes against is
+therefore one who can substitute the *roster* — over its distribution channel,
+or in a directory the connector reads — and not one who owns the host. That is
+narrower than "revocation is detectable" sounds, and it is the honest scope.
+
 ---
 
 ## 11. Evidence
 
 `go test -race` carries this milestone (§7.3). Every row below was applied to
-an implementation of this spec; each was killed by the named test and by
-nothing else — `go build`, `go vet`, `make tck`, and `make demo` stayed green
-under all of them.
+an implementation of this spec and killed by the test named beside it, while
+`go build`, `go vet`, `make tck`, and `make demo` stayed green under all of
+them. The named test is the one that must fail; some rows fail others too,
+which is expected — §8 requires `SignRoster` and `LoadRoster` to share a
+validator, so a mutation to that validator is visible from both.
 
 | Mutation | Killed by |
 |---|---|
@@ -610,9 +742,10 @@ under all of them.
 | Remove version and expiry from the signed bytes (§3.1) | `TestSignatureCoversVersionAndExpiry` |
 | Skip the signing tool's validation (§8) | `TestRosterSignRefusesWhatLoadRosterWouldRefuse` |
 
-The three checkpoint rows are separate on purpose. An earlier draft of this
-table had one row for a check that reaches three places, and the two it
-omitted are exactly the two an earlier draft of the *design* got wrong.
+The checkpoint rows are separate on purpose. An earlier draft of this
+table had a single row for a check that reaches the DSP listener, the initiate
+hooks, and the outbound minter alike — and the two it omitted are exactly the
+ones an earlier draft of the *design* got wrong.
 
 Design points below the mutation line, each covered by an ordinary test
 rather than by a mutation, and listed so the plan does not treat them as
@@ -632,16 +765,25 @@ be split: with the scripts unchanged, `make tck` fails in seconds at
 
 `mintOutboundCredential` is a package-level variable that `NewRouter` assigns
 and never restores — a trade-off `callback.go:200-208` records. A test that
-builds a router with an expired roster leaks a refusing minter into every
-test that runs after it; measured, one such test failed fifteen unrelated
-ones. The tests this milestone adds must restore it. `docs/follow-ups.md`
-already carries an entry about this shape.
+builds a router with an expired roster leaks a refusing minter into every test
+that runs after it, and the damage is broad: measured on a filtered run, a
+long list of unrelated transfer and consumer-driver tests fail.
+
+**It is quieter than that sounds, which is the danger.** In file order the new
+expiry tests happen to re-arm a permissive minter before the transfer tests
+run, so a plain `go test ./internal/dsp` passes even with the restore removed.
+CI runs `-race -count=2` (`.github/workflows/ci.yml:28`), which is more likely
+to surface it than a local run. The tests this milestone adds must restore the
+minter, and `docs/follow-ups.md` already carries an entry about test overrides
+of package variables — though it prescribes the opposite remedy, setting once
+in `TestMain`, which is worth reconciling rather than silently contradicting.
 
 ---
 
 ## 12. What the cross-checks measured
 
-Three rounds ran, against two unwritten revisions and against this document.
+Cross-checks ran against each unwritten revision and again against this
+document, the last round implementing it and applying every mutation in §11.
 
 **Revision 1 had no runtime effect.** It checked version and expiry at load
 only. Since the roster is read once and never re-read, a connector that does
@@ -656,15 +798,28 @@ outbound message with the connector's real key. §4.3 and §4.4 are the answer.
 extracting the wiring into a testable function; measured, deleting the call
 still passed every gate. §6.3 is the answer.
 
-**This document's first draft carried three false statements and violated
-this project's own rule against counts throughout.** It gave the wrong number
-of call sites for the outbound minter; it attributed
-`addColumnIfMissing`'s doc comment to `migrate`, which would have sent the
-plan to edit the wrong function; and it said §35 describes its layering rule
-as "stylistic", a word that appears in `DECISIONS.md` only in a different
-section and with the opposite sense. It also left the refusal's status code
-unnamed, `/health` with no way to learn anything, and the approach warning
-undesigned while §10 leaned on it.
+**This document's first draft carried false statements and violated this
+project's own rule against counts throughout.** It gave the wrong number of
+call sites for the outbound minter; it attributed `addColumnIfMissing`'s doc
+comment to `migrate`, which would have sent the plan to edit the wrong
+function; and it said §35 describes its layering rule as "stylistic", a word
+that appears in `DECISIONS.md` only in a different section and with the
+opposite sense. It also left the refusal's status code unnamed, `/health` with
+no way to learn anything, and the approach warning undesigned while §10 leaned
+on it.
+
+**Its second draft chose `503` on a false premise, and that is the reversal
+worth recording.** It asserted that the TCK retries a non-`404` non-2xx, and
+proposed amending §25.1 on that basis. This repository's own wire contract
+says a `5xx` raises immediately on the negative paths and is not retried on
+the positive ones — so `503` reproduced the exact failure §25.1 forbids. The
+false premise came from `DECISIONS.md` §35, which states the over-broad
+version of the rule; §9 corrects it. §5.1 is now `409` and §25.1 stands.
+
+**The same draft justified deferring `connectorAddress` by claiming nothing
+could verify it here.** `handleInitiate` receives `providerId` and
+`connectorAddress` together and already validates both, so the claim was
+false. §2.3 now gives the real reason, which is scope.
 
 **Earlier drafts miscounted things that are now enumerated instead.** Each
 harness script writes the roster twice rather than once, because signing
