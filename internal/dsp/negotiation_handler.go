@@ -62,6 +62,12 @@ type negotiationHandler struct {
 	// a disabled check is absent rather than silently false. The same
 	// convention pulling uses on transferHandler.
 	knownParticipant func(string) bool
+	// guard reports whether the roster is still usable, and carries the
+	// warning the refusal logs. The zero guard is usable rather than expired,
+	// which is how "there is no roster" is expressed — the same direction
+	// knownParticipant's nil takes, and the reason a handler built directly
+	// in a test refuses nobody for expiry.
+	guard rosterGuard
 }
 
 // handleContractRequest serves POST /negotiations/request, the only entry

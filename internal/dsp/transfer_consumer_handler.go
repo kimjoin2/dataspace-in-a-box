@@ -50,6 +50,18 @@ type transferInitiateBody struct {
 // consumer, and it is now the management trigger rather than a stand-in for
 // one.
 func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.Request) {
+	// First, ahead of the required fields and the address guard, because this
+	// refusal is about this connector rather than about the request: no
+	// correction to the body would make the call succeed. The management
+	// listener's token check is the only thing between the operator and this
+	// hook — requireParticipant never runs here — so without this an expired
+	// connector refuses every counterparty and goes on starting exchanges and
+	// signing them with its real key.
+	if !h.guard.usable() {
+		h.guard.warnExpired()
+		refuseExpiredRoster(w, TransferErrorType)
+		return
+	}
 	var body transferInitiateBody
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes))
 	if err := dec.Decode(&body); err != nil {

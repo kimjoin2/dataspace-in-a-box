@@ -24,6 +24,12 @@ type Routers struct {
 	// not a message from a counterparty. cmd/dsbox hands them to
 	// internal/mgmt, so that package needs no opinion about this one.
 	Initiate InitiateHandlers
+	// RosterUsable reports whether the roster is still usable, and is nil
+	// when authentication is off and there is no roster to expire. It is
+	// returned rather than rebuilt from the roster by whoever needs it, so
+	// that every surface answering for the roster answers from one predicate
+	// instead of several that can disagree.
+	RosterUsable func() bool
 	// Pulls counts the data pulls the protocol handler has in flight, and
 	// CancelPulls ends them. The caller uses them in one order: cancel, then
 	// wait. DECISIONS.md section 34.3 has the argument.
@@ -89,7 +95,20 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 		}
 	}
 
-	neg := negotiationHandler{cfg: cfg, store: st, knownParticipant: knownParticipant}
+	// Non-nil only when there is a roster to expire. NewRouter's own rule
+	// applies: with authentication off the check is absent, not silently
+	// false — a zero Roster's zero expiry must not read as expired. Built
+	// above the early return below, so the initiate hooks carry it in both
+	// branches.
+	var guard rosterGuard
+	if cfg.AuthRequired() {
+		guard = rosterGuard{
+			check: func() bool { return roster.UsableAt(time.Now()) },
+			warn:  &sync.Once{},
+		}
+	}
+
+	neg := negotiationHandler{cfg: cfg, store: st, knownParticipant: knownParticipant, guard: guard}
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/request", neg.handleContractRequest)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/request", neg.handleReRequest)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/events", neg.handleEvent)
@@ -109,7 +128,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	// {id} on the five addressed transfer routes is this connector's own
 	// generated provider pid, the same convention the provider-role
 	// negotiation routes above use.
-	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}, pulls: pulls, pullCtx: pullCtx, knownParticipant: knownParticipant}
+	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}, pulls: pulls, pullCtx: pullCtx, knownParticipant: knownParticipant, guard: guard}
 	mux.HandleFunc("POST "+VersionPath+"/transfers/request", tr.handleTransferRequest)
 
 	data := dataHandler{cfg: cfg, store: st}
@@ -136,7 +155,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 		outer := http.NewServeMux()
 		mountVersionEndpoint(outer)
 		outer.Handle("/", mux)
-		return Routers{Protocol: outer, Initiate: initiate, Pulls: pulls, CancelPulls: cancelPulls}
+		return Routers{Protocol: outer, Initiate: initiate, RosterUsable: guard.check, Pulls: pulls, CancelPulls: cancelPulls}
 	}
 
 	// Outbound is armed here rather than in each client, so "authentication
@@ -166,8 +185,8 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	// version.
 	outer := http.NewServeMux()
 	mountVersionEndpoint(outer)
-	outer.Handle("/", requireParticipant(roster, cfg.ParticipantID, mux))
-	return Routers{Protocol: outer, Initiate: initiate, Pulls: pulls, CancelPulls: cancelPulls}
+	outer.Handle("/", requireParticipant(roster, cfg.ParticipantID, guard, mux))
+	return Routers{Protocol: outer, Initiate: initiate, RosterUsable: guard.check, Pulls: pulls, CancelPulls: cancelPulls}
 }
 
 // mountVersionEndpoint puts the version document on a mux, in two patterns.

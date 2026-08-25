@@ -35,6 +35,18 @@ type initiateRequestBody struct {
 // DSP message: net/http still will not put the 200 on the wire until this
 // handler returns.
 func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Request) {
+	// First, ahead of the required fields and the address guard, because this
+	// refusal is about this connector rather than about the request: no
+	// correction to the body would make the call succeed. The management
+	// listener's token check is the only thing between the operator and this
+	// hook — requireParticipant never runs here — so without this an expired
+	// connector refuses every counterparty and goes on starting exchanges and
+	// signing them with its real key.
+	if !h.guard.usable() {
+		h.guard.warnExpired()
+		refuseExpiredRoster(w, ContractNegotiationErrorType)
+		return
+	}
 	var body initiateRequestBody
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxNegotiationRequestBodyBytes))
 	if err := dec.Decode(&body); err != nil {

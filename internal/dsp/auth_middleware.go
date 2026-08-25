@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/auth"
@@ -24,6 +25,62 @@ func issuerFrom(r *http.Request) string {
 	return iss
 }
 
+// rosterGuard answers whether the roster is still usable, and carries the
+// warning that says so — once, however many surfaces refuse. A per-request
+// warning is the log firehose cmd/dsbox/main.go's authentication-off comment
+// exists to prevent, and its reason applies here unchanged.
+//
+// check is nil exactly when there is no roster to expire, which is what makes
+// the zero guard usable: a connector with authentication off holds no roster,
+// and absence must not read as expiry. That is the convention knownParticipant
+// already uses, and the reason a zero auth.Roster is never handed to
+// UsableAt.
+//
+// The predicate is a field and the answer is a method because the two have
+// different callers. NewRouter passes the field on to the management
+// listener, where nil still has to mean "there is no check"; every surface
+// that refuses wants the reading in which absence is usable. The warning is
+// a *sync.Once and not a value so that copying this struct — which every
+// handler holding one does — does not copy a lock, which go vet reports and
+// which would give each copy its own first time.
+type rosterGuard struct {
+	check func() bool
+	warn  *sync.Once
+}
+
+// usable reports whether the roster may still be acted on. The zero guard
+// reports true: there is no roster, so there is nothing to have expired.
+func (g rosterGuard) usable() bool { return g.check == nil || g.check() }
+
+// warnExpired says the roster has expired, the first time any surface
+// refuses for that reason and not again. Reached only past usable reporting
+// false, which the zero guard never does, so warn is set wherever this runs.
+func (g rosterGuard) warnExpired() {
+	g.warn.Do(func() {
+		slog.Warn("the roster has expired; this connector refuses every counterparty and every initiate call until it is replaced")
+	})
+}
+
+// refuseExpiredRoster writes the answer every HTTP surface gives once the
+// roster has expired, so the status and the sentence have one home. It does
+// not warn; its callers do, through the guard, which is where the
+// once-per-connector rule lives and where a surface that writes no response
+// can reach it.
+//
+// 409 and not 401. The caller's credential may be perfect and the fault is
+// entirely local, so answering "your credential is required" sends their
+// operator hunting across an organizational boundary, where they cannot read
+// this connector's log.
+//
+// 409 and not 503 either. This repository's own wire contract records that a
+// 5xx raises immediately on the TCK's negative paths, exactly like the 404
+// DECISIONS.md section 25.1 forbids, so a 503 would sit outside that rule
+// rather than amend it.
+func refuseExpiredRoster(w http.ResponseWriter, errType string) {
+	writeError(w, errType, http.StatusConflict,
+		"this connector's roster has expired and it cannot act until the roster is replaced")
+}
+
 // requireParticipant refuses any request that does not carry a valid
 // credential from a roster participant addressed to this connector.
 //
@@ -32,8 +89,27 @@ func issuerFrom(r *http.Request) string {
 // says nothing about 401, and a missing credential is exactly what 401 means.
 // A 401 in a TCK run therefore means the harness lost its credential, which
 // should look different from a protocol error.
-func requireParticipant(roster auth.Roster, self string, next http.Handler) http.Handler {
+//
+// An expired roster is refused here too, with a 409 that says so. That
+// refusal is not an authentication failure and reads nothing about the
+// caller — see refuseExpiredRoster above.
+func requireParticipant(roster auth.Roster, self string, guard rosterGuard, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Before the credential is read. The answer does not depend on it,
+		// and verifying a credential against a roster this connector has
+		// declared unusable is work that cannot mean anything. It also keeps
+		// the refusal honest: the connector reports its own roster rather
+		// than making any claim about the caller.
+		//
+		// TransferErrorType, matching refuse below: this middleware wraps
+		// every protocol's routes and cannot tell which one the caller was
+		// speaking, and the document is otherwise identical whichever name
+		// it carries.
+		if !guard.usable() {
+			guard.warnExpired()
+			refuseExpiredRoster(w, TransferErrorType)
+			return
+		}
 		presented, ok := cutBearer(r.Header.Get("Authorization"))
 		if !ok {
 			refuse(w, r, "no bearer credential presented")

@@ -99,6 +99,11 @@ type transferHandler struct {
 	// bounding is pullCtx below — without the cancellation, a pull caught
 	// mid-copy runs the whole cap out and is abandoned unwritten anyway.
 	pulls *sync.WaitGroup
+	// guard reports whether the roster is still usable, and carries the
+	// warning the refusal logs. The zero guard is usable rather than expired,
+	// which is how "there is no roster" is expressed — the same direction
+	// knownParticipant's nil takes above.
+	guard rosterGuard
 	// pullCtx is the connector's lifetime. A pull derives its own cancellable
 	// context from this one, so shutdown can end an in-flight copy rather
 	// than wait out its cap and abandon it — which, now that a pull records
