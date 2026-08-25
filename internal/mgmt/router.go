@@ -34,7 +34,7 @@ func NewRouter(cfg config.Config, st *store.Store, rosterUsable func() bool, neg
 	mux := http.NewServeMux()
 
 	// /health is deliberately unauthenticated: a readiness probe should not
-	// need a credential. It does carry one fact now — whether this
+	// need a credential. It does carry something now — whether this
 	// connector's own roster has expired — which is the same disclosure the
 	// DSP listener already makes to any caller it refuses for that reason,
 	// and a probe that cannot see it is not reporting readiness: it would

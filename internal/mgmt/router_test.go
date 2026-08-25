@@ -75,9 +75,12 @@ func TestHealthReturnsOK(t *testing.T) {
 }
 
 // A readiness probe that cannot see this keeps a connector in rotation when
-// it can serve no counterparty. 503 and not 409: this is a probe on the
-// management listener, and DECISIONS.md section 25.1 governs what a DSP
-// endpoint emits, not this.
+// it can serve no counterparty. 503 and not the 409 the DSP listener answers
+// with: the standing rule that keeps a rejection out of the 5xx range —
+// DECISIONS.md §25.1, which the section states in passing rather than as its
+// subject — governs what a DSP endpoint emits, and this is a probe on the
+// management listener. Not §25.4, cited above for a different property of
+// this same route: that one is about the token, this one about the status.
 func TestHealthReportsAnExpiredRoster(t *testing.T) {
 	t.Parallel()
 	h, _ := newTestRouterWithRoster(t, func() bool { return false })
