@@ -81,6 +81,8 @@ The spec was implemented twice on throwaway copies before this plan existed, and
 - Consumes: nothing.
 - Produces: `func (s *Store) RecordRosterVersion(version int) error` — returns nil when `version` is at least the highest recorded, recording it when strictly higher; returns an error naming both versions when lower.
 
+**The advance path needs its own test.** Recording into an empty table takes the plain insert, and the equal case returns before the write, so the three tests above never reach the `ON CONFLICT` clause. Add one that records 2, then 5, then asserts 4 is refused and that the error names 5 — which is what proves the stored value moved rather than staying at 2.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```go
@@ -272,7 +274,8 @@ git commit -m "feat: the store remembers the newest roster it has run"
 |---|---|---|
 | Change `version < highest` to `version > highest` | `TestRecordRosterVersionRefusesARollback` | It records 4 then offers 3; with the comparison flipped, 3 is accepted and the test's explicit failure fires |
 | Change `version == highest` to return an error | `TestRecordRosterVersionAcceptsAnEqualVersion` | It presents the same version repeatedly; the second call now errors |
-| Drop `CHECK (id = 1)` from the literal | `TestRosterVersionTableHoldsOneRow` | The `id=2` insert succeeds and the count reaches two |
+| Drop `CHECK (id = 1)` from the literal | `TestRosterVersionTableHoldsOneRow` | Both the `id=2` and the omitted-id inserts succeed, so the count moves off one |
+| Change the upsert to `ON CONFLICT(id) DO NOTHING` | `TestRecordRosterVersionAdvances` | Nothing else reaches the update clause: the other tests record into an empty table or return at the equal case. With `DO NOTHING` the ratchet freezes at whatever version was recorded first and a later rollback is accepted — the exact failure this milestone exists to refuse |
 
 ---
 
