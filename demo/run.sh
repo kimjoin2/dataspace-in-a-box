@@ -97,6 +97,13 @@ done
 echo "==> connectors"
 $compose up -d --build >/dev/null
 
+# An expired roster reaches this loop by either of the routes the design
+# provides. A roster already past its expires_at kills the process at boot,
+# so curl gets a refused connection; a roster that expires mid-run leaves
+# /health answering 503, which curl -sf also treats as a failure. Either way
+# this reports the connector as not ready after the full cap. That is
+# correct — a connector that can serve no counterparty is not ready — but the
+# message names the symptom. The reason is in the logs dumped below.
 wait_ready() {
 	i=0
 	until curl -sf "http://127.0.0.1:$1/health" >/dev/null 2>&1; do

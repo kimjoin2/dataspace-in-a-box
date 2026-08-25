@@ -80,6 +80,19 @@ consumer milestone. Now that CI runs `-race`, though, they are the most
 likely source of a future flake on an unrelated PR. The fix is the one
 `callbackRetryBackoffs` got: set once in `TestMain`, never restore.
 
+*(2026-08-25: `DECISIONS.md` §36 added tests that override
+`mintOutboundCredential` — the same package-variable shape, assigned by
+`NewRouter` and never restored — and they deliberately do **not** follow the
+remedy above. They cannot: the expiry tests need a minter that refuses while
+every other test in the package needs one that permits, so a single value set
+in `TestMain` has no setting that serves both. Those tests restore instead,
+and must, because a refusing minter left behind leaks into every later test
+— measured on a filtered run, a long list of unrelated transfer and
+consumer-driver tests fail and the package then hangs until its timeout
+panics, inside a test waiting on a pull that can no longer be dispatched.
+This entry's remedy still stands for the overrides it names; it is not a rule
+the whole package can adopt.)*
+
 **`TestSendAcceptedEvent_*` and `TestSendVerification_*` do not assert the
 request path.** Both assert the body and the return value, and both build the
 URL from a path template with the provider pid formatted into it — the thing

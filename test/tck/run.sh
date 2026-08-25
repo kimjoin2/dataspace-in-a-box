@@ -120,6 +120,15 @@ $compose up -d --build dsbox
 # container that gets seeded below. See that check for what it guards.
 connector_id=$($compose ps -q dsbox)
 
+# An expired roster reaches this loop by either of the routes the design
+# provides. A roster already past its expires_at kills the process at boot,
+# so curl gets a refused connection; a roster that expires mid-run leaves
+# /health answering 503, which curl -sf also treats as a failure. Either way
+# the until loop never breaks and this reports "did not become ready" after
+# the full cap. That is the right outcome — a connector that can serve no
+# counterparty is not ready — but the message names the symptom. The reason
+# is in the container log dumped below, so read that before suspecting a
+# slow start.
 printf 'waiting for the connector'
 i=0
 until curl -sf http://127.0.0.1:8081/health >/dev/null 2>&1; do

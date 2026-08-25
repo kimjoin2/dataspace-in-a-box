@@ -162,6 +162,10 @@ func TestTransferInitiateRefusesAnUnlistedProviderID(t *testing.T) {
 // hold that agreement), and the roster check is the more general one (is
 // providerId a participant at all), so a request that fails both must be
 // refused for the agreement, not the roster.
+//
+// Like its negotiation-side twin, it says nothing about the expiry guard:
+// newTestTransferHandler leaves rosterGuard zero, so usable reports true and
+// that check is absent from this handler.
 func TestTransferInitiateRefusesAnUnknownAgreementBeforeTheRosterCheck(t *testing.T) {
 	h, _ := newTestTransferHandler(t, config.Config{})
 	// Not seeded, and the predicate is armed to refuse everyone — the

@@ -70,20 +70,56 @@ participant_key: /etc/dsbox/participant.key
 # The participant roster: whose signatures this connector accepts
 # (DECISIONS.md section 9). Required unless require_auth is false. A JSON
 # document mapping participant identifiers to base64url Ed25519 public keys,
-# signed by roster_signer below:
+# carrying its own revision and expiry, signed by roster_signer below:
 #
 #     {"participants": [{"id": "urn:participant:peer", "public_key": "..."}],
+#      "version": 1,
+#      "expires_at": "2026-11-23T00:00:00Z",
 #      "signature": "..."}
+#
+# participants, version, and expires_at are all inside the signature, so none
+# of them can be edited without re-signing. The signature field itself is not,
+# which is what lets `dsops roster sign` compute over a file that does not
+# carry one yet.
 #
 # Build a participant's public_key with `dsops keygen` (theirs) or
 # `dsops resolve <did:web:...>` (a counterparty's, resolved rather than
 # copied by hand). Sign the finished file with `dsops roster sign`.
 #
+# version is the roster's revision, at least 1, and it only ever goes up:
+# a connector refuses one older than it has already run, so a rolled-back
+# roster is refused rather than merely stale. Raise it whenever you remove a
+# participant. Re-issuing only the expiry does not need a raise — the same
+# version is accepted.
+#
+# expires_at is RFC 3339, and it is when this roster stops being trusted.
+# Ninety days out is the recommendation. The interval is the upper bound
+# on how long a removed participant stays trusted somewhere, so a shorter one
+# is a stronger revocation guarantee and a more frequent restart of every
+# connector in the dataspace — that is the whole of the trade. It is a
+# recommendation and not a limit. The connector does enforce a maximum on how
+# far ahead the expiry may sit and refuses a roster that exceeds it, naming
+# the maximum in the error; ninety days sits well inside it, and the choice is
+# yours anywhere within it. `dsops roster sign` applies the same rules the
+# connector does, so a roster it signs is one the connector will load.
+#
+# Upgrading: a roster written before version and expires_at existed will
+# not load. There is no compatibility path — add both fields and re-sign
+# with `dsops roster sign`. The load error names the missing field.
+#
 # Read once at startup, so adding or removing a participant means editing
-# this file, re-signing it, and restarting. An unusable roster — including
-# one with no signature, or one whose signature does not verify — is a
-# startup failure rather than a warning: a connector that cannot verify
-# anyone should say so at boot, not by refusing every request later.
+# this file, re-signing it, and restarting. An unusable roster — one with no
+# signature, one whose signature does not verify, one missing version or
+# expires_at, or one already past its expiry — is a startup failure rather
+# than a warning: a connector that cannot verify anyone should say so at
+# boot.
+#
+# Refusing every request later is a different thing, and it is deliberate.
+# A connector that is already running when expires_at passes does not stop:
+# it answers 409 to every DSP request and every initiate call, stops
+# attaching credentials to what it sends, and reports 503 on /health. That is
+# what makes the expiry a real bound rather than something only a restart
+# would notice. The boot log warns while the expiry is approaching.
 #
 # The signature is what lets this file be distributed over a channel less
 # trusted than the disk it ends up on; without it, the roster is trusted

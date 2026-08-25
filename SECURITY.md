@@ -54,6 +54,15 @@ oversight:
   (`DECISIONS.md` §35.1), which `require_auth` does not touch — so turning
   authentication off no longer opens them to anyone.
 
+  **The roster's expiry is inert while the flag is false**, and that is worth
+  saying explicitly because §36 otherwise reads as a bound that always
+  applies. With authentication off there is no roster to load, so no revision
+  is recorded, no expiry is enforced, and `/health` never reports one. Every
+  refusal §36 adds is absent rather than passing, which is the same convention
+  the router already uses for the roster check itself. A deployment that
+  leaves this flag false gets none of §36's guarantee, and turning it back on
+  is what starts the clock.
+
   **What it still switches off is every comparison on the DSP listener**, and
   §35 adds a residual of its own there. `refuseIfNotParty` permits while the
   flag is false, and the roster check on an initiate call is *absent* rather
@@ -72,6 +81,20 @@ oversight:
   deliberately limited to two shapes (`DECISIONS.md` §14). A constraint that
   is not enforced is rejected rather than ignored, which is the intended
   behavior, not a bypass.
+- **An expired connector saying so to anyone who asks.** `DECISIONS.md` §36
+  makes the roster expire, and a connector past that instant reports it
+  wherever it can be asked: `409` on the DSP routes, `409` from the initiate
+  hooks
+  (behind `mgmt_token`, so to the operator only), and `503` with
+  `{"status":"roster expired"}` on `/health`, which is unauthenticated and
+  reachable by anyone who can reach the management listener. Because every
+  connector in a dataspace shares one `expires_at`, that is a fact about the
+  dataspace's governance and not only about this connector, and §36.7 accepts
+  it deliberately: the alternative is a refusal that misdescribes itself, and
+  an expired roster is not a secret an attacker can act on — it names no
+  participant and it opens nothing. A report showing that it discloses more
+  than this describes, or that the refusal can be induced rather than merely
+  observed, is in scope.
 
 ## Known unfixed issues are published, on purpose
 

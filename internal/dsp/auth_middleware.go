@@ -119,9 +119,11 @@ func requireParticipant(roster auth.Roster, self string, guard rosterGuard, next
 		iss, err := auth.Verify(presented, roster.KeyFor, self, time.Now())
 		if err != nil {
 			// The reason goes to the log and never to the caller. Telling an
-			// anonymous prober which of the six ways its credential was wrong
-			// is free reconnaissance; telling the operator is the whole point
-			// of having sentinels.
+			// anonymous prober which way its credential was wrong is free
+			// reconnaissance; telling the operator is the whole point of
+			// having sentinels. The expiry refusal above is the one rejection
+			// on this path that does say why, because it reads nothing about
+			// the caller to disclose.
 			refuse(w, r, err.Error())
 			return
 		}

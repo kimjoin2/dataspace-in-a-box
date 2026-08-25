@@ -147,7 +147,18 @@ This is the promise "dataspace" makes, and no milestone owns it.
   that still lists a removed participant cannot be detected. §9 recorded this
   as "revocation is only as fast as propagation", which is weaker than what
   the code does. A monotonic `version` inside the signed payload closes it
-  cheaply.
+  cheaply. *(2026-08-25: closed, as `DECISIONS.md` §36 — and the fix this
+  bullet proposed was half of it. `version` alone is a local anti-rollback
+  memory: it stops this connector being handed an older document, and reaches
+  no other participant. What actually bounds revocation is the `expires_at`
+  that shipped beside it, because past that instant a superseded roster stops
+  verifying wherever it is held, including on a connector nobody restarted.
+  Both are inside the signature. The bound is real only because
+  `maxRosterLifetime` caps how far ahead the expiry may sit — without a cap it
+  would be whatever the operator typed, which is the same shape as a token
+  lifetime the issuer picks and the verifier never bounds (`auth.Verify`
+  compares `exp` and nothing else; `credentialTTL` lives at the minting site).
+  No dataspace identifier was added; nothing needed one.)*
 - **Clock skew has zero tolerance.** `Verify` checks `now.Unix() >= c.Exp`
   and nothing else (`internal/auth/token.go:136`) — no leeway, no `nbf`,
   and `iat` is minted but never checked. Credentials live five minutes, so
@@ -254,6 +265,13 @@ does not blunt it.**
 > which is why `SECURITY.md` no longer names this as the sharpest item open.
 > Closing it means binding an address to a participant in the roster, which is
 > ordered item 3 below.
+>
+> *(2026-08-25: not item 3. That milestone shipped as `DECISIONS.md` §36 and
+> declined this on scope — it changed the roster document's lifecycle, while
+> an address changes what an entry means and would make every address change
+> a re-signed roster and a fleet-wide restart. It moves to ordered item 4,
+> discovery, where something actually consumes an address. This residual
+> stays open in the meantime.)*
 
 §32.3 already names the vector — "an impersonation primitive against a third
 participant" — so the finding is not that it exists. The finding is what it
@@ -364,10 +382,35 @@ promotion is what pushed three of the four promises out of the document.
    *Before* any onboarding document is written, or the document describes a
    procedure about to be replaced.
 
+   *(2026-08-25: the roster half is done — `DECISIONS.md` §36. The clock work
+   is not, and it was never one item with the roster: the two share no code
+   and no decision, and their evidence is opposite. Both harnesses exercise
+   the roster half simply by coming up; neither can exercise a clock
+   difference, because every container shares one host clock. What is still
+   owed is leeway on the `exp` comparison and a bound on `exp - iat` — not
+   `nbf`, which would newly refuse pairs that transact fine. §36.9 records
+   why it split, and what deferring it costs §36 is that the fleet stops
+   across its clock spread rather than at one instant. `config.example.yaml`
+   now describes the roster procedure, so the "before any onboarding
+   document" instruction was met for this half.)*
+
 4. **Discovery** — a catalog client. After 2, because it mints outbound
    credentials whose audience 2 decides; before 5, because a ten-minute
    script that includes "obtain the offer id out of band" is not worth
    measuring.
+
+   *(2026-08-25: this item also inherits binding `connectorAddress` to a
+   roster entry, which `DECISIONS.md` §35.5 and item 3 both assigned to the
+   roster milestone. §36 declined it on scope: it changed the roster
+   document's *lifecycle* — a revision and an expiry, both properties of the
+   document as a whole — while an address changes what an *entry* means, and
+   would make every address change a re-signed roster and a fleet-wide
+   restart. It is not that the field would be unverifiable earlier — both
+   initiate handlers already take `providerId` and `connectorAddress` in one
+   body and validate both, so a roster address could be compared at exactly
+   that point with no discovery client. It lands here because this is where
+   something actually consumes an address. Until then the gap §35.5 names
+   stays open and `SECURITY.md` carries it.)*
 
 5. **Define and measure "ten minutes"** in CI. After 1–4, which change the
    steps being counted.

@@ -428,6 +428,15 @@ any other non-2xx is retried three times with backoff before it throws. So the
 management listener must answer 2xx on both routes, and a misrouted URL
 produces three retries and a confusing assertion rather than a clean failure.
 
+*(2026-08-25: "any other non-2xx" is over-broad, and `DECISIONS.md` §35 was
+written from this sentence.
+`docs/superpowers/specs/2026-08-16-transfer-process-tck-wire-contract.md`
+records the measured behaviour of `HttpFunctions.postJson`: retry applies to
+4xx-non-404 only and only when `expectError` is false; 2xx, 3xx, 5xx, and 404
+all raise. This paragraph's conclusion is unaffected — the misrouted-URL case
+it describes answers 405, which is a 4xx — but a 5xx would raise at once
+rather than being retried. `DECISIONS.md` §36.3 turns on that distinction.)*
+
 The management listener compares that string with `subtle.ConstantTimeCompare`
 and never parses it. That deserves a comment in `internal/mgmt`'s
 `authenticated`, because the harness now makes the token look like a
@@ -691,6 +700,14 @@ It does not put an address in the roster. Binding `connectorAddress` to a
 participant would close §4.5, and it needs a schema change to a signed
 artifact — which belongs with the roster milestone the gap analysis puts next,
 not here.
+
+*(2026-08-25: the roster milestone shipped as `DECISIONS.md` §36 and
+deliberately did not take this. Its scope is the document's lifecycle — a
+revision and an expiry, both properties of the roster as a whole — while an
+address changes what an *entry* means and would make every address change a
+re-signed roster and a fleet-wide restart. It moves to
+`docs/goal-gap-analysis.md`'s ordered item 4, discovery, which is where
+something actually consumes an address. §4.5 stays open until then.)*
 
 It does not change the error documents the two hooks emit. They continue to
 answer with this connector's existing negotiation and transfer error types,

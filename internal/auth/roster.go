@@ -42,8 +42,12 @@ func canonicalRosterBytes(doc rosterDocument) []byte {
 const maxRosterLifetime = 400 * 24 * time.Hour
 
 // Roster is the set of participants whose signatures this connector accepts.
-// It is the whole of the trust decision: a key here is trusted, and anything
-// else is not.
+// It is the whole of the trust decision, for as long as the document is
+// still trusted: until expiresAt a key here is trusted and anything else is
+// not, and from expiresAt onward no key here is trusted either. UsableAt
+// below is that boundary, and every surface that refuses for it does so
+// through the predicate internal/dsp builds from this value rather than
+// comparing again.
 //
 // Loaded once at startup and never mutated, so nothing needs a lock and there
 // is no reload path to get wrong. Adding or removing a participant means
@@ -156,9 +160,24 @@ func checkRosterExpiry(path string, doc rosterDocument, now time.Time) (time.Tim
 // LoadRoster reads, verifies, and validates the roster. Every failure below
 // is a startup failure rather than a warning: a connector that starts with
 // an unusable roster can verify nobody, and "started fine, refuses everyone"
-// is a much harder symptom to trace than a refusal to start. That now
-// includes signer: an unsigned or forged roster is exactly as unusable as
-// one with no participants in it.
+// is a much harder symptom to trace than a refusal to start.
+//
+// What counts as unusable has outgrown the participant list it began as. An
+// unsigned or forged document is unusable; so is one whose version is absent
+// or below what checkRosterDocument accepts; so is one whose expires_at is
+// absent, not RFC 3339, further ahead than maxRosterLifetime, or already
+// past. Those live in checkRosterDocument and checkRosterExpiry, and
+// SignRoster applies the same ones, so `dsops roster sign` cannot print a
+// signature for a file this would refuse.
+//
+// A roster failure that belongs with these is not here and cannot be: a
+// revision older than one this connector has already run is refused against
+// the store, which is not open yet. cmd/dsbox/main.go carries it at the call
+// that opens one.
+//
+// Past expires_at, refusing everyone stops being the symptom above and
+// becomes the designed state — a connector already running does not stop,
+// it refuses, and says so. internal/dsp's guard is where that lives.
 func LoadRoster(path string, signer ed25519.PublicKey, now time.Time) (Roster, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

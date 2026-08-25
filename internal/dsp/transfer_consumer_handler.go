@@ -100,16 +100,21 @@ func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.R
 			"no agreement with id "+body.AgreementID)
 		return
 	}
-	// The roster check is the most general precondition here too: the
-	// required-fields check, the address guard, and the agreement lookup
-	// above are each about a specific fact this request must get right,
-	// while the roster check only asks whether providerId names a
-	// participant at all. It runs last, so a request with multiple mistakes
-	// is refused for its most specific one — pinned by
+	// The roster check is the most general of the checks about the request
+	// here too: the required-fields check, the address guard, and the
+	// agreement lookup above are each about a specific fact this request
+	// must get right, while the roster check only asks whether providerId
+	// names a participant at all. It runs after them, so a request with
+	// several mistakes is refused for its most specific one — pinned by
 	// TestTransferInitiateRefusesAnUnknownAgreementBeforeTheRosterCheck,
 	// which sends a request that fails both the roster check and the
 	// agreement lookup and asserts the agreement lookup's rejection is the
 	// one returned.
+	//
+	// The expiry guard at the top of this handler is outside that ordering,
+	// for the reason handleInitiate's equivalent comment gives: it is about
+	// this connector rather than about the request, so it runs before
+	// everything here rather than at the general end of it.
 	//
 	// The rejected providerId is echoed in the response below, for the same
 	// reason handleInitiate's equivalent check does.
@@ -404,17 +409,22 @@ type pullOutcome struct {
 // DECISIONS.md section 34.2 records that an operator reading this one column
 // on one row has no second place to look a code up in.
 //
-// It is the same reason the log line at that exit gives, and at no exit the
-// same string. Often it is close: at ten of the exits the recorded string is
-// a prefix of the log message, usually that message with a trailing clause
-// ("; leaving the partial download in place") cut off. At three the only
-// difference is a leading "the", and those three are named so this is
-// checkable by reading — "the start message carried no data endpoint", "the
-// data endpoint sent no response within the idle timeout", and "the data
-// endpoint refused the pull". Of the eleven that are not prefixes, nine
-// diverge because the log follows the short-verb-phrase convention with the
+// Wherever an exit logs, the recorded reason is what its log line says, and
+// at no exit the same string. Often it is close: at many exits the recorded
+// string is a prefix of the log message, usually that message with a
+// trailing clause ("; leaving the partial download in place") cut off. Where
+// the only difference is a leading "the", the exits are named here so this
+// is checkable by reading — "the start message carried no data endpoint",
+// "the data endpoint sent no response within the idle timeout", and "the
+// data endpoint refused the pull". Where the two diverge further, it is
+// mostly because the log follows the short-verb-phrase convention with the
 // detail in structured fields, which a column with no fields cannot use; the
-// other two simply say something different from the reason recorded.
+// rest simply say something different from the reason recorded.
+//
+// The exception is the exit the minter's refusal reaches, which logs nothing
+// at all: the guard has already warned once for the whole connector, so that
+// exit records a reason with no line to pair against. The comment there
+// gives the argument.
 //
 // So neighbouring exits carry near-identical prose and nothing checks the
 // pairing. When editing these sentences, diff them against their neighbours

@@ -174,9 +174,9 @@ func TestVersionEndpointStaysOpen(t *testing.T) {
 	}
 }
 
-// The rejection says a credential is required and nothing else. Which of the
-// six ways it was wrong goes to the log, where an operator can see it and a
-// prober cannot.
+// The rejection says a credential is required and nothing else. Which way it
+// was wrong goes to the log, where an operator can see it and a prober
+// cannot.
 func TestRejectionDoesNotExplainWhy(t *testing.T) {
 	handler, priv := authedRouter(t)
 	now := time.Now()

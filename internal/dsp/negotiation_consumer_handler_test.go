@@ -313,6 +313,10 @@ func TestHandleInitiateSkipsTheRosterCheckWhenItIsAbsent(t *testing.T) {
 // participant at all), so a request that fails both must be refused for the
 // address, not the roster. validateOutgoingCallback is deliberately not
 // stubbed here — this test needs the real guard to be the thing that fires.
+//
+// It says nothing about the expiry guard, and cannot: the handler is built
+// here as a literal, so rosterGuard is its zero value and usable reports
+// true. That check has its own tests, which build a router.
 func TestHandleInitiateRefusesAnUnsendableAddressBeforeTheRosterCheck(t *testing.T) {
 	st, err := store.Open(":memory:")
 	if err != nil {

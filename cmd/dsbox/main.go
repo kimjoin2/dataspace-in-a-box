@@ -61,11 +61,16 @@ func run() error {
 		slog.Warn("no mgmt_token configured; the management API will reject every authenticated request")
 	}
 
-	// Authentication material is read before anything listens. Both failures
+	// Authentication material is read before anything listens. The failures
 	// below are fatal rather than degraded: a connector that cannot verify a
 	// counterparty, or cannot sign for itself, has nothing useful to offer,
 	// and starting anyway would turn a configuration mistake into a runtime
 	// mystery.
+	//
+	// The same rule reaches a failure that cannot live in this block. A roster
+	// older than one this connector has already run is refused against the
+	// store, and the store is not open yet — so that check sits at the call
+	// below that opens it, with its own reason for the placement.
 	var (
 		roster  auth.Roster
 		signKey ed25519.PrivateKey

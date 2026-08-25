@@ -73,16 +73,22 @@ func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Reques
 			"connectorAddress is not an address this connector will send to")
 		return
 	}
-	// The roster check is the most general precondition here: the
-	// required-fields check and the address guard above are each about a
-	// specific fact this request must get right, while the roster check
-	// only asks whether providerId names a participant at all. It runs
-	// last, so a request with multiple mistakes is refused for its most
-	// specific one — pinned by
+	// The roster check is the most general of the checks about the
+	// request: the required-fields check and the address guard above are
+	// each about a specific fact this request must get right, while the
+	// roster check only asks whether providerId names a participant at
+	// all. It runs after them, so a request with several mistakes is
+	// refused for its most specific one — pinned by
 	// TestHandleInitiateRefusesAnUnsendableAddressBeforeTheRosterCheck,
 	// which sends a request that fails both the roster check and the
 	// address guard and asserts the address guard's rejection is the one
 	// returned.
+	//
+	// The expiry guard at the top of this handler is outside that
+	// ordering and is not the general end of it. It is about this
+	// connector rather than about the request, so no correction to the
+	// body reaches it, and that is exactly why it runs before everything
+	// here rather than after.
 	//
 	// The rejected providerId is echoed in the response below.
 	// validateOutgoingCallback's rejection above is not: it reports what

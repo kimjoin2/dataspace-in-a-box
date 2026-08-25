@@ -165,6 +165,38 @@ authentication and takes the provider-role rows with it, so on its own it
 does not isolate the anchor — §35.4 has the fuller account, including what
 does.
 
+**The roster as a versioned, expiring artifact** (2026-08-25, `DECISIONS.md`
+§36). `roster.json` carries a revision and an expiry, both inside the
+operator's signature. The expiry is enforced while the connector runs — at
+load, on every inbound DSP request, on both initiate hooks, and on everything
+this connector sends — so a superseded roster stops verifying at a known
+instant even where nobody restarted. The revision is a ratchet in this
+connector's own store: a roster older than one it has already run is refused
+at startup.
+
+**Its verification situation is the one this document had no shape for, and
+it is worth adding one.** Milestone 1's shape was "the TCK carries the pass
+side, unit tests carry the refusals". Milestone 2's was "no harness exists,
+build one". This is neither: both harnesses exercise the pass side simply by
+coming up — each writes a roster that expires a day out — and **neither can
+show any refusal this milestone adds**. An implementation was mutation-tested
+and `make tck` and `make demo` stayed green under every mutation, including
+the ones aimed at the initiate-hook and outbound checkpoints. So `go test` is
+the only gate that carries it, and that is a fact to know rather than
+discover.
+
+The version-regression refusal is further out of reach than the rest, for
+reasons neither harness can fix incidentally: the TCK connector mounts no
+volume for `data_dir`, so its database dies with the container, and
+`demo/run.sh` clears the generated directory at the start of every run even
+though the demo consumer does bind-mount `data_dir`. The demo could reach it
+cheaply — a second boot with a lowered `version` — and §36.13 records why it
+does not, which is a judgement rather than an impossibility.
+
+The harness rosters expire a day out, which permanently trips the boot log's
+approaching-expiry warning. Whoever reads `tck-connector.txt` should know
+that line is expected.
+
 ## The milestone that was next: authorizing the initiate hooks — done, `DECISIONS.md` §35
 
 > The framing of this section was disputed and is now settled — see the note

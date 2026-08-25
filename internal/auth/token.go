@@ -30,8 +30,14 @@ import (
 const Algorithm = "EdDSA"
 
 // Why a token was refused. The middleware logs these and never echoes them:
-// telling an anonymous caller which of the six ways its credential was wrong
-// is free reconnaissance.
+// telling an anonymous caller which of these its credential tripped is free
+// reconnaissance.
+//
+// Every one of them is a fact about the credential. The middleware also
+// refuses a caller whose credential it never reads, because this connector's
+// own roster has expired. That is not an authentication failure and does not
+// belong in this list: it reads nothing about the caller, so the middleware
+// answers it with a 409 that does say why.
 var (
 	ErrMalformed     = errors.New("token is not three base64url segments")
 	ErrBadAlgorithm  = errors.New("token header names an algorithm this connector does not accept")

@@ -57,9 +57,13 @@ whitelist, so this table cannot drift ahead of reality.
 Connectors now authenticate to each other. Every DSP endpoint except the
 version document requires a JWT signed EdDSA over Ed25519 by a participant in
 this connector's roster and addressed to it, and every call this connector
-makes carries one (DECISIONS.md sections 9 and 10). The suite above runs with
-that on. Removing the harness's credential failed 63 of the 65 when that was
-measured, at the milestone that added the check — a figure this section does
+makes carries one (DECISIONS.md sections 9 and 10). Both halves are bounded by
+the roster's own expiry: past it the listener answers 409 to every request
+without reading the credential, and the connector attaches nothing and sends
+nothing rather than signing with a key whose roster it no longer trusts
+(DECISIONS.md section 36). The suite above runs with that on. Removing the
+harness's credential failed 63 of the 65 when that was measured, at the
+milestone that added the check — a figure this section does
 not re-measure and which no longer describes today's harness, because the same
 string is now both the credential the TCK presents and the connector's
 management token (DECISIONS.md section 35.4).
@@ -115,13 +119,22 @@ exception — a constraint which is not enforced is not accepted. Usage
 purposes, spatial restrictions, and counts are not evaluated and are not a
 present feature.
 
-**The roster is signed, but its own distribution is still a bootstrap
-problem.** `roster.json` now carries the operator's signature, verified
-against `roster_signer` at load — an unsigned or forged roster is a startup
-failure. What that does not solve: how `roster_signer` itself, or a first
-copy of the roster, reaches every connector that must trust it. That is a
+**The roster is signed and expires, but its own distribution is still a
+bootstrap problem.** `roster.json` carries the operator's signature, verified
+against `roster_signer` at load, plus a revision and an expiry that the same
+signature covers — an unsigned or forged roster is a startup failure, so is
+one missing either field, and so is one already past its expiry. The expiry
+is what bounds revocation: past it a superseded roster stops verifying
+anywhere, including on a connector nobody restarted, and this connector
+refuses every request rather than acting on a document it no longer trusts.
+The revision is narrower than it sounds — it stops *this* connector being
+handed an older roster than one it has already run, and it is exchanged with
+nobody. What none of that solves: how `roster_signer` itself, or a first copy
+of the roster, reaches every connector that must trust it. That is a
 governance question `DECISIONS.md` section 9 leaves to "diffed in git", not
-one a signature scheme answers by itself.
+one a signature scheme answers by itself. Replacing an expired roster is the
+same problem arriving on a deadline, and every connector in the dataspace
+shares the deadline (`DECISIONS.md` section 36.5).
 
 **A resumed transfer trusts a size check, not a content check.** A pull
 that gets interrupted resumes from where it left off on the next restart —

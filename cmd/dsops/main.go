@@ -10,6 +10,15 @@
 // they are meant to read. Signing is no exception: `roster sign` prints a
 // signature for the operator to paste in, the same way `keygen` prints a
 // public key rather than writing it into anyone's roster.
+//
+// `roster sign` does judge the file before it signs it, and that is not the
+// same thing. It refuses what the connector would refuse at boot — a missing
+// version, a missing or malformed expires_at, an expiry already past or
+// further ahead than the connector accepts — because printing a signature
+// for a roster that cannot be loaded hands the operator a success now and a
+// failure days later. It reads and reports; it still writes nothing, and it
+// still does not decide who belongs in the roster or how long it should
+// live.
 package main
 
 import (
