@@ -58,6 +58,13 @@ reach a running connector; only the expiry does.
 Stated the other way: revocation gains an upper bound, and that bound is the
 expiry. Everything else here serves it.
 
+Two qualifications, both load-bearing enough that reading §1.3 without them
+overstates the milestone. The bound is only real because §3.4 caps how far
+ahead an expiry may sit — without a cap it is whatever the operator typed, and
+this document would be diagnosing an anti-pattern in §2.2 while reproducing
+it. And the adversary is narrower than "revocation is detectable" sounds:
+§10.9 has the model, and it does not include one who owns the host.
+
 ### 1.4 The decision, in one paragraph
 
 The roster gains a revision number and an expiry, both inside the operator's
@@ -85,6 +92,9 @@ against.
   wiring fails a test (§6).
 - `dsops roster sign` refuses to sign a roster the connector would not load
   (§8).
+- Both harness scripts, which cannot be deferred: §11.2 measured that the
+  `internal/auth` change and the scripts are one indivisible commit (§7).
+- A warning before the expiry, on the boot log, with its limit stated (§5.5).
 
 ### 2.2 Out: clock leeway, `nbf`, and a maximum token lifetime
 
@@ -176,7 +186,31 @@ zero value into the rejection and needs no pointer. Version zero is
 unreachable after this, which costs nothing because no roster carries a
 version today.
 
-### 3.4 What the required-field check is really for
+### 3.4 The expiry has a maximum, enforced here
+
+`LoadRoster` refuses an expiry too far in the future. Without that, §1.3's
+"upper bound" is whatever the operator typed, and a roster dated 2099 turns
+this milestone into decoration.
+
+This is the same defect §2.2 names in the token half: `credentialTTL` lives at
+the minting site, so §10's five minutes is a convention the verifier does not
+enforce, and the harness already mints past it. Writing an expiry into a
+signed document and then not bounding it would repeat that inside the very
+milestone that points it out.
+
+The cap is a constant in `internal/auth`, not configuration. A configurable
+maximum is a second policy the signature does not carry, so a deployment could
+widen its own and the widest one would be the weak link — which is §10.1's
+argument against a grace period, applied to the same question from the other
+side. `dsops roster sign` applies the same cap, so an operator learns at
+signing rather than at a boot (§8).
+
+**The cap is a ceiling and not a recommendation.** §10.1's ninety days is what
+`config.example.yaml` suggests; the cap sits well above it, so an operator
+choosing a longer interval for a reason is not fought, and one who typed a
+year by mistake is.
+
+### 3.5 What the required-field check is really for
 
 Both fields are required, and the honest reason is narrow. It is *not* that
 an attacker could strip a field to evade the version check: canonicalization
@@ -186,13 +220,13 @@ main safety net either, because §8 makes `dsops roster sign` refuse to
 produce such a file.
 
 What it buys is the upgrade message. Every roster that exists today lacks
-both fields, and §3.5 puts this check where the operator gets told that in
+both fields, and §3.6 puts this check where the operator gets told that in
 those words rather than through a signature failure.
 
 **Every existing roster must be re-signed**, and §9 records that as the
 upgrade step it is.
 
-### 3.5 The check runs before the signature verifies
+### 3.6 The check runs before the signature verifies
 
 `LoadRoster` already draws this line, and the new fields fall on the near
 side of it. Document-level structure is checked *before* `ed25519.Verify`
@@ -206,7 +240,7 @@ roster would otherwise report a missing field instead of a bad signature and
 send an operator to edit an attacker's file. That argument is real but it
 proves too much: it applies identically to the two checks already sitting
 there, and this repository accepted the trade for them. Putting the new ones
-after also made §3.4's purpose empty — every pre-milestone roster fails the
+after also made §3.5's purpose empty — every pre-milestone roster fails the
 signature first, so the check would never fire for the case it exists to
 serve.
 
@@ -284,6 +318,14 @@ func(aud string) (authorization string, maySend bool)
 The polarity matters. The package-level default must return `true`, or a
 connector with authentication off sends nothing.
 
+**What each call site does with a refusal**, because leaving any of them open
+would invite four different answers. `callback.go` abandons the retry schedule
+and returns as it does for an exhausted one. `negotiation_client.go` and
+`transfer_client.go` return an error to their caller, which is what those
+functions already do when a request fails; the row they were sent for keeps
+whatever state it had. The data pull records its failure through the outcome
+it has already deferred — the case §10.4's third paragraph is about.
+
 **A retry loop that is mid-schedule stops.** `pushCallback` mints per attempt
 — `callback.go:90-95` says why, in a comment about the credential's five
 minute life — so an expiry landing between attempts is observed on the next
@@ -312,6 +354,13 @@ does it apply to `mintOutboundCredential`, which is never nil — it is a
 package-level default that `NewRouter` overwrites only past that same early
 return, so with authentication off the default stands and §4.4's polarity is
 what makes it permit.
+
+**`dsp.NewRouter` builds the predicate and returns it on `Routers`**, and
+`cmd/dsbox` hands the same value to `mgmt.NewRouter`. The alternative — `main`
+building its own and passing it to both — would put the roster's meaning in
+two places, and §5.2's point is that both listeners answer from one value.
+This is the route `Routers.Initiate` already travels, so `internal/mgmt` still
+takes plain values and holds no opinion about `internal/dsp`.
 
 **Absence is expressed by a nil predicate and never by a zero timestamp.** A
 zero `auth.Roster` must not read as expired, or `require_auth: false` breaks
@@ -457,9 +506,13 @@ reason for the authentication-off warning: "One line at startup, not one per
 request... a per-request warning would bury the rest of the log under it."
 
 The expiry refusal follows it: the connector says so once, the first time it
-refuses. The guard is a `*sync.Once` and not a `sync.Once` value, because a
-test that resets it copies a lock and `go vet` reports it — and `go vet` is a
-gate.
+refuses — one warning across all three surfaces, not one each.
+
+The guard is a `*sync.Once` and not a `sync.Once` value, because a test that
+resets it copies a lock and `go vet` reports it, and `go vet` is a gate. It
+lives beside the predicate rather than at package level: a package-level
+`sync.Once` is the shape §11.3 warns about, where one test's use changes what
+a later test observes.
 
 ### 5.4 The boot log carries the roster's identity
 
@@ -486,6 +539,15 @@ boot log is the one place this project already expects an operator to look.
 A per-request warning is the log firehose §5.3 exists to prevent. An operator
 who restarts rarely learns nothing from this, and that is the weakest part of
 §10.1's argument against a grace period.
+
+**`/health` is the obvious second channel and this milestone does not use
+it.** §5.2 makes it expiry-aware and both harnesses already poll it, so it is
+the one place a running connector's state is asked for on a schedule. Reporting
+"expiring soon" there — distinct from expired — would reach the population the
+boot log misses. It is left out because a probe that answers non-2xx before
+anything is actually wrong turns a warning into an outage, and drawing that
+line needs a decision about what a probe means that this milestone does not
+otherwise need. Recorded here rather than left as an oversight.
 
 ---
 
@@ -608,10 +670,20 @@ each remaining milestone" section should say so rather than let it be
 discovered.
 
 The version-regression refusal in particular is unreachable from either
-harness, for two different reasons: the TCK connector mounts no volume for
+harness, and for two different reasons: the TCK connector mounts no volume for
 `data_dir`, so its database dies with the container, and `demo/run.sh:22`
-removes the generated directory at the start of every run even though the
-demo consumer does bind-mount `data_dir` (`demo/compose.yaml:49`).
+removes the generated directory at the start of every run even though the demo
+consumer does bind-mount `data_dir` (`demo/compose.yaml:49`).
+
+**Could a harness reach it?** The demo could, cheaply: it already keeps the
+consumer's `data_dir` on the host, so a second boot with a lowered `version`
+would exercise the refusal end to end. The sibling milestone did exactly this
+kind of thing — it added a read-back step to `test/tck/run.sh` when a check
+would otherwise have been unverified by any harness. It is not done here
+because the demo's job is to show a transfer working, and a run that
+deliberately fails a boot in the middle of it is a different artifact. That is
+a judgement, not an impossibility, and whoever disagrees should know the door
+is open.
 
 ---
 
@@ -684,6 +756,11 @@ wording.
 - `test/tck/compose.yaml:24-25`, which says the connector reads the roster
   once at startup — still true and no longer sufficient. (`test/tck/dsbox.yaml`
   carries no such sentence; an earlier draft listed it and was wrong.)
+- `docs/superpowers/specs/2026-08-24-initiate-hook-authorization-design.md:427`,
+  which says "any other non-2xx is retried three times with backoff before it
+  throws" — the sentence `DECISIONS.md` §35 was written from. It is a dated
+  spec, so it gets a dated bracket rather than an edit, following how this
+  repository already treats those.
 - `DECISIONS.md` §35's "any other non-2xx is retried with backoff first",
   which the wire contract at
   `docs/superpowers/specs/2026-08-16-transfer-process-tck-wire-contract.md:165`
@@ -702,11 +779,11 @@ recommended interval and what it trades (§10.1); `SECURITY.md` gains the
 inert-under-`require_auth` sentence (§10.7) and the disclosure (§10.8);
 `test/tck/run.sh` and `demo/run.sh` gain readiness-loop comments (§5.2);
 `docs/follow-ups.md`'s package-variable entry gains why this milestone cannot
-follow it (§11.2).
+follow it (§11.3).
 
 **The upgrade step, which is not a documentation edit but belongs in the same
 list:** every existing roster must be re-signed with the two new fields. There
-is no compatibility path and none is wanted — §3.3 and §3.4 explain why — but
+is no compatibility path and none is wanted — §3.3 and §3.5 explain why — but
 the operator has to be told, so `config.example.yaml` says it and the load
 error names it.
 
@@ -801,7 +878,7 @@ on three surfaces: `409` on the DSP routes, `409` from the initiate hooks
 (behind the management token, so to the operator only), and `503` on
 `/health`, which is open to anyone who can reach that listener. Since §10.1 makes `expires_at` fleet-wide, that is a fact about the
 dataspace's governance and not only about this connector — which is more than
-§5.1's "its own configuration" framing admits.
+§5.1 admits when it calls the body a disclosure and stops there.
 
 It is accepted because the alternative is a refusal that misdescribes itself,
 and because an expired roster is not a secret an attacker can act on: it names
@@ -855,19 +932,35 @@ needs its own test: that the DSP routes and the initiate hooks both answer
 Design points below the mutation line, each covered by an ordinary test rather
 than by a mutation, and listed so the plan does not treat them as covered by
 the table: load-time expiry (§4.1); the check order inside `LoadRoster`
-(§3.5); a malformed expiry (§4.6); the exclusive boundary (§4.5); the
+(§3.6); the expiry cap (§3.4); a malformed expiry (§4.6); the exclusive
+boundary (§4.5); the expiry checked before the credential (§4.2) and ahead of
+the request checks (§4.3); the
 no-audience and `auth.Mint`-error branches staying unchanged (§4.4); the
 `cfg.AuthRequired()` guard and the minter's permitting default (§4.5, §6.1);
 the single-row constraint (§6.1); `/health` (§5.2); the once-only warning
 (§5.3); the boot log (§5.4); and the approach warning (§5.5).
 
-### 11.1 Commit order
+### 11.1 What already exists and changes
+
+A plan needs this and the table above does not carry it. `auth.LoadRoster`
+gains a clock parameter and `auth.SignRoster` gains one too (§8), so every
+caller in `cmd/dsbox`, `cmd/dsops`, and the tests moves.
+`mintOutboundCredential` changes its return shape, so every call site in
+`internal/dsp` and every test that overrides it moves (§4.4, §11.3).
+`mgmt.NewRouter` takes the predicate, so its callers move.
+`dsp.NewRouter` returns it. And **every roster document in the repository
+becomes invalid** — the fixtures built inline in `internal/auth`,
+`internal/dsp`, and `cmd/dsops` tests, and the heredocs §7.1 enumerates. None of
+these is hard; all of them are places a plan that only reads §11's table would
+miss.
+
+### 11.2 Commit order
 
 The `internal/auth` change and both harness scripts are one commit and cannot
 be split: with the scripts unchanged, `make tck` fails in seconds at
 `dsops roster sign`. A store-only commit before it is green, measured.
 
-### 11.2 A hazard the plan must carry
+### 11.3 A hazard the plan must carry
 
 `mintOutboundCredential` is a package-level variable that `NewRouter` assigns
 and never restores — a trade-off `callback.go:200-208` records. A test that
@@ -933,13 +1026,13 @@ could verify it here.** `handleInitiate` receives `providerId` and
 false. §2.3 now gives the real reason, which is scope.
 
 **A fourth round checked the third round's own corrections, which nothing had
-verified.** It found the placement reversal in §3.5 to be against this file's
+verified.** It found the placement reversal in §3.6 to be against this file's
 own convention — `LoadRoster` already checks document-level structure before
 the signature and per-participant content after, and the new fields are
-document-level — which also restored §3.4's purpose. It found §6.1 claiming
+document-level — which also restored §3.5's purpose. It found §6.1 claiming
 the version check sits in a block that closes before the store opens; §5.4
 putting the roster's identity on a line that runs after the check that can
-refuse to start; the initiate hooks with no status code assigned; and §11.2's
+refuse to start; the initiate hooks with no status code assigned; and §11.3's
 leak measurement wrong in the unsafe direction, where the real first symptom is
 a test run that hangs until the package timeout. It also found the `409` this
 document argues for landing on the one route that already answers `409` for
