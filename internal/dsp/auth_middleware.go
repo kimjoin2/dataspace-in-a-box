@@ -36,10 +36,11 @@ func issuerFrom(r *http.Request) string {
 // already uses, and the reason a zero auth.Roster is never handed to
 // UsableAt.
 //
-// The predicate is a field and the answer is a method because the two have
-// different callers. NewRouter passes the field on to the management
-// listener, where nil still has to mean "there is no check"; every surface
-// that refuses wants the reading in which absence is usable. The warning is
+// The predicate is a field and the answer is a method because they answer
+// different questions. The field is what NewRouter returns on Routers, where
+// nil still has to mean "there is no check"; the method is the reading every
+// surface that refuses wants, in which absence is usable. A method value is
+// never nil, so one cannot stand in for the other. The warning is
 // a *sync.Once and not a value so that copying this struct — which every
 // handler holding one does — does not copy a lock, which go vet reports and
 // which would give each copy its own first time.

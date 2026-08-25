@@ -24,9 +24,10 @@ import (
 // dead by the time any request arrives.
 //
 // It restores mintOutboundCredential. NewRouter assigns that package
-// variable and never puts it back, so without this every test after this one
-// runs with a refusing minter — and the measured symptom is not a failure
-// but a package that hangs until its timeout.
+// variable on the authenticated path and never puts it back, so without this
+// the closure built here — holding this router's participant id and a nil
+// signing key — outlives the test and stands in for the package default in
+// everything that runs after it.
 func expiredRouter(t *testing.T) (http.Handler, InitiateHandlers) {
 	t.Helper()
 	st, err := store.Open(":memory:")
@@ -152,13 +153,23 @@ func TestTheExpiryWarningIsLoggedOnce(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(restore) })
 
+	// Each surface is asserted to have actually refused for this reason. A
+	// count of one is also what a connector where only one of them refuses
+	// produces, so without these the assertion below reads as "one warning
+	// across every surface" while measuring something weaker.
 	handler, initiate := expiredRouter(t)
 	for i := 0; i < 3; i++ {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("POST", VersionPath+"/catalog/request", strings.NewReader("{}")))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("catalog request: got %d, want 409 — the listener did not refuse, so the count below proves nothing about it", rec.Code)
+		}
 	}
 	rec := httptest.NewRecorder()
 	initiate.Negotiation.ServeHTTP(rec, httptest.NewRequest("POST", "/", strings.NewReader("{}")))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("negotiations/initiate: got %d, want 409 — the hook did not refuse, so the count below proves nothing about it", rec.Code)
+	}
 
 	if n := strings.Count(buf.String(), "roster has expired"); n != 1 {
 		t.Errorf("the expiry was logged %d times across every surface, want once", n)

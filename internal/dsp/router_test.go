@@ -40,3 +40,47 @@ func TestNewRouterReturnsInitiateHandlersWithAuthenticationOff(t *testing.T) {
 		t.Fatal("NewRouter returned a nil initiate handler on the authentication-off path")
 	}
 }
+
+// RosterUsable is how something holding no roster of its own asks whether
+// this connector's is still usable, and nil is how "there is no roster to
+// expire" is expressed. That convention is what makes absence different from
+// a refusal, and it is easy to destroy while every other test stays green:
+// populating the field from the guard's method rather than its predicate
+// compiles, answers the same way today, and is never nil.
+//
+// No t.Parallel: the authenticated branch assigns mintOutboundCredential,
+// which is a package variable.
+func TestNewRouterReturnsRosterUsableOnlyWithAuthenticationOn(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	restoreMinter := mintOutboundCredential
+	t.Cleanup(func() { mintOutboundCredential = restoreMinter })
+
+	base := config.Config{
+		ParticipantID: "urn:participant:self",
+		PublicURL:     "http://self:8080",
+		DevMode:       true,
+	}
+
+	off := base
+	no := false
+	off.RequireAuth = &no
+	r := NewRouter(off, st, auth.Roster{}, nil)
+	t.Cleanup(r.CancelPulls)
+	if r.RosterUsable != nil {
+		t.Error("RosterUsable is set with authentication off, so absence reads as an answer about a roster this connector does not hold")
+	}
+
+	// A zero roster is enough here. Whether the predicate exists is decided
+	// by the configuration alone; what it would answer is not this test's
+	// subject, and calling it is what the expiry tests do.
+	on := NewRouter(base, st, auth.Roster{}, nil)
+	t.Cleanup(on.CancelPulls)
+	if on.RosterUsable == nil {
+		t.Error("RosterUsable is nil with authentication on, so nothing outside this package can ask whether the roster expired")
+	}
+}
