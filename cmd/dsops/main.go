@@ -127,7 +127,7 @@ func roster(args []string, out *os.File) error {
 	if err != nil {
 		return err
 	}
-	sig, err := auth.SignRoster(*rosterPath, priv)
+	sig, err := auth.SignRoster(*rosterPath, priv, time.Now())
 	if err != nil {
 		return err
 	}

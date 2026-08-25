@@ -43,21 +43,24 @@ func authedRouter(t *testing.T) (http.Handler, ed25519.PrivateKey) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "roster.json")
-	body := `{"participants":[{"id":"` + testPeer + `","public_key":"` +
-		base64.RawURLEncoding.EncodeToString(pub) + `"}]}`
+	// Held in one variable and interpolated into both copies of the
+	// document: the signature covers the expiry, so a second reading of the
+	// clock would sign one value and load another.
+	fields := `,"version":1,"expires_at":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `"`
+	participants := `[{"id":"` + testPeer + `","public_key":"` + base64.RawURLEncoding.EncodeToString(pub) + `"}]`
+	body := `{"participants":` + participants + fields + `}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write roster: %v", err)
 	}
-	sig, err := auth.SignRoster(path, signerPriv)
+	sig, err := auth.SignRoster(path, signerPriv, time.Now())
 	if err != nil {
 		t.Fatalf("SignRoster: %v", err)
 	}
-	signed := `{"participants":[{"id":"` + testPeer + `","public_key":"` +
-		base64.RawURLEncoding.EncodeToString(pub) + `"}],"signature":"` + sig + `"}`
+	signed := `{"participants":` + participants + fields + `,"signature":"` + sig + `"}`
 	if err := os.WriteFile(path, []byte(signed), 0o600); err != nil {
 		t.Fatalf("write signed roster: %v", err)
 	}
-	roster, err := auth.LoadRoster(path, signerPub)
+	roster, err := auth.LoadRoster(path, signerPub, time.Now())
 	if err != nil {
 		t.Fatalf("LoadRoster: %v", err)
 	}

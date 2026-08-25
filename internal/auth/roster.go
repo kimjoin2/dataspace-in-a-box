@@ -6,22 +6,40 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 )
 
 // canonicalRosterBytes returns the bytes a roster signature is computed
-// over: json.Marshal of participants alone, never the raw file. Go's
-// encoding/json marshals struct fields in declaration order, so this is
-// deterministic for the fixed rosterEntry shape without a JSON-
-// canonicalization scheme — the signer and LoadRoster both call this same
-// function on their own parsed value, so reformatting roster.json's source
-// bytes (whitespace, key order) cannot change what gets checked. Every field
-// of rosterEntry is a plain string, so json.Marshal cannot fail here; its
-// error is ignored, the same reasoning buildPermission's doc comment gives
-// for ignoring its own unfailable one.
-func canonicalRosterBytes(participants []rosterEntry) []byte {
-	b, _ := json.Marshal(participants)
+// over: json.Marshal of the document's signed fields, never the raw file.
+// Go's encoding/json marshals struct fields in declaration order, so this is
+// deterministic for the fixed shape below without a JSON-canonicalization
+// scheme — the signer and LoadRoster both call this same function on their
+// own parsed value, so reformatting roster.json's source bytes (whitespace,
+// key order) cannot change what gets checked. Every field serialized here is
+// a plain string or an int, so json.Marshal cannot fail; its error is
+// ignored, the same reasoning buildPermission's doc comment gives for
+// ignoring its own unfailable one. That is also why the expiry is carried as
+// a string and parsed only for comparison: a time.Time field would make the
+// sentence above false and the discarded error reachable.
+func canonicalRosterBytes(doc rosterDocument) []byte {
+	b, _ := json.Marshal(struct {
+		Participants []rosterEntry `json:"participants"`
+		Version      int           `json:"version"`
+		ExpiresAt    string        `json:"expires_at"`
+	}{doc.Participants, doc.Version, doc.ExpiresAt})
 	return b
 }
+
+// maxRosterLifetime bounds how far ahead an expiry may sit. Without it the
+// upper bound this milestone puts on revocation is whatever the operator
+// typed, which is the same defect DECISIONS.md section 10's five minutes has
+// on the token side: a lifetime the issuer chooses and the verifier does not
+// check.
+//
+// A constant and not configuration. A configurable maximum is a second
+// policy the signature does not carry, so a deployment could widen its own
+// and the widest one would be the weak link.
+const maxRosterLifetime = 400 * 24 * time.Hour
 
 // Roster is the set of participants whose signatures this connector accepts.
 // It is the whole of the trust decision: a key here is trusted, and anything
@@ -32,7 +50,9 @@ func canonicalRosterBytes(participants []rosterEntry) []byte {
 // editing the file, re-signing it, and restarting, which DECISIONS.md
 // section 9 already accepted as the cost of a static registry.
 type Roster struct {
-	keys map[string]ed25519.PublicKey
+	keys      map[string]ed25519.PublicKey
+	version   int
+	expiresAt time.Time
 }
 
 // KeyFor returns the public key trusted for a participant, if any. Its shape
@@ -42,12 +62,40 @@ func (r Roster) KeyFor(id string) (ed25519.PublicKey, bool) {
 	return pub, ok
 }
 
+// Version returns the revision this roster declares, which a connector
+// compares against the newest revision it has already run.
+func (r Roster) Version() int { return r.version }
+
+// ExpiresAt returns the instant this roster stops being trusted.
+func (r Roster) ExpiresAt() time.Time { return r.expiresAt }
+
+// UsableAt reports whether this roster is still trusted at now. Usable at
+// every instant before the expiry and not at it — the same reading of a
+// deadline the data endpoint's dataset window and token expiry already use.
+//
+// A zero Roster is not usable. That is deliberate and it is not how
+// "authentication is off" is expressed: absence is a nil predicate at the
+// call site, never a zero value here.
+func (r Roster) UsableAt(now time.Time) bool { return now.Before(r.expiresAt) }
+
 type rosterDocument struct {
 	Participants []rosterEntry `json:"participants"`
+	// Version is this roster's revision. It only ever goes up: a connector
+	// refuses one older than it has already run, which is what makes a
+	// superseded roster unusable rather than merely stale. Required and at
+	// least 1 — an absent value decodes to zero, and that zero is the
+	// rejection rather than a default.
+	Version int `json:"version"`
+	// ExpiresAt is when this roster stops being trusted, RFC 3339. A string
+	// rather than a time.Time on purpose: canonicalRosterBytes discards
+	// json.Marshal's error on the argument that every field it serializes is
+	// a plain string or an int, and a time.Time makes that false and the
+	// discarded error reachable.
+	ExpiresAt string `json:"expires_at"`
 	// Signature is the operator's Ed25519 signature (base64url) over
-	// canonicalRosterBytes(Participants) — DECISIONS.md section 9's trust
-	// anchor, without which a roster is only as trustworthy as the disk it
-	// arrived on. Produced by `dsops roster sign`.
+	// canonicalRosterBytes of the fields above — DECISIONS.md section 9's
+	// trust anchor, without which a roster is only as trustworthy as the
+	// disk it arrived on. Produced by `dsops roster sign`.
 	Signature string `json:"signature"`
 }
 
@@ -56,13 +104,59 @@ type rosterEntry struct {
 	PublicKey string `json:"public_key"`
 }
 
+// checkRosterDocument validates what the document must carry regardless of
+// who signed it. It runs before the signature verifies, beside the checks
+// already there — participants non-empty, and a signature present at all.
+//
+// Rejecting on unauthenticated input is fail-closed, which is a different
+// thing from acting on unauthenticated claims: Verify in token.go draws that
+// line, and this stays on the safe side of it. The reason it matters here is
+// the upgrade message. Every roster written before this milestone lacks both
+// fields, and reporting a signature failure would send an operator to look
+// at the wrong thing.
+func checkRosterDocument(path string, doc rosterDocument) error {
+	if len(doc.Participants) == 0 {
+		return fmt.Errorf("roster %q lists no participants", path)
+	}
+	if doc.Version < 1 {
+		return fmt.Errorf("roster %q: version is %d, want at least 1 — add a \"version\" field and re-sign it", path, doc.Version)
+	}
+	if doc.ExpiresAt == "" {
+		return fmt.Errorf("roster %q carries no expires_at — add one in RFC 3339 form and re-sign it", path)
+	}
+	return nil
+}
+
+// checkRosterExpiry parses expires_at and applies the two bounds that do not
+// depend on who signed the document: it may not sit further ahead than
+// maxRosterLifetime, and it may not have passed already. SignRoster shares
+// it with LoadRoster so that `dsops roster sign` refuses what the connector
+// would refuse at boot, instead of printing a signature for a file that
+// cannot be loaded.
+func checkRosterExpiry(path string, doc rosterDocument, now time.Time) (time.Time, error) {
+	expiresAt, err := time.Parse(time.RFC3339, doc.ExpiresAt)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("roster %q: expires_at %q is not an RFC 3339 timestamp: %w", path, doc.ExpiresAt, err)
+	}
+	if expiresAt.After(now.Add(maxRosterLifetime)) {
+		return time.Time{}, fmt.Errorf("roster %q: expires_at %s is further ahead than the %s this connector accepts",
+			path, doc.ExpiresAt, maxRosterLifetime)
+	}
+	// Through UsableAt rather than a second comparison: the package reads
+	// this boundary in one place, so the boundary is one decision.
+	if !(Roster{expiresAt: expiresAt}).UsableAt(now) {
+		return time.Time{}, fmt.Errorf("roster %q expired at %s — re-sign it with a later expires_at", path, doc.ExpiresAt)
+	}
+	return expiresAt, nil
+}
+
 // LoadRoster reads, verifies, and validates the roster. Every failure below
 // is a startup failure rather than a warning: a connector that starts with
 // an unusable roster can verify nobody, and "started fine, refuses everyone"
 // is a much harder symptom to trace than a refusal to start. That now
 // includes signer: an unsigned or forged roster is exactly as unusable as
 // one with no participants in it.
-func LoadRoster(path string, signer ed25519.PublicKey) (Roster, error) {
+func LoadRoster(path string, signer ed25519.PublicKey, now time.Time) (Roster, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Roster{}, fmt.Errorf("read roster %q: %w", path, err)
@@ -71,8 +165,8 @@ func LoadRoster(path string, signer ed25519.PublicKey) (Roster, error) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return Roster{}, fmt.Errorf("parse roster %q: %w", path, err)
 	}
-	if len(doc.Participants) == 0 {
-		return Roster{}, fmt.Errorf("roster %q lists no participants", path)
+	if err := checkRosterDocument(path, doc); err != nil {
+		return Roster{}, err
 	}
 	if doc.Signature == "" {
 		return Roster{}, fmt.Errorf("roster %q carries no signature — sign it with `dsops roster sign`", path)
@@ -81,8 +175,12 @@ func LoadRoster(path string, signer ed25519.PublicKey) (Roster, error) {
 	if err != nil {
 		return Roster{}, fmt.Errorf("roster %q: signature is not base64url: %w", path, err)
 	}
-	if !ed25519.Verify(signer, canonicalRosterBytes(doc.Participants), sig) {
+	if !ed25519.Verify(signer, canonicalRosterBytes(doc), sig) {
 		return Roster{}, fmt.Errorf("roster %q: signature does not verify against roster_signer", path)
+	}
+	expiresAt, err := checkRosterExpiry(path, doc, now)
+	if err != nil {
+		return Roster{}, err
 	}
 
 	keys := make(map[string]ed25519.PublicKey, len(doc.Participants))
@@ -106,7 +204,7 @@ func LoadRoster(path string, signer ed25519.PublicKey) (Roster, error) {
 		}
 		keys[p.ID] = ed25519.PublicKey(raw)
 	}
-	return Roster{keys: keys}, nil
+	return Roster{keys: keys, version: doc.Version, expiresAt: expiresAt}, nil
 }
 
 // SignRoster reads the roster at path, ignoring any signature already in it,
@@ -115,7 +213,13 @@ func LoadRoster(path string, signer ed25519.PublicKey) (Roster, error) {
 // write anything: dsops does not manage the roster file (see its package
 // doc), and signing is no exception to that rather than a reason to make
 // one.
-func SignRoster(path string, priv ed25519.PrivateKey) (string, error) {
+//
+// It refuses what LoadRoster would refuse about the document itself, now
+// included: a signature printed for a roster that cannot boot is a success
+// the operator acts on and a failure they meet days later. How far ahead the
+// expiry sits within the cap is the operator's policy and is not judged
+// here.
+func SignRoster(path string, priv ed25519.PrivateKey, now time.Time) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read roster %q: %w", path, err)
@@ -124,9 +228,12 @@ func SignRoster(path string, priv ed25519.PrivateKey) (string, error) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return "", fmt.Errorf("parse roster %q: %w", path, err)
 	}
-	if len(doc.Participants) == 0 {
-		return "", fmt.Errorf("roster %q lists no participants", path)
+	if err := checkRosterDocument(path, doc); err != nil {
+		return "", err
 	}
-	sig := ed25519.Sign(priv, canonicalRosterBytes(doc.Participants))
+	if _, err := checkRosterExpiry(path, doc, now); err != nil {
+		return "", err
+	}
+	sig := ed25519.Sign(priv, canonicalRosterBytes(doc))
 	return base64.RawURLEncoding.EncodeToString(sig), nil
 }

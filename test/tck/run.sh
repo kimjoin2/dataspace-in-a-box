@@ -46,6 +46,20 @@ operator_pub=$("$identity/dsops" keygen -out "$identity/operator.key")
 # itself: this file is regenerated every run and deleted with $identity
 # afterward, unlike a real operator's key.
 chmod 644 "$identity/connector.key"
+
+# Computed once: the two heredocs below must carry the same value, because
+# the signature covers it and the second copy is what the connector loads.
+# A day out — long enough for a cold image build plus the suite, short
+# enough to be a real timestamp rather than a far-future constant that would
+# leave the field decorative.
+#
+# date has no portable relative form: GNU takes -d, macOS takes -v, and
+# busybox has neither, where this aborts under set -eu rather than producing
+# a wrong timestamp. Verified on macOS: the GNU form fails cleanly and the
+# fallback runs.
+roster_expiry=$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+	|| date -u -v+1d +%Y-%m-%dT%H:%M:%SZ)
+
 # The TCK's id is TCK_PARTICIPANT because that is the string the harness
 # hardcodes as the providerId in both initiate bodies
 # (DspConstants.TCK_PARTICIPANT_ID in the pinned image, inlined at every call
@@ -60,7 +74,9 @@ cat >"$identity/roster.json" <<EOF
   "participants": [
     {"id": "urn:participant:dsbox-test", "public_key": "$connector_pub"},
     {"id": "TCK_PARTICIPANT", "public_key": "$tck_pub"}
-  ]
+  ],
+  "version": 1,
+  "expires_at": "$roster_expiry"
 }
 EOF
 signature=$("$identity/dsops" roster sign -roster "$identity/roster.json" -key "$identity/operator.key")
@@ -70,6 +86,8 @@ cat >"$identity/roster.json" <<EOF
     {"id": "urn:participant:dsbox-test", "public_key": "$connector_pub"},
     {"id": "TCK_PARTICIPANT", "public_key": "$tck_pub"}
   ],
+  "version": 1,
+  "expires_at": "$roster_expiry",
   "signature": "$signature"
 }
 EOF

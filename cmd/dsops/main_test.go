@@ -36,6 +36,20 @@ func runDsops(t *testing.T, args ...string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// runDsopsExpectingFailure is runDsops's negative twin: it returns the error
+// instead of ending the test, which is the only way to assert that a
+// subcommand refused. run writes to an *os.File, so what it prints on the way
+// to failing goes to the null device rather than to io.Discard.
+func runDsopsExpectingFailure(t *testing.T, args ...string) error {
+	t.Helper()
+	f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	defer f.Close()
+	return run(args, f)
+}
+
 func TestKeygenThenTokenVerifies(t *testing.T) {
 	keyPath := filepath.Join(t.TempDir(), "k.pem")
 
@@ -66,19 +80,54 @@ func TestRosterSignThenLoadVerifies(t *testing.T) {
 	}
 
 	rosterPath := filepath.Join(t.TempDir(), "roster.json")
-	unsigned := `{"participants":[{"id":"alice","public_key":"` + participantPub + `"}]}`
+	// One value for both copies: the signature covers the expiry, so reading
+	// the clock again below would sign one document and load another.
+	fields := `,"version":1,"expires_at":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `"`
+	unsigned := `{"participants":[{"id":"alice","public_key":"` + participantPub + `"}]` + fields + `}`
 	if err := os.WriteFile(rosterPath, []byte(unsigned), 0o600); err != nil {
 		t.Fatalf("write roster: %v", err)
 	}
 
 	sig := runDsops(t, "roster", "sign", "-roster", rosterPath, "-key", operatorKeyPath)
-	signed := `{"participants":[{"id":"alice","public_key":"` + participantPub + `"}],"signature":"` + sig + `"}`
+	signed := `{"participants":[{"id":"alice","public_key":"` + participantPub + `"}]` + fields + `,"signature":"` + sig + `"}`
 	if err := os.WriteFile(rosterPath, []byte(signed), 0o600); err != nil {
 		t.Fatalf("write signed roster: %v", err)
 	}
 
-	if _, err := auth.LoadRoster(rosterPath, ed25519.PublicKey(operatorPub)); err != nil {
+	if _, err := auth.LoadRoster(rosterPath, ed25519.PublicKey(operatorPub), time.Now()); err != nil {
 		t.Fatalf("the roster dsops signed does not load: %v", err)
+	}
+}
+
+// Signing a roster the connector would refuse prints a success the operator
+// acts on, and a boot failure days later.
+func TestRosterSignRefusesWhatLoadRosterWouldRefuse(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "operator.pem")
+	runDsops(t, "keygen", "-out", keyPath)
+	// keygen prints the base64url public key, which is the form a roster
+	// entry carries — the same way TestKeygenThenTokenVerifies gets one.
+	participantPub := runDsops(t, "keygen", "-out", filepath.Join(dir, "participant.pem"))
+	participants := `[{"id":"alice","public_key":"` + participantPub + `"}]`
+	future := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+
+	for name, body := range map[string]string{
+		"no version":         `{"participants":` + participants + `,"expires_at":"` + future + `"}`,
+		"version zero":       `{"participants":` + participants + `,"version":0,"expires_at":"` + future + `"}`,
+		"no expiry":          `{"participants":` + participants + `,"version":1}`,
+		"malformed expiry":   `{"participants":` + participants + `,"version":1,"expires_at":"2027-01-01"}`,
+		"expiry in the past": `{"participants":` + participants + `,"version":1,"expires_at":"` + past + `"}`,
+		"expiry beyond the cap": `{"participants":` + participants + `,"version":1,"expires_at":"` +
+			time.Now().Add(500*24*time.Hour).UTC().Format(time.RFC3339) + `"}`,
+	} {
+		path := filepath.Join(dir, "roster.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := runDsopsExpectingFailure(t, "roster", "sign", "-roster", path, "-key", keyPath); err == nil {
+			t.Errorf("%s: dsops roster sign succeeded for a roster the connector would refuse", name)
+		}
 	}
 }
 

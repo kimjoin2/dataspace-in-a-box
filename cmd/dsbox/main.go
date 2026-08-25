@@ -81,7 +81,7 @@ func run() error {
 		if len(signerRaw) != ed25519.PublicKeySize {
 			return fmt.Errorf("roster_signer is %d bytes, want %d", len(signerRaw), ed25519.PublicKeySize)
 		}
-		if roster, err = auth.LoadRoster(cfg.RosterPath, ed25519.PublicKey(signerRaw)); err != nil {
+		if roster, err = auth.LoadRoster(cfg.RosterPath, ed25519.PublicKey(signerRaw), time.Now()); err != nil {
 			return err
 		}
 	} else {
