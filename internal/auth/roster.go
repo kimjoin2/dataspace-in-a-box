@@ -105,8 +105,11 @@ type rosterEntry struct {
 }
 
 // checkRosterDocument validates what the document must carry regardless of
-// who signed it. It runs before the signature verifies, beside the checks
-// already there — participants non-empty, and a signature present at all.
+// who signed it: participants, a version, and an expiry. It runs before the
+// signature verifies, which is where the participants check already ran —
+// that one moved in here. The signature-presence check stays beside it in
+// LoadRoster, because SignRoster reads a file that has no signature yet and
+// cannot apply it.
 //
 // Rejecting on unauthenticated input is fail-closed, which is a different
 // thing from acting on unauthenticated claims: Verify in token.go draws that
@@ -139,8 +142,8 @@ func checkRosterExpiry(path string, doc rosterDocument, now time.Time) (time.Tim
 		return time.Time{}, fmt.Errorf("roster %q: expires_at %q is not an RFC 3339 timestamp: %w", path, doc.ExpiresAt, err)
 	}
 	if expiresAt.After(now.Add(maxRosterLifetime)) {
-		return time.Time{}, fmt.Errorf("roster %q: expires_at %s is further ahead than the %s this connector accepts",
-			path, doc.ExpiresAt, maxRosterLifetime)
+		return time.Time{}, fmt.Errorf("roster %q: expires_at %s is further ahead than the %d days this connector accepts",
+			path, doc.ExpiresAt, int(maxRosterLifetime.Hours()/24))
 	}
 	// Through UsableAt rather than a second comparison: the package reads
 	// this boundary in one place, so the boundary is one decision.

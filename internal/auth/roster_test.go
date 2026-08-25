@@ -204,17 +204,28 @@ func TestLoadRosterRequiresAVersion(t *testing.T) {
 }
 
 // The signature covers them, or they are decoration an attacker rewrites.
-// The expiry stays inside the cap so that the only thing that can refuse
-// this fixture is the signature.
+// One field is rewritten per document, never both in one: a document with
+// both rewritten is refused as long as the signature covers either of them,
+// so it would pass while half the property went unheld. Every replacement
+// stays in the future and inside the cap, so the signature is the only thing
+// that can refuse either fixture.
 func TestSignatureCoversVersionAndExpiry(t *testing.T) {
 	signerPub, signerPriv := testSigner(t)
-	body := validRoster(t, signerPriv, 1, 24*time.Hour)
-	raised := strings.Replace(body, `"version":1`, `"version":9`, 1)
-	if raised == body {
-		t.Fatal("the fixture did not contain the field this test rewrites")
-	}
-	if _, err := LoadRoster(writeRoster(t, raised), signerPub, time.Now()); err == nil {
-		t.Fatal("the version was raised after signing and the roster still loaded: the signature does not cover it")
+	participants := `[{"id":"alice","public_key":"` + encodedKey(t) + `"}]`
+	expiry := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	body := signedRosterBody(t, participants, signerPriv, 1, expiry)
+
+	for name, tampered := range map[string]string{
+		"version raised": strings.Replace(body, `"version":1`, `"version":9`, 1),
+		"expiry moved": strings.Replace(body, expiry,
+			time.Now().Add(48*time.Hour).UTC().Format(time.RFC3339), 1),
+	} {
+		if tampered == body {
+			t.Fatalf("%s: the fixture did not contain the field this case rewrites", name)
+		}
+		if _, err := LoadRoster(writeRoster(t, tampered), signerPub, time.Now()); err == nil {
+			t.Errorf("%s: the field was rewritten after signing and the roster still loaded: the signature does not cover it", name)
+		}
 	}
 }
 
