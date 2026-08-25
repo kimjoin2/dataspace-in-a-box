@@ -40,12 +40,20 @@ const (
 
 func newTestRouter(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
+	return newTestRouterWithRoster(t, func() bool { return true })
+}
+
+// newTestRouterWithRoster builds a router whose roster answers usable or
+// not. newTestRouter delegates to it with a usable one, so every existing
+// caller — including the route-coverage assertions — is untouched.
+func newTestRouterWithRoster(t *testing.T, usable func() bool) (http.Handler, *store.Store) {
+	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return NewRouter(config.Config{MgmtToken: testToken}, st,
+	return NewRouter(config.Config{MgmtToken: testToken}, st, usable,
 		stubInitiate(negotiationHook), stubInitiate(transferHook)), st
 }
 
@@ -63,6 +71,45 @@ func TestHealthReturnsOK(t *testing.T) {
 	}
 	if got, want := rec.Body.String(), `{"status":"ok"}`; got != want {
 		t.Errorf("body = %s, want %s", got, want)
+	}
+}
+
+// A readiness probe that cannot see this keeps a connector in rotation when
+// it can serve no counterparty. 503 and not 409: this is a probe on the
+// management listener, and DECISIONS.md section 25.1 governs what a DSP
+// endpoint emits, not this.
+func TestHealthReportsAnExpiredRoster(t *testing.T) {
+	t.Parallel()
+	h, _ := newTestRouterWithRoster(t, func() bool { return false })
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "roster") {
+		t.Errorf("body %q does not say what is wrong", rec.Body)
+	}
+}
+
+func TestHealthStaysOKWithAUsableRoster(t *testing.T) {
+	t.Parallel()
+	h, _ := newTestRouterWithRoster(t, func() bool { return true })
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+// With authentication off there is no roster and nothing to be expired.
+// A nil predicate must read as "no check", not as "not usable".
+func TestHealthIsOKWithNoRosterAtAll(t *testing.T) {
+	t.Parallel()
+	h, _ := newTestRouterWithRoster(t, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 — a connector with authentication off is healthy", rec.Code)
 	}
 }
 
@@ -208,7 +255,8 @@ func TestPostAgreementsIs401WhenNoTokenIsConfigured(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	// no token configured
-	h := NewRouter(config.Config{}, st, stubInitiate(negotiationHook), stubInitiate(transferHook))
+	// nil roster predicate: this is about the token, not the roster.
+	h := NewRouter(config.Config{}, st, nil, stubInitiate(negotiationHook), stubInitiate(transferHook))
 	body := strings.NewReader(`{"agreementId":"urn:uuid:a-1","datasetId":"urn:dataset:a"}`)
 	req := httptest.NewRequest(http.MethodPost, "/agreements", body)
 	req.Header.Set("Authorization", "Bearer ")
@@ -261,7 +309,7 @@ func TestImportAgreementRecordsAnOptionalCounterparty(t *testing.T) {
 				t.Fatalf("store.Open: %v", err)
 			}
 			t.Cleanup(func() { st.Close() })
-			h := NewRouter(config.Config{MgmtToken: "t"}, st,
+			h := NewRouter(config.Config{MgmtToken: "t"}, st, nil,
 				stubInitiate(negotiationHook), stubInitiate(transferHook))
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/agreements", strings.NewReader(tc.body))

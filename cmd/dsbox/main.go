@@ -84,6 +84,29 @@ func run() error {
 		if roster, err = auth.LoadRoster(cfg.RosterPath, ed25519.PublicKey(signerRaw), time.Now()); err != nil {
 			return err
 		}
+		// Its own line, at load time, rather than a field on the "connector
+		// started" line below: that one is written after both listeners are
+		// already serving and past the version check that can refuse to
+		// start, so a roster this connector rejects would never be named in
+		// the log at all.
+		slog.Info("roster loaded",
+			"roster_path", cfg.RosterPath,
+			"roster_version", roster.Version(),
+			"roster_expires_at", roster.ExpiresAt().UTC().Format(time.RFC3339),
+		)
+		// The harness rosters are dated a day out, so every make tck and make
+		// demo run trips this. That is expected, not a defect.
+		const rosterExpiryWarning = 30 * 24 * time.Hour
+		if remaining := time.Until(roster.ExpiresAt()); remaining < rosterExpiryWarning {
+			// Warn and carry on. The roster is still usable, and refusing to
+			// start on an approaching expiry would take a working connector
+			// down for a deadline it has not reached.
+			slog.Warn("the roster expires soon; replace it before it does, or this connector will refuse every counterparty",
+				"roster_version", roster.Version(),
+				"roster_expires_at", roster.ExpiresAt().UTC().Format(time.RFC3339),
+				"remaining", remaining.Round(time.Minute).String(),
+			)
+		}
 	} else {
 		// One line at startup, not one per request: an operator who chose this
 		// needs to see it in the boot log, and a per-request warning would
@@ -100,6 +123,18 @@ func run() error {
 		return fmt.Errorf("open database in %q: %w", cfg.DataDir, err)
 	}
 	defer st.Close()
+
+	// The version ratchet, once the store is open and before dsp.NewRouter
+	// below: that call arms what this connector sends, so a roster older than
+	// one this connector has already run has to be refused before anything
+	// can go out under it. Fatal, like every other failure to establish
+	// authentication material — an operator who rolled the roster back gets
+	// told which version they handed over and which one is remembered.
+	if cfg.AuthRequired() {
+		if err := st.RecordRosterVersion(roster.Version()); err != nil {
+			return err
+		}
+	}
 
 	// routers.Pulls counts the data pulls the protocol router has in flight,
 	// and routers.CancelPulls ends them. Both are used at shutdown, below, in
@@ -139,7 +174,7 @@ func run() error {
 	}
 	mgmtSrv := &http.Server{
 		Addr:              cfg.MgmtAddr,
-		Handler:           mgmt.NewRouter(cfg, st, routers.Initiate.Negotiation, routers.Initiate.Transfer),
+		Handler:           mgmt.NewRouter(cfg, st, routers.RosterUsable, routers.Initiate.Negotiation, routers.Initiate.Transfer),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

@@ -21,16 +21,34 @@ const maxAgreementBodyBytes = 4 << 10
 
 // NewRouter returns the handler for the management listener. It takes the
 // configuration for the bearer token, the store because importing an
-// agreement writes to it, and the initiate hooks as plain http.Handler
-// values: this package mounts them behind the operator's token and holds no
-// opinion about the protocol package they came from.
-func NewRouter(cfg config.Config, st *store.Store, negotiationInitiate, transferInitiate http.Handler) http.Handler {
+// agreement writes to it, the predicate that reports whether the roster is
+// still usable, and the initiate hooks as plain http.Handler values: this
+// package mounts them behind the operator's token and holds no opinion about
+// the protocol package they came from.
+//
+// rosterUsable is a plain func() bool by the same route the hooks travel, and
+// nil means there is no roster to expire — a connector with authentication
+// off, which is healthy. Absence must not read as expiry, the convention
+// internal/dsp already follows on the predicate it hands over.
+func NewRouter(cfg config.Config, st *store.Store, rosterUsable func() bool, negotiationInitiate, transferInitiate http.Handler) http.Handler {
 	mux := http.NewServeMux()
 
-	// /health is deliberately unauthenticated: it carries no information and
-	// a readiness probe should not need a credential.
+	// /health is deliberately unauthenticated: a readiness probe should not
+	// need a credential. It does carry one fact now — whether this
+	// connector's own roster has expired — which is the same disclosure the
+	// DSP listener already makes to any caller it refuses for that reason,
+	// and a probe that cannot see it is not reporting readiness: it would
+	// keep a connector in rotation that can serve no counterparty.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if rosterUsable != nil && !rosterUsable() {
+			// 503 and not the 409 the DSP listener answers with. This is a
+			// probe on the management listener, and the wire contract that
+			// rules out a 5xx governs a DSP endpoint, not this one.
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"status":"roster expired"}`))
+			return
+		}
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 

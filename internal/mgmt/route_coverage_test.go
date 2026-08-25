@@ -61,8 +61,8 @@ func managementRoutes(t *testing.T) []routeUnderTest {
 // openRoutes are the paths deliberately mounted outside the token check.
 // Listing them here rather than skipping them silently means opening another
 // one is a visible edit to a test. /health is open because a readiness probe
-// must not need a credential (DECISIONS.md §25.4) and it carries no
-// information.
+// must not need a credential (DECISIONS.md §25.4); what it discloses in
+// exchange for that is recorded beside the route in router.go.
 var openRoutes = map[string]bool{"/health": true}
 
 // Every route this listener serves except the open ones refuses an
