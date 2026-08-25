@@ -67,10 +67,12 @@ func authedRouter(t *testing.T) (http.Handler, ed25519.PrivateKey) {
 
 	// NewRouter assigns mintOutboundCredential on the authenticated path and
 	// never puts it back, so without this the closure built below outlives
-	// the test and stands in for the package default in everything that runs
-	// after it. This roster is alive, so that closure permits — which is why
-	// the leak was harmless until the minter could refuse, and why leaving
-	// it now shows up as a test waiting forever on a send.
+	// the test and displaces the package default for everything that runs
+	// after it. This roster is good for a day, so that closure permits and
+	// nothing here visibly breaks — which is why the restore belongs in
+	// every helper that builds an authenticated router rather than only in
+	// the ones where its absence shows. expiredRouter is where it shows: its
+	// closure refuses, and a later test waits forever on a send.
 	restoreMinter := mintOutboundCredential
 	t.Cleanup(func() { mintOutboundCredential = restoreMinter })
 

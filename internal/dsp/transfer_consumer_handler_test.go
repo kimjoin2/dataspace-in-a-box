@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -876,6 +877,46 @@ func TestPullDoesNotPublishFewerBytesThanStated(t *testing.T) {
 	}
 	if _, err := os.Stat(pullPartialPath(dir, pid)); err != nil {
 		t.Errorf("the partial was not kept for a later resume: %v", err)
+	}
+}
+
+// A refused pull logs what the endpoint said, and logs no more of it than
+// the bound allows.
+//
+// The sentence is the point: the status stopped identifying the refusal
+// once this connector's own DSP listener began answering 409 for an expired
+// roster, because a data endpoint answers 409 for reasons of its own and an
+// operator reading a status alone cannot tell them apart. The bound is the
+// other half — the body is a counterparty's to choose, so reading it whole
+// would let one write this connector's log for it.
+//
+// No t.Parallel: slog.Default is process-global, so a parallel sibling would
+// be logging into this test's buffer.
+func TestARefusedPullLogsABoundedSliceOfTheBody(t *testing.T) {
+	var buf bytes.Buffer
+	restoreLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(restoreLogger) })
+
+	const said = "the endpoint says why"
+	const pastTheBound = "PAST-THE-BOUND"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		// Padded past the bound so the marker after it can only reach the
+		// log through a read that is not limited.
+		_, _ = w.Write([]byte(said + strings.Repeat("x", maxRefusalBodyBytes) + pastTheBound))
+	}))
+	defer srv.Close()
+
+	h, st := newTestTransferHandler(t, config.Config{DataDir: t.TempDir()})
+	pid := seedConsumerTransfer(t, st, TransferStarted)
+	h.pullTransferData(store.ConsumerTransfer{ConsumerPID: pid}, &DataAddress{Endpoint: srv.URL})
+
+	if !strings.Contains(buf.String(), said) {
+		t.Errorf("the log carries the status without what the endpoint said: %s", buf.String())
+	}
+	if strings.Contains(buf.String(), pastTheBound) {
+		t.Error("the whole body reached the log, so the read is not bounded")
 	}
 }
 

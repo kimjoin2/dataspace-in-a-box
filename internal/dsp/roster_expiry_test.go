@@ -170,6 +170,13 @@ func TestTheExpiryWarningIsLoggedOnce(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("negotiations/initiate: got %d, want 409 — the hook did not refuse, so the count below proves nothing about it", rec.Code)
 	}
+	// The outbound side warns without writing a response, so it is asserted
+	// through the minter rather than a status. Without this call it sits
+	// outside the window, and giving it a slog.Warn of its own instead of
+	// the guard's would leave the count below unchanged.
+	if _, maySend := mintOutboundCredential(testPeer); maySend {
+		t.Fatalf("the minter permitted a send, so the count below proves nothing about it")
+	}
 
 	if n := strings.Count(buf.String(), "roster has expired"); n != 1 {
 		t.Errorf("the expiry was logged %d times across every surface, want once", n)
@@ -188,12 +195,21 @@ func TestExpiredRosterSendsNothing(t *testing.T) {
 
 // The branches that are not about expiry keep their present behaviour. This
 // milestone deliberately does not decide whether they should.
+//
+// authedRouter's signKey is nil, which auth.Mint rejects as the wrong size,
+// so a non-empty audience lands in the minting-error branch and an empty one
+// in the branch above it. Each needs its own assertion: with only the
+// empty-audience call, flipping the minting-error branch to refuse passes
+// every gate in this repository, because nothing else here makes Mint fail.
 func TestTheMinterStillPermitsItsOtherFailures(t *testing.T) {
 	restore := mintOutboundCredential
 	t.Cleanup(func() { mintOutboundCredential = restore })
 	authedRouter(t)
 	if _, maySend := mintOutboundCredential(""); !maySend {
 		t.Error("an empty audience must proceed unsigned, as it does today")
+	}
+	if _, maySend := mintOutboundCredential(testPeer); !maySend {
+		t.Error("a minting failure must proceed unsigned, as it does today")
 	}
 }
 
