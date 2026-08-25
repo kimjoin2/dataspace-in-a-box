@@ -40,3 +40,37 @@ func TestMainRecordsTheRosterVersion(t *testing.T) {
 			"a rollback to a superseded roster would boot silently, or boot with only a log line to say so")
 	}
 }
+
+// Replacing the predicate this wiring hands the management listener with nil
+// leaves go build, go vet and every other test in the tree green — measured,
+// whole suite, not a subset. What it deletes is the whole of the design's
+// section 5.2: /health goes back to answering 200 unconditionally, so a
+// connector that can serve no counterparty stays in rotation behind its
+// probe. internal/mgmt's own tests cannot catch it, because they pass a
+// predicate in directly and so exercise the handler rather than the wiring,
+// and nothing here builds the management router.
+//
+// That is the same hole TestMainRecordsTheRosterVersion above closes for the
+// other wiring this milestone added, by the same technique and for the same
+// reason: a call site Go does not require and no test observes.
+//
+// The pattern requires routers.RosterUsable in the predicate position rather
+// than merely requiring the call, because what the deletion replaces is the
+// argument and not the call — a pattern matching mgmt.NewRouter( alone would
+// pass under the exact mutation this exists to catch. Naming the arguments
+// ahead of the predicate is stricter than the property needs; it makes
+// renaming one a visible edit to a test, which is the posture the guard
+// above takes as well.
+func TestMainGivesTheManagementListenerTheRosterPredicate(t *testing.T) {
+	t.Parallel()
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	wiring := regexp.MustCompile(`mgmt\.NewRouter\(\s*cfg\s*,\s*st\s*,\s*routers\.RosterUsable\s*,`)
+	if !wiring.Match(src) {
+		t.Error("main.go does not hand routers.RosterUsable to mgmt.NewRouter as the roster predicate; " +
+			"/health would answer 200 on a connector whose roster has expired, keeping it in rotation " +
+			"while it can serve no counterparty")
+	}
+}

@@ -3019,14 +3019,14 @@ exception for a `503` and withdrew it.
 **36.4 Where the refusal reaches, and what it does not.**
 `requireParticipant` refuses before it reads the credential, because
 verifying one against a roster this connector has declared unusable is work
-that cannot mean anything. Both initiate hooks
-refuse ahead of their own required-field and address checks, because that
-refusal is about this connector rather than about the request and no
-correction to the body would make the call succeed — `requireParticipant`
-never runs on the management listener, so without this an expired connector
-would refuse every counterparty while going on starting exchanges and signing
-them with its real key. And `mintOutboundCredential` refuses, which stops
-what the connector sends.
+that cannot mean anything. Both initiate hooks refuse ahead of their own
+required-field and address checks, because that refusal is about this
+connector rather than about the request and no correction to the body would
+make the call succeed — `requireParticipant` never runs on the management
+listener, so without this an expired connector would refuse every
+counterparty while going on starting exchanges and signing them with its real
+key. And `mintOutboundCredential` refuses, which stops what the connector
+sends.
 
 **What it does not reach, stated precisely, because "stops serving" is not
 "answers nothing" and this repository has had to correct that sentence
@@ -3222,8 +3222,7 @@ reasons neither can fix incidentally: the TCK connector mounts no volume for
 `data_dir`, so its database dies with the container, and `demo/run.sh`
 removes the generated directory at the start of every run even though the
 demo consumer does bind-mount `data_dir`. The demo could reach it cheaply —
-a second boot with a lowered `version` would exercise the refusal end to
-end — and does not,
-because the demo's job is to show a transfer working and a run that
-deliberately fails a boot in the middle of it is a different artifact. That
-is a judgement, not an impossibility.
+a second boot with a lowered `version` would exercise the refusal end to end
+— and does not, because the demo's job is to show a transfer working and a
+run that deliberately fails a boot in the middle of it is a different
+artifact. That is a judgement, not an impossibility.

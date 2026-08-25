@@ -86,7 +86,13 @@ func run() error {
 		if len(signerRaw) != ed25519.PublicKeySize {
 			return fmt.Errorf("roster_signer is %d bytes, want %d", len(signerRaw), ed25519.PublicKeySize)
 		}
-		if roster, err = auth.LoadRoster(cfg.RosterPath, ed25519.PublicKey(signerRaw), time.Now()); err != nil {
+		// One clock read, shared with the approaching-expiry comparison below.
+		// A second read would answer the same to the microsecond; what this
+		// keeps is that the decision to load the roster and the decision to
+		// warn about its expiry are about one instant rather than about
+		// whatever the clock said in between.
+		loadedAt := time.Now()
+		if roster, err = auth.LoadRoster(cfg.RosterPath, ed25519.PublicKey(signerRaw), loadedAt); err != nil {
 			return err
 		}
 		// Its own line, at load time, rather than a field on the "connector
@@ -102,11 +108,11 @@ func run() error {
 		// The harness rosters are dated a day out, so every make tck and make
 		// demo run trips this. That is expected, not a defect.
 		const rosterExpiryWarning = 30 * 24 * time.Hour
-		if remaining := time.Until(roster.ExpiresAt()); remaining < rosterExpiryWarning {
+		if remaining := roster.ExpiresAt().Sub(loadedAt); remaining < rosterExpiryWarning {
 			// Warn and carry on. The roster is still usable, and refusing to
 			// start on an approaching expiry would take a working connector
 			// down for a deadline it has not reached.
-			slog.Warn("the roster expires soon; replace it before it does, or this connector will refuse every counterparty",
+			slog.Warn("the roster expires soon; replace it before it does, or this connector will refuse every counterparty request that needs a credential",
 				"roster_version", roster.Version(),
 				"roster_expires_at", roster.ExpiresAt().UTC().Format(time.RFC3339),
 				"remaining", remaining.Round(time.Minute).String(),

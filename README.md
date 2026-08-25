@@ -130,11 +130,10 @@ anywhere, including on a connector nobody restarted, and this connector
 refuses every request that needs a credential rather than acting on a
 document it no longer trusts. It does not go quiet: the version document,
 which sits outside that check, still says what protocol this connector
-speaks.
-The revision is narrower than it sounds — it stops *this* connector being
-handed an older roster than one it has already run, and it is exchanged with
-nobody. What none of that solves: how `roster_signer` itself, or a first copy
-of the roster, reaches every connector that must trust it. That is a
+speaks. The revision is narrower than it sounds — it stops *this* connector
+being handed an older roster than one it has already run, and it is exchanged
+with nobody. What none of that solves: how `roster_signer` itself, or a first
+copy of the roster, reaches every connector that must trust it. That is a
 governance question `DECISIONS.md` section 9 leaves to "diffed in git", not
 one a signature scheme answers by itself. Replacing an expired roster is the
 same problem arriving on a deadline, and every connector in the dataspace

@@ -58,7 +58,7 @@ func (g rosterGuard) usable() bool { return g.check == nil || g.check() }
 // false, which the zero guard never does, so warn is set wherever this runs.
 func (g rosterGuard) warnExpired() {
 	g.warn.Do(func() {
-		slog.Warn("the roster has expired; this connector refuses every counterparty and every initiate call until it is replaced")
+		slog.Warn("the roster has expired; this connector refuses every counterparty request that needs a credential and every initiate call until it is replaced; the version document sits outside the credential check and goes on answering")
 	})
 }
 

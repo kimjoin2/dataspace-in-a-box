@@ -321,7 +321,7 @@ var dataPullHTTPClient = &http.Client{
 // read for the log. Room for the message a DSP error document carries, and
 // no room for a counterparty that answers a refusal with the product to
 // write it into this connector's log instead. Named here beside the client
-// rather than written at the read, the way internal/mgmt names
+// rather than inline where a body is read, the way internal/mgmt names
 // maxAgreementBodyBytes.
 const maxRefusalBodyBytes = 512
 
@@ -588,7 +588,7 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 	// every exit between that seed and the copy holds.
 	authorization, maySend := mintOutboundCredential(t.CounterpartyID)
 	if !maySend {
-		outcome.fail("this connector's roster has expired")
+		outcome.fail(errRosterExpired.Error())
 		return
 	}
 	if authorization != "" {
@@ -677,14 +677,30 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			outcome.fail("the provider's file is no longer past what this connector already has")
 			return
 		default:
-			// Any other answer to a resumed pull, including an unexpected
-			// 200 — this connector's own provider role always answers a
+			// Any other answer to a resumed pull. It may be a refusal — a
+			// 409 from a provider whose own roster has expired arrives here
+			// rather than in the branch below, because a resumed pull takes
+			// this switch — or an unexpected 200, which is a different
+			// problem: this connector's own provider role always answers a
 			// Range request with 206 or 416, so a 200 here would mean the
 			// counterparty does not honor Range at all, and appending its
 			// full-content body to an existing partial would corrupt the
-			// file. Safer to abort and leave the partial exactly as it was.
+			// file. Safer to abort and leave the partial exactly as it was
+			// whichever it is.
+			//
+			// The body is read for the same reason the branch below reads
+			// one: the status alone no longer identifies a refusal, because
+			// this connector's own DSP listener answers 409 for an expired
+			// roster and a data endpoint answers 409 for reasons of its own,
+			// and this log line's own message would otherwise send an
+			// operator looking for a counterparty that ignores Range. The
+			// read error is dropped because this is already a failure —
+			// whatever arrived, truncated or empty, tells an operator more
+			// than the status by itself.
+			refusal, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefusalBodyBytes))
 			slog.Error("data endpoint gave an unexpected answer to a resumed pull; leaving the partial download in place",
-				"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "status", resp.StatusCode, "had_bytes", existingSize)
+				"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "status", resp.StatusCode,
+				"body", strings.TrimSpace(string(refusal)), "had_bytes", existingSize)
 			outcome.fail("the data endpoint gave an unexpected answer to a resumed pull")
 			return
 		}
