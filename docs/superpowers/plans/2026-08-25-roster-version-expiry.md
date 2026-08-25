@@ -922,7 +922,8 @@ git commit -m "feat: an expired roster stops what this connector sends"
 |---|---|---|
 | Return `true` unconditionally from the assigned minter | `TestExpiredRosterSendsNothing` | It asks the minter directly after installing an expired router |
 | Make the empty-audience branch return `false` | `TestTheMinterStillPermitsItsOtherFailures` | It asserts the unchanged branch still permits |
-| Make `defaultMintOutboundCredential` return `false` | `TestTheDefaultMinterPermits` | It installs the default and asserts it permits |
+| Make `defaultMintOutboundCredential` return `false` | `TestTheDefaultMinterPermits` | It installs the default and asserts it permits. Note: this mutation makes the whole package hang, because every test relying on the default to send waits forever. Verify it with a targeted `-run` |
+| Make the `auth.Mint`-error branch return `false` | `TestTheMinterStillPermitsItsOtherFailures` | The test must call with a **non-empty** audience as well as an empty one. Measured: with only the empty-audience call, flipping this branch passes `go test`, `make tck` and `make demo` — no gate ever makes `Mint` fail. `authedRouter` passes a nil signing key, which `auth.Mint` rejects, so a non-empty audience lands in exactly this branch |
 
 ---
 
