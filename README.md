@@ -58,11 +58,13 @@ Connectors now authenticate to each other. Every DSP endpoint except the
 version document requires a JWT signed EdDSA over Ed25519 by a participant in
 this connector's roster and addressed to it, and every call this connector
 makes carries one (DECISIONS.md sections 9 and 10). Both halves are bounded by
-the roster's own expiry: past it the listener answers 409 to every request
-without reading the credential, and the connector attaches nothing and sends
-nothing rather than signing with a key whose roster it no longer trusts
-(DECISIONS.md section 36). The suite above runs with that on. Removing the
-harness's credential failed 63 of the 65 when that was measured, at the
+the roster's own expiry: past it every route behind that credential check
+answers 409 without reading the credential — the version document, which is
+deliberately outside the check, goes on answering — and the connector attaches
+nothing and sends nothing rather than signing with a key whose roster it no
+longer trusts (DECISIONS.md section 36). The suite above runs with that on.
+Removing the harness's credential failed 63 of the 65 when that was measured,
+at the
 milestone that added the check — a figure this section does
 not re-measure and which no longer describes today's harness, because the same
 string is now both the credential the TCK presents and the connector's

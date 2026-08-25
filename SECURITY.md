@@ -83,11 +83,13 @@ oversight:
   behavior, not a bypass.
 - **An expired connector saying so to anyone who asks.** `DECISIONS.md` §36
   makes the roster expire, and a connector past that instant reports it
-  wherever it can be asked: `409` on the DSP routes, `409` from the initiate
-  hooks
-  (behind `mgmt_token`, so to the operator only), and `503` with
-  `{"status":"roster expired"}` on `/health`, which is unauthenticated and
-  reachable by anyone who can reach the management listener. Because every
+  wherever it can be asked: `409` on the DSP routes behind the credential
+  check, `409` from the initiate hooks (behind `mgmt_token`, so to the
+  operator only), and `503` with `{"status":"roster expired"}` on `/health`,
+  which is unauthenticated and reachable by anyone who can reach the
+  management listener. The version document is open to that same caller and
+  is unchanged by the expiry: it discloses a protocol version and nothing
+  about the roster. Because every
   connector in a dataspace shares one `expires_at`, that is a fact about the
   dataspace's governance and not only about this connector, and §36.7 accepts
   it deliberately: the alternative is a refusal that misdescribes itself, and

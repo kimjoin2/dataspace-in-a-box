@@ -432,8 +432,9 @@ produces three retries and a confusing assertion rather than a clean failure.
 written from this sentence.
 `docs/superpowers/specs/2026-08-16-transfer-process-tck-wire-contract.md`
 records the measured behaviour of `HttpFunctions.postJson`: retry applies to
-4xx-non-404 only and only when `expectError` is false; 2xx, 3xx, 5xx, and 404
-all raise. This paragraph's conclusion is unaffected — the misrouted-URL case
+4xx-non-404 only and only when `expectError` is false; and on the negative
+paths, which pass `expectError=true`, 2xx, 3xx, 5xx, and 404 all raise while
+400 and 409 pass. This paragraph's conclusion is unaffected — the misrouted-URL case
 it describes answers 405, which is a 4xx — but a 5xx would raise at once
 rather than being retried. `DECISIONS.md` §36.3 turns on that distinction.)*
 

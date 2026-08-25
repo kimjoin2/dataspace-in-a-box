@@ -100,8 +100,15 @@ participant_key: /etc/dsbox/participant.key
 # recommendation and not a limit. The connector does enforce a maximum on how
 # far ahead the expiry may sit and refuses a roster that exceeds it, naming
 # the maximum in the error; ninety days sits well inside it, and the choice is
-# yours anywhere within it. `dsops roster sign` applies the same rules the
-# connector does, so a roster it signs is one the connector will load.
+# yours anywhere within it. `dsops roster sign` applies the same document-level
+# rules the connector does, so it will not sign a roster with a missing or
+# out-of-range version or expires_at.
+#
+# It does not check the participant entries. A signature therefore prints
+# cleanly for an entry with an empty or repeated id, or a public_key that is
+# missing, not base64url, or the wrong length — and the connector then refuses
+# that roster at boot, naming the entry. Check the entries yourself, or boot a
+# connector against the file once before distributing it.
 #
 # Upgrading: a roster written before version and expires_at existed will
 # not load. There is no compatibility path — add both fields and re-sign
@@ -116,10 +123,18 @@ participant_key: /etc/dsbox/participant.key
 #
 # Refusing every request later is a different thing, and it is deliberate.
 # A connector that is already running when expires_at passes does not stop:
-# it answers 409 to every DSP request and every initiate call, stops
-# attaching credentials to what it sends, and reports 503 on /health. That is
-# what makes the expiry a real bound rather than something only a restart
-# would notice. The boot log warns while the expiry is approaching.
+# it answers 409 to every DSP request that needs a credential and to every
+# initiate call, stops attaching credentials to what it sends, and reports
+# 503 on /health. That is what makes the expiry a real bound rather than
+# something only a restart would notice. The boot log warns while the expiry
+# is approaching.
+#
+# It is not a connector that has gone silent, and the difference matters when
+# you are diagnosing one. The version document keeps answering, because it
+# sits outside the credential check and discloses only a protocol version.
+# The management API's agreement and transfer routes keep working, because
+# they are yours rather than a counterparty's and an operator inspecting a
+# stopped connector is exactly who needs them.
 #
 # The signature is what lets this file be distributed over a channel less
 # trusted than the disk it ends up on; without it, the roster is trusted

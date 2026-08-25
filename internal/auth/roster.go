@@ -166,9 +166,16 @@ func checkRosterExpiry(path string, doc rosterDocument, now time.Time) (time.Tim
 // unsigned or forged document is unusable; so is one whose version is absent
 // or below what checkRosterDocument accepts; so is one whose expires_at is
 // absent, not RFC 3339, further ahead than maxRosterLifetime, or already
-// past. Those live in checkRosterDocument and checkRosterExpiry, and
-// SignRoster applies the same ones, so `dsops roster sign` cannot print a
-// signature for a file this would refuse.
+// past. Those live in checkRosterDocument and checkRosterExpiry, which
+// SignRoster applies too, so `dsops roster sign` refuses those before it
+// prints anything.
+//
+// The per-participant checks below are this function's alone. SignRoster
+// does not walk doc.Participants, so it will sign a document this refuses
+// for an empty or duplicated id, a missing public_key, or one that is not a
+// base64url Ed25519 key of the right length. That is the boundary
+// SignRoster's own doc comment draws when it says it refuses what this would
+// refuse "about the document itself".
 //
 // A roster failure that belongs with these is not here and cannot be: a
 // revision older than one this connector has already run is refused against

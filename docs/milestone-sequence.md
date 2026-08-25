@@ -168,11 +168,13 @@ does.
 **The roster as a versioned, expiring artifact** (2026-08-25, `DECISIONS.md`
 §36). `roster.json` carries a revision and an expiry, both inside the
 operator's signature. The expiry is enforced while the connector runs — at
-load, on every inbound DSP request, on both initiate hooks, and on everything
-this connector sends — so a superseded roster stops verifying at a known
-instant even where nobody restarted. The revision is a ratchet in this
-connector's own store: a roster older than one it has already run is refused
-at startup.
+load, on every inbound DSP request that requires a credential, on both
+initiate hooks, and on everything this connector sends — so a superseded
+roster stops verifying at a known instant even where nobody restarted. Not on
+the version document, which is mounted outside the credential check, and not
+on the management API's read and import routes; §36.4 draws that boundary.
+The revision is a ratchet in this connector's own store: a roster older than
+one it has already run is refused at startup.
 
 **Its verification situation is the one this document had no shape for, and
 it is worth adding one.** Milestone 1's shape was "the TCK carries the pass
