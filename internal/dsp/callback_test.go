@@ -173,13 +173,13 @@ func TestOutboundPushCarriesAMintedCredential(t *testing.T) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	restore := mintOutboundCredential
-	mintOutboundCredential = func(aud string) string {
+	mintOutboundCredential = func(aud string) (string, bool) {
 		tok, err := auth.Mint(priv, "urn:participant:self", aud, time.Now(), time.Minute)
 		if err != nil {
 			t.Errorf("Mint: %v", err)
-			return ""
+			return "", true
 		}
-		return "Bearer " + tok
+		return "Bearer " + tok, true
 	}
 	defer func() { mintOutboundCredential = restore }()
 

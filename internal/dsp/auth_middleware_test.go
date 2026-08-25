@@ -65,6 +65,15 @@ func authedRouter(t *testing.T) (http.Handler, ed25519.PrivateKey) {
 		t.Fatalf("LoadRoster: %v", err)
 	}
 
+	// NewRouter assigns mintOutboundCredential on the authenticated path and
+	// never puts it back, so without this the closure built below outlives
+	// the test and stands in for the package default in everything that runs
+	// after it. This roster is alive, so that closure permits — which is why
+	// the leak was harmless until the minter could refuse, and why leaving
+	// it now shows up as a test waiting forever on a send.
+	restoreMinter := mintOutboundCredential
+	t.Cleanup(func() { mintOutboundCredential = restoreMinter })
+
 	cfg := config.Config{
 		PublicURL:     "https://connector.example.org",
 		ParticipantID: testSelf,

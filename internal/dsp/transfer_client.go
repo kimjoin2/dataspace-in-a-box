@@ -41,7 +41,12 @@ func sendTransferRequest(providerBaseURL string, msg TransferRequestMessage, aud
 		return "", fmt.Errorf("build transfer request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if authorization := mintOutboundCredential(aud); authorization != "" {
+	// An error to the caller, for the reason sendInitialRequest gives.
+	authorization, maySend := mintOutboundCredential(aud)
+	if !maySend {
+		return "", fmt.Errorf("post transfer request: %w", errRosterExpired)
+	}
+	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
 	resp, err := callbackHTTPClient.Do(req)

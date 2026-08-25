@@ -365,7 +365,7 @@ func TestConsumerFollowUpsAreAddressedToTheCounterparty(t *testing.T) {
 	// TestConsumerPullsWhenTheStartCarriesAnAddress can assert only that the
 	// pull happened.
 	restore := mintOutboundCredential
-	mintOutboundCredential = func(aud string) string { return "Bearer aud=" + aud }
+	mintOutboundCredential = func(aud string) (string, bool) { return "Bearer aud=" + aud, true }
 	t.Cleanup(func() { mintOutboundCredential = restore })
 
 	// Buffered and non-blocking, because pushCallback retries: the first

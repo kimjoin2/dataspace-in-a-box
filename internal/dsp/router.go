@@ -161,20 +161,31 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	// Outbound is armed here rather than in each client, so "authentication
 	// is on" is one decision made in one place. With it off the minter stays
 	// the no-op default and nothing is attached.
-	mintOutboundCredential = func(aud string) string {
+	mintOutboundCredential = func(aud string) (string, bool) {
+		// The guard is consulted before anything else, because the answer
+		// does not depend on the rest. An expired connector refuses every
+		// counterparty, so a message it goes on signing with its real key
+		// starts an exchange whose reply it will reject — worse than one it
+		// never sent. The warning is the guard's, so this refusal joins the
+		// single line every other surface shares instead of adding its own.
+		if !guard.usable() {
+			guard.warnExpired()
+			return "", false
+		}
 		if aud == "" {
 			// Nothing to address. Sending an unaddressed credential would be
 			// worse than sending none: a token with an empty audience is one
-			// any participant would accept as its own.
+			// any participant would accept as its own. The send still goes,
+			// unsigned, exactly as it did before the second return existed.
 			slog.Warn("outbound message has no counterparty to address; sending it unsigned")
-			return ""
+			return "", true
 		}
 		tok, err := auth.Mint(signKey, cfg.ParticipantID, aud, time.Now(), credentialTTL)
 		if err != nil {
 			slog.Error("mint outbound credential", "aud", aud, "error", err)
-			return ""
+			return "", true
 		}
-		return "Bearer " + tok
+		return "Bearer " + tok, true
 	}
 
 	// The version endpoint is mounted outside the wrap rather than exempted

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -91,8 +92,15 @@ func pushCallback(url string, v any, aud string) bool {
 		// Minted per attempt, not once per call: a retry schedule that runs
 		// past the credential's five-minute life would otherwise present an
 		// expired token on its last try, which is the hardest kind of
-		// intermittent failure to read from a log.
-		if attemptPush(url, body, attempt, mintOutboundCredential(aud)) {
+		// intermittent failure to read from a log. Minting per attempt is
+		// also what makes an expiry landing mid-schedule observable: it is
+		// seen on the next attempt, which abandons the schedule through the
+		// same exit an exhausted one takes.
+		authorization, maySend := mintOutboundCredential(aud)
+		if !maySend {
+			return false
+		}
+		if attemptPush(url, body, attempt, authorization) {
 			return true
 		}
 		if attempt >= len(callbackRetryBackoffs) {
@@ -194,10 +202,17 @@ func isDisallowedCallbackIP(ip net.IP) bool {
 		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
-// mintOutboundCredential returns the Authorization header value for a message
-// addressed to aud, or "" when authentication is off — in which case nothing
-// is attached and the counterparty sees the same anonymous request it saw
-// before this milestone.
+// mintOutboundCredential returns the Authorization header value for a
+// message to aud, and whether the message may be sent at all.
+//
+// The second return is not the first being empty. An empty audience and a
+// minting error both proceed without a credential, exactly as they did
+// before this; only an expired roster stops a send. Merging the two would
+// silently change what happens when a counterparty has no address.
+//
+// The package default permits. A connector with authentication off never
+// reaches the assignment in NewRouter, and a refusing default would leave it
+// sending nothing.
 //
 // A package variable, set by NewRouter, following the shape
 // validateOutgoingCallback already established here. The trade-off is the
@@ -205,4 +220,20 @@ func isDisallowedCallbackIP(ip net.IP) bool {
 // connector runs two, and the alternative — threading a credential through
 // every client function and every handler that calls one — buys nothing
 // until something does.
-var mintOutboundCredential = func(string) string { return "" }
+var mintOutboundCredential = defaultMintOutboundCredential
+
+// defaultMintOutboundCredential attaches nothing and permits the send: with
+// authentication off there is no key to sign with and no roster to expire,
+// so the counterparty sees the same anonymous request it saw before
+// outbound credentials existed.
+//
+// Named rather than written as a literal at the assignment above, so a test
+// can install it back over whatever a router left behind and assert what it
+// answers.
+func defaultMintOutboundCredential(string) (string, bool) { return "", true }
+
+// errRosterExpired is what an outbound call reports to its caller once the
+// minter refuses. The sentence names this connector's own roster because
+// the counterparty is fine and the fault is entirely local — the same thing
+// refuseExpiredRoster tells an inbound caller.
+var errRosterExpired = errors.New("this connector's roster has expired")

@@ -41,7 +41,15 @@ func sendInitialRequest(providerBaseURL string, msg ConsumerRequestMessage, aud 
 		return "", fmt.Errorf("build initial request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if authorization := mintOutboundCredential(aud); authorization != "" {
+	// An error to the caller, which is what this function already does when
+	// the request fails: the operator asked for a negotiation, and a refusal
+	// they are told about is the difference between one that did not start
+	// and one that quietly never will.
+	authorization, maySend := mintOutboundCredential(aud)
+	if !maySend {
+		return "", fmt.Errorf("post initial request: %w", errRosterExpired)
+	}
+	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
 	resp, err := callbackHTTPClient.Do(req)

@@ -175,3 +175,35 @@ func TestTheExpiryWarningIsLoggedOnce(t *testing.T) {
 		t.Errorf("the expiry was logged %d times across every surface, want once", n)
 	}
 }
+
+// An expired connector that keeps sending is worse than one that stops: it
+// signs with its real key while refusing every reply, so the exchange it
+// starts cannot finish.
+func TestExpiredRosterSendsNothing(t *testing.T) {
+	expiredRouter(t) // installs the minter and restores it on cleanup
+	if _, maySend := mintOutboundCredential("urn:participant:peer"); maySend {
+		t.Error("the minter permitted a send under an expired roster")
+	}
+}
+
+// The branches that are not about expiry keep their present behaviour. This
+// milestone deliberately does not decide whether they should.
+func TestTheMinterStillPermitsItsOtherFailures(t *testing.T) {
+	restore := mintOutboundCredential
+	t.Cleanup(func() { mintOutboundCredential = restore })
+	authedRouter(t)
+	if _, maySend := mintOutboundCredential(""); !maySend {
+		t.Error("an empty audience must proceed unsigned, as it does today")
+	}
+}
+
+// With authentication off there is no roster, and the package default must
+// permit — otherwise a dev-mode connector silently sends nothing.
+func TestTheDefaultMinterPermits(t *testing.T) {
+	restore := mintOutboundCredential
+	t.Cleanup(func() { mintOutboundCredential = restore })
+	mintOutboundCredential = defaultMintOutboundCredential
+	if _, maySend := mintOutboundCredential("urn:participant:peer"); !maySend {
+		t.Error("the default refused; a connector with authentication off would send nothing")
+	}
+}

@@ -312,6 +312,14 @@ var dataPullHTTPClient = &http.Client{
 	},
 }
 
+// maxRefusalBodyBytes bounds how much of a refusing data endpoint's body is
+// read for the log. Room for the message a DSP error document carries, and
+// no room for a counterparty that answers a refusal with the product to
+// write it into this connector's log instead. Named here beside the client
+// rather than written at the read, the way internal/mgmt names
+// maxAgreementBodyBytes.
+const maxRefusalBodyBytes = 512
+
 // errConnectorShuttingDown is the cause a pull's context carries when the
 // connector is going down. It reaches the row as the reason, so an operator
 // reading a half-finished transfer sees why it stopped rather than a bare
@@ -559,7 +567,21 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 		outcome.fail("the data pull request could not be built")
 		return
 	}
-	if authorization := mintOutboundCredential(t.CounterpartyID); authorization != "" {
+	// No log line of its own. The guard has already said the roster expired,
+	// once for the whole connector, and a pull is reached by every restart
+	// of every transfer — so a line here would be the repetition that rule
+	// exists to prevent. The reason reaches an operator through the row this
+	// function has already deferred.
+	//
+	// The exit leaves whatever is on disk untouched, so the count seeded
+	// from the partial download above stays true of the file: the property
+	// every exit between that seed and the copy holds.
+	authorization, maySend := mintOutboundCredential(t.CounterpartyID)
+	if !maySend {
+		outcome.fail("this connector's roster has expired")
+		return
+	}
+	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
 	if resuming {
@@ -657,8 +679,16 @@ func (h transferHandler) pullTransferData(t store.ConsumerTransfer, addr *DataAd
 			return
 		}
 	} else if resp.StatusCode >= 300 {
+		// The status alone no longer identifies the refusal: this
+		// connector's own DSP listener answers 409 for an expired roster,
+		// and a data endpoint answers 409 for reasons of its own. The body
+		// is where the counterparty says which. The read error is dropped
+		// because this is already a refusal — whatever arrived, truncated or
+		// empty, tells an operator more than the status by itself.
+		refusal, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefusalBodyBytes))
 		slog.Error("data endpoint refused the pull",
-			"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "status", resp.StatusCode)
+			"consumer_pid", t.ConsumerPID, "endpoint", addr.Endpoint, "status", resp.StatusCode,
+			"body", strings.TrimSpace(string(refusal)))
 		outcome.fail("the data endpoint refused the pull")
 		return
 	}
