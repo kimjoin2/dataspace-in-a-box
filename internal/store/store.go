@@ -236,6 +236,20 @@ CREATE TABLE IF NOT EXISTS consumer_transfer_processes (
     updated_at        TEXT NOT NULL
 );`
 
+// roster_version is the highest roster revision this connector has loaded.
+// One row, by constraint rather than by convention: with a second row,
+// SELECT highest returns an arbitrary one and the ratchet stops meaning
+// anything. id is the rowid alias, so it is always named explicitly on
+// write — an omitted value takes the next rowid and fails the check.
+//
+// This says nothing about the schema's own revision. DECISIONS.md section
+// 23.1 declined a schema-version table and still declines one.
+const rosterVersionSchema = `
+CREATE TABLE IF NOT EXISTS roster_version (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    highest INTEGER NOT NULL
+);`
+
 const timeFormat = time.RFC3339Nano
 
 // Errors a conditional update can report. Both mean the UPDATE matched no
@@ -298,6 +312,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("create consumer transfer schema in %s: %w", path, err)
 	}
+	if _, err := db.Exec(rosterVersionSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create roster version schema in %s: %w", path, err)
+	}
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate %s: %w", path, err)
@@ -306,9 +324,11 @@ func Open(path string) (*Store, error) {
 }
 
 // migrate brings an older database file up to the schema above. There is no
-// migration framework and no version table (DECISIONS.md section 23.1): each
-// column added after the first release is one hand-written, self-checking
-// step here.
+// migration framework and no schema-version table (DECISIONS.md section
+// 23.1): each column added after the first release is one hand-written,
+// self-checking step here. roster_version is not that table — it records the
+// highest roster revision this connector has run, not the schema's own
+// revision.
 //
 // The check is what makes this a migration at all. `CREATE TABLE IF NOT
 // EXISTS` is a no-op against a table that already exists, so editing the
@@ -368,9 +388,11 @@ func migrate(db *sql.DB) error {
 }
 
 // addColumnIfMissing is idempotent: SQLite has no ADD COLUMN IF NOT EXISTS,
-// so the column list is checked first. Every migration in this file is a
-// column addition, which is the only schema change SQLite performs cheaply
-// and the only one this connector has needed.
+// so the column list is checked first. Column addition is the only schema
+// change SQLite performs cheaply, which is why every migration ran through
+// this helper until roster_version: that change added a table rather than a
+// column, and a table needs no helper because CREATE TABLE IF NOT EXISTS is
+// already idempotent.
 func addColumnIfMissing(db *sql.DB, table, column, stmt string) error {
 	var n int
 	if err := db.QueryRow(
@@ -390,6 +412,41 @@ func addColumnIfMissing(db *sql.DB, table, column, stmt string) error {
 // Close closes the underlying database.
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// RecordRosterVersion refuses a roster older than one this connector has
+// already run, and remembers the newest it has seen.
+//
+// Equal is accepted and writes nothing: an ordinary restart presents the
+// roster it presented last time, and refusing that would mean a connector
+// boots exactly once.
+//
+// This is a local memory and not a dataspace property. No version is
+// exchanged with any participant, so during a rollout one connector can be
+// ahead of another and neither can tell. The design spec's section 1.3 is
+// precise about what that does and does not buy.
+func (s *Store) RecordRosterVersion(version int) error {
+	var highest int
+	err := s.db.QueryRow(`SELECT highest FROM roster_version WHERE id = 1`).Scan(&highest)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// No memory yet. Fail-open by construction: a fresh store accepts
+		// any version, and the expiry is what bounds that window.
+	case err != nil:
+		return fmt.Errorf("read roster version: %w", err)
+	case version < highest:
+		return fmt.Errorf("roster version %d is older than version %d, which this connector has already run", version, highest)
+	case version == highest:
+		return nil
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO roster_version (id, highest) VALUES (1, ?)
+		 ON CONFLICT(id) DO UPDATE SET highest = excluded.highest`,
+		version,
+	); err != nil {
+		return fmt.Errorf("record roster version %d: %w", version, err)
+	}
+	return nil
 }
 
 // NewUUID generates a random RFC 4122 v4 UUID string. It is used both for a
