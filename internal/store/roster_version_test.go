@@ -50,9 +50,34 @@ func TestRecordRosterVersionAcceptsAnEqualVersion(t *testing.T) {
 	}
 }
 
-// The table holds one row by constraint, not by convention: with two rows,
-// which one SELECT returns is arbitrary and the ratchet stops meaning
-// anything.
+// The upsert must advance the stored highest on a strictly higher version,
+// not merely avoid erroring. Record 2, then record 5, then try 4: if the
+// insert used ON CONFLICT DO NOTHING instead of DO UPDATE, recording 5 would
+// report success while leaving the stored value at 2, and 4 would then be
+// accepted too — a rollback slipping through silently, the exact failure
+// this milestone exists to prevent.
+func TestRecordRosterVersionAdvancesTheStoredHighest(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t)
+	if err := s.RecordRosterVersion(2); err != nil {
+		t.Fatalf("record 2: %v", err)
+	}
+	if err := s.RecordRosterVersion(5); err != nil {
+		t.Fatalf("record 5: %v", err)
+	}
+	err := s.RecordRosterVersion(4)
+	if err == nil {
+		t.Fatal("version 4 was accepted; the stored value did not advance past 2")
+	}
+	if !strings.Contains(err.Error(), "5") {
+		t.Errorf("error %q does not name 5; the stored value may not have advanced past 2", err)
+	}
+}
+
+// The table holds one row by constraint, not by convention: CHECK (id = 1)
+// keeps id = 1 the only row a writer can ever produce, which is what makes
+// the id = 1 upsert in RecordRosterVersion the whole story of how this
+// table changes.
 func TestRosterVersionTableHoldsOneRow(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t)
@@ -60,7 +85,7 @@ func TestRosterVersionTableHoldsOneRow(t *testing.T) {
 		t.Fatalf("record: %v", err)
 	}
 	if _, err := s.db.Exec(`INSERT INTO roster_version (id, highest) VALUES (2, 99)`); err == nil {
-		t.Error("a second row was accepted; SELECT highest is now arbitrary")
+		t.Error("a second row was accepted; the table no longer holds exactly one row")
 	}
 	// id is the rowid alias, so an omitted id takes the next rowid and fails
 	// the check too. Worth pinning: the naive insert would work exactly once.

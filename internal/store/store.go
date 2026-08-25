@@ -237,10 +237,11 @@ CREATE TABLE IF NOT EXISTS consumer_transfer_processes (
 );`
 
 // roster_version is the highest roster revision this connector has loaded.
-// One row, by constraint rather than by convention: with a second row,
-// SELECT highest returns an arbitrary one and the ratchet stops meaning
-// anything. id is the rowid alias, so it is always named explicitly on
-// write — an omitted value takes the next rowid and fails the check.
+// One row, enforced by CHECK (id = 1): the table has exactly one possible
+// row, and the id = 1 upsert in RecordRosterVersion is the whole story of
+// how it is written. id is the rowid alias, so it is always named
+// explicitly on write — an omitted value takes the next rowid and fails the
+// check.
 //
 // This says nothing about the schema's own revision. DECISIONS.md section
 // 23.1 declined a schema-version table and still declines one.
@@ -388,11 +389,9 @@ func migrate(db *sql.DB) error {
 }
 
 // addColumnIfMissing is idempotent: SQLite has no ADD COLUMN IF NOT EXISTS,
-// so the column list is checked first. Column addition is the only schema
-// change SQLite performs cheaply, which is why every migration ran through
-// this helper until roster_version: that change added a table rather than a
-// column, and a table needs no helper because CREATE TABLE IF NOT EXISTS is
-// already idempotent.
+// so the column list is checked first. The migration steps below are all
+// column additions; a new table needs no step here because CREATE TABLE IF
+// NOT EXISTS is already idempotent.
 func addColumnIfMissing(db *sql.DB, table, column, stmt string) error {
 	var n int
 	if err := db.QueryRow(
