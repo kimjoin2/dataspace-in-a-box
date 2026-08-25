@@ -3037,12 +3037,18 @@ before:**
   behind the credential check and the guard never runs for it. It goes on
   answering 200. It stays open for the reason it always was: it is how a
   counterparty learns what to speak before it has any context, and it
-  discloses only a protocol version. Nothing pins this for an *expired*
-  connector — `TestVersionEndpointStaysOpen` builds a router whose roster is
-  still good, so it pins the route being outside the check and not what
-  happens after `expires_at`. The structural placement is what makes the
-  sentence true, and a future edit that moved the mount inside the wrap would
-  falsify it with no test failing.
+  discloses only a protocol version.
+
+  Held by a test on each side, because the halves are separable and only the
+  structural one was covered before this section.
+  `TestVersionEndpointStaysOpen` builds a router whose roster is still good,
+  so it holds the route being outside the credential check;
+  `TestExpiredRosterStillServesTheVersionDocument` builds the expired router
+  and holds the 200 past `expires_at`, which the DSP refusal test cannot
+  because it skips `openRoutes` and this is that path. Moving the mount
+  inside the wrap fails both, and it fails them differently — 401 against the
+  good roster, 409 against the dead one — which is why the expired case needs
+  its own assertion rather than leaning on the older test.
 - **The management API's agreement and transfer routes.** Only `/health`
   consults the predicate; `/agreements` and `/transfers` sit behind
   `mgmt_token` and nothing else. They are the operator's rather than a

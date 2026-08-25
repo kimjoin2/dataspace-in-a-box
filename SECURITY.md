@@ -89,9 +89,9 @@ oversight:
   which is unauthenticated and reachable by anyone who can reach the
   management listener. The version document is open to that same caller and
   is unchanged by the expiry: it discloses a protocol version and nothing
-  about the roster. Because every
-  connector in a dataspace shares one `expires_at`, that is a fact about the
-  dataspace's governance and not only about this connector, and §36.7 accepts
+  about the roster. Because every connector in a dataspace shares one
+  `expires_at`, that is a fact about the dataspace's governance and not only
+  about this connector, and §36.7 accepts
   it deliberately: the alternative is a refusal that misdescribes itself, and
   an expired roster is not a secret an attacker can act on — it names no
   participant and it opens nothing. A report showing that it discloses more

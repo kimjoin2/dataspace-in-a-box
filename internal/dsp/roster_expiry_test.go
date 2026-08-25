@@ -109,6 +109,28 @@ func TestExpiredRosterRefusesEveryDSPRequest(t *testing.T) {
 	}
 }
 
+// The version document keeps answering after the expiry. "Stops serving" is
+// not "answers nothing", and DECISIONS.md section 36.4 makes that claim
+// permanently, so it is held here rather than left to the structure.
+//
+// TestVersionEndpointStaysOpen cannot stand in for this. It builds
+// authedRouter, whose roster is still good, so it pins that the route is
+// outside the credential check and says nothing about what happens past
+// expires_at. TestExpiredRosterRefusesEveryDSPRequest cannot either: it skips
+// openRoutes, which is exactly this path.
+//
+// The status is asserted rather than the body: 200 separates this from both
+// refusals the expired router can produce, the 401 a wrapped route would give
+// an unauthenticated caller and the 409 the guard would give ahead of it.
+func TestExpiredRosterStillServesTheVersionDocument(t *testing.T) {
+	handler, _ := expiredRouter(t)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/.well-known/dspace-version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 — an expired connector still tells a counterparty what it speaks", rec.Code)
+	}
+}
+
 // The hooks live on the management listener, which requireParticipant never
 // wraps. Without their own check an expired connector refuses every
 // counterparty and goes on starting exchanges and signing with its real key.

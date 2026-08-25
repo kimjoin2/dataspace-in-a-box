@@ -64,9 +64,8 @@ deliberately outside the check, goes on answering — and the connector attaches
 nothing and sends nothing rather than signing with a key whose roster it no
 longer trusts (DECISIONS.md section 36). The suite above runs with that on.
 Removing the harness's credential failed 63 of the 65 when that was measured,
-at the
-milestone that added the check — a figure this section does
-not re-measure and which no longer describes today's harness, because the same
+at the milestone that added the check — a figure this section does not
+re-measure and which no longer describes today's harness, because the same
 string is now both the credential the TCK presents and the connector's
 management token (DECISIONS.md section 35.4).
 
@@ -128,7 +127,10 @@ signature covers — an unsigned or forged roster is a startup failure, so is
 one missing either field, and so is one already past its expiry. The expiry
 is what bounds revocation: past it a superseded roster stops verifying
 anywhere, including on a connector nobody restarted, and this connector
-refuses every request rather than acting on a document it no longer trusts.
+refuses every request that needs a credential rather than acting on a
+document it no longer trusts. It does not go quiet: the version document,
+which sits outside that check, still says what protocol this connector
+speaks.
 The revision is narrower than it sounds — it stops *this* connector being
 handed an older roster than one it has already run, and it is exchanged with
 nobody. What none of that solves: how `roster_signer` itself, or a first copy
