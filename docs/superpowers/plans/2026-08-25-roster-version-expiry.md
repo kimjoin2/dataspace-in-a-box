@@ -607,6 +607,7 @@ git commit -m "feat: the roster carries a revision and an expiry, both signed"
 |---|---|---|
 | Drop the `version >= 1` check | `TestLoadRosterRequiresAVersion` | Its fixture has the field removed after signing, so the signature fails either way — the assertion that catches this is the second one, on the error naming `version` |
 | Sign participants alone again | `TestSignatureCoversVersionAndExpiry` | It raises `version` after signing; with a narrower signature the document verifies, and its expiry is inside the cap so nothing else refuses it |
+| Drop `ExpiresAt` alone from the signed struct | `TestSignatureCoversVersionAndExpiry` | The test must rewrite the expiry too, not only the version. Measured: with only the version rewritten, dropping the expiry from the signature passes the entire suite — the field this milestone exists to make enforceable is left unpinned |
 | Remove the expiry comparison from `LoadRoster` | `TestLoadRosterRefusesAnExpiredRoster` | Its fixture is signed an hour in the past and would load |
 | Change `UsableAt` to `!now.After(...)` | `TestLoadRosterBoundaryIsExclusive` | It asks at exactly the expiry and asserts not usable |
 | Remove the cap check | `TestLoadRosterRefusesAnExpiryTooFarAhead` | Its fixture sits past `maxRosterLifetime` and would load |
