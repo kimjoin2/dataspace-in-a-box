@@ -96,8 +96,12 @@ bound on `exp - iat` would not have done this** — §11 has the sequence.
 **The first paragraph's argument cuts against §5's bound too, and the
 difference is one of degree rather than kind.** `nbf` refuses a fast clock at
 zero tolerance: an issuer a second ahead is refused for that second. §5's
-bound refuses one only past the maximum, so an issuer an hour ahead transacts
-and one three hours ahead does not. Both narrow the direction that works
+bound refuses one only past the maximum, so an issuer well short of it
+transacts and one far past it does not. *(2026-08-26: an earlier wording put
+that line at an hour of offset. It is not — a freshly minted credential
+carries the offset plus `credentialTTL`, so tolerance ends at the maximum
+less the credential's lifetime. §7's cross-offset paragraph has the shape;
+this sentence should not have carried a second, rounder number.)* Both narrow the direction that works
 today. Choosing the bound is choosing an hour of tolerance over none, not
 choosing to leave the direction alone, and saying otherwise would be the same
 overstatement §5.2 exists to avoid.
