@@ -151,6 +151,8 @@ func TestVerifyRefusals(t *testing.T) {
 		{"payload edited after signing", tamperPayload(t, good()), staticKey("alice", pub), "bob", now, ErrBadSignature},
 		{"signed by a key the roster does not have", mustMint(t, otherPriv, "alice", "bob", now), staticKey("alice", pub), "bob", now, ErrBadSignature},
 		{"issuer not in the roster", good(), noKeys, "bob", now, ErrUnknownIssuer},
+		// The timing here is what bounds clockLeeway from above. Moving it
+		// means moving that constant, deliberately.
 		{"expired", good(), staticKey("alice", pub), "bob", now.Add(6 * time.Minute), ErrExpired},
 		{"addressed to someone else", good(), staticKey("alice", pub), "carol", now, ErrWrongAudience},
 	} {
