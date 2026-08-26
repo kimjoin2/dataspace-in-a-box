@@ -79,6 +79,39 @@ func mintWithHeaderAlg(t *testing.T, priv ed25519.PrivateKey, alg, iss, aud stri
 	return signing + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
+// mintWithoutIat builds a token carrying no iat at all, which RFC 7519
+// permits. Modelled on mintWithHeaderAlg rather than on tamperPayload: the
+// signature here is a real signature over the real signing input, so the
+// token reaches the claim checks instead of being refused at the signature.
+func mintWithoutIat(t *testing.T, priv ed25519.PrivateKey, iss, aud string, now time.Time, ttl time.Duration) string {
+	t.Helper()
+	header, err := json.Marshal(map[string]string{"alg": Algorithm, "typ": "JWT"})
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"iss": iss, "aud": aud,
+		"exp": now.Add(ttl).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	// Assert the absence rather than trust it. A later edit that reintroduced
+	// iat would leave the test that uses this helper green while it tested
+	// nothing.
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if _, ok := got["iat"]; ok {
+		t.Fatalf("payload carries iat: %s", payload)
+	}
+	signing := base64.RawURLEncoding.EncodeToString(header) + "." +
+		base64.RawURLEncoding.EncodeToString(payload)
+	sig := ed25519.Sign(priv, []byte(signing))
+	return signing + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
 func TestMintVerifyRoundTrip(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -139,5 +172,95 @@ func TestVerifyRefusesAnyAlgorithmButEdDSA(t *testing.T) {
 		if _, err := Verify(tok, staticKey("alice", pub), "bob", now); !errors.Is(err, ErrBadAlgorithm) {
 			t.Errorf("alg %q: err = %v, want ErrBadAlgorithm", alg, err)
 		}
+	}
+}
+
+// A slow clock costs a minute, not every request. Before this, an issuer
+// whose clock lagged the verifier by more than the credential's life was
+// refused on every call, and the reason was hidden from it.
+func TestVerifyAcceptsTokenExpiredWithinLeeway(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	now := time.Unix(1_700_000_000, 0)
+	tok := mustMint(t, priv, "alice", "bob", now)
+	// Minted for five minutes, checked thirty seconds after it lapsed.
+	if _, err := Verify(tok, staticKey("alice", pub), "bob", now.Add(5*time.Minute+30*time.Second)); err != nil {
+		t.Errorf("token expired by 30s: err = %v, want accepted", err)
+	}
+}
+
+// The lifetime is measured against the verifier's own clock, so no issuer can
+// buy one by moving its claims. A token dated a year ahead carries a
+// perfectly ordinary hour between iat and exp — which is why the quantity
+// being measured has to be the distance from now.
+func TestVerifyRefusesLifetimeBoughtByAClockRunningAhead(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	now := time.Unix(1_700_000_000, 0)
+	aYearAhead := now.Add(365 * 24 * time.Hour)
+	tok := mustMint(t, priv, "alice", "bob", aYearAhead) // iat and exp both a year out
+	if _, err := Verify(tok, staticKey("alice", pub), "bob", now); !errors.Is(err, ErrLifetimeTooLong) {
+		t.Errorf("five minutes dated a year ahead: err = %v, want %v", err, ErrLifetimeTooLong)
+	}
+}
+
+// The maximum's value, bracketed from both sides with durations that never
+// mention the constant. A fixture written as `maxCredentialLifetime + x`
+// tracks whatever the constant becomes and so pins nothing — measured: with
+// such a fixture, changing the maximum to a day leaves the whole suite green.
+//
+// The lower bracket is the load-bearing one. The TCK harness mints for longer
+// than this connector does, so a maximum set too small refuses the entire
+// suite. That belongs in a unit test rather than being discovered by a
+// harness run.
+func TestTheMaximumLifetimeBracketsTheHarnessAndRefusesAbsurdity(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	now := time.Unix(1_700_000_000, 0)
+	mint := func(ttl time.Duration) string {
+		t.Helper()
+		tok, err := Mint(priv, "alice", "bob", now, ttl)
+		if err != nil {
+			t.Fatalf("Mint: %v", err)
+		}
+		return tok
+	}
+
+	// What the harness needs. If this fails, `make tck` fails too — and this
+	// says so in under a second instead of after a container build.
+	if _, err := Verify(mint(30*time.Minute), staticKey("alice", pub), "bob", now); err != nil {
+		t.Errorf("a thirty-minute credential: err = %v, want accepted — the TCK harness mints one", err)
+	}
+	for name, ttl := range map[string]time.Duration{
+		"two hours": 2 * time.Hour,
+		"a year":    365 * 24 * time.Hour,
+	} {
+		if _, err := Verify(mint(ttl), staticKey("alice", pub), "bob", now); !errors.Is(err, ErrLifetimeTooLong) {
+			t.Errorf("%s: err = %v, want %v", name, err, ErrLifetimeTooLong)
+		}
+	}
+}
+
+// The maximum is a policy about a claim, so it is read only after the
+// signature says the claim is the issuer's. A token that is both over-long
+// and badly signed is refused for the signature.
+func TestVerifyChecksSignatureBeforeLifetime(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	_, otherPriv, _ := ed25519.GenerateKey(nil)
+	now := time.Unix(1_700_000_000, 0)
+	tok, err := Mint(otherPriv, "alice", "bob", now, 365*24*time.Hour)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if _, err := Verify(tok, staticKey("alice", pub), "bob", now); !errors.Is(err, ErrBadSignature) {
+		t.Errorf("over-long and badly signed: err = %v, want %v", err, ErrBadSignature)
+	}
+}
+
+// A counterparty may omit iat — RFC 7519 leaves it optional — and this
+// connector reads none, so it must not refuse one for that.
+func TestVerifyAcceptsTokenWithoutIat(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	now := time.Unix(1_700_000_000, 0)
+	tok := mintWithoutIat(t, priv, "alice", "bob", now, 5*time.Minute)
+	if _, err := Verify(tok, staticKey("alice", pub), "bob", now); err != nil {
+		t.Errorf("a token with no iat: err = %v, want accepted", err)
 	}
 }

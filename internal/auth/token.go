@@ -29,6 +29,37 @@ import (
 // decide what to do — see Verify.
 const Algorithm = "EdDSA"
 
+// clockLeeway is how far behind this connector's clock an issuer's may run
+// before its credentials start being refused. Applied to the expiry
+// comparison only: there is no other time claim to apply it to.
+//
+// Sixty seconds, and the value is measured rather than chosen.
+// TestVerifyRefusals mints at a fixed instant with a five-minute life and
+// verifies six minutes later, so at sixty seconds that comparison lands
+// exactly on the boundary and still refuses. At sixty-one it does not, and
+// that case stops testing expiry at all. The constant and that fixture are
+// welded: widening one means moving the other, deliberately.
+//
+// A constant rather than configuration. A configurable leeway is a policy
+// nothing signs, so the most generous deployment would be the weak link.
+const clockLeeway = 60 * time.Second
+
+// maxCredentialLifetime is how far ahead of now a credential's expiry may
+// sit. Without it the lifetime is whatever the issuer wrote, and a
+// participant can mint itself a decade with its own key.
+//
+// Measured against now rather than against iat, which is the whole point: iat
+// is the issuer's to choose, so the distance between two claims it signs
+// bounds nothing. Against the verifier's own clock, no issuer offset buys
+// lifetime.
+//
+// An hour rather than the five minutes DECISIONS.md section 10 sets for a
+// minted credential, because the TCK harness mints with a longer life for a
+// recorded reason — it mints before a cold image build. So this refuses an
+// absurd lifetime rather than enforcing section 10, and the design spec's
+// section 5.2 is precise about how little that buys.
+const maxCredentialLifetime = time.Hour
+
 // Why a token was refused. The middleware logs these and never echoes them:
 // telling an anonymous caller which of these its credential tripped is free
 // reconnaissance.
@@ -39,12 +70,13 @@ const Algorithm = "EdDSA"
 // belong in this list: it reads nothing about the caller, so the middleware
 // answers it with a 409 that does say why.
 var (
-	ErrMalformed     = errors.New("token is not three base64url segments")
-	ErrBadAlgorithm  = errors.New("token header names an algorithm this connector does not accept")
-	ErrUnknownIssuer = errors.New("token issuer is not in the roster")
-	ErrBadSignature  = errors.New("token signature does not verify")
-	ErrExpired       = errors.New("token has expired")
-	ErrWrongAudience = errors.New("token is addressed to a different participant")
+	ErrMalformed       = errors.New("token is not three base64url segments")
+	ErrBadAlgorithm    = errors.New("token header names an algorithm this connector does not accept")
+	ErrUnknownIssuer   = errors.New("token issuer is not in the roster")
+	ErrBadSignature    = errors.New("token signature does not verify")
+	ErrExpired         = errors.New("token has expired")
+	ErrWrongAudience   = errors.New("token is addressed to a different participant")
+	ErrLifetimeTooLong = errors.New("token lifetime is longer than this connector accepts")
 )
 
 type header struct {
@@ -97,9 +129,9 @@ func Mint(priv ed25519.PrivateKey, iss, aud string, now time.Time, ttl time.Dura
 //  3. iss is read *only* to look up a key. Nothing else in the payload is
 //     trusted at this point, because nothing has been authenticated yet.
 //  4. The signature is verified.
-//  5. Only now are exp and aud read and checked. The instinct is to parse the
-//     payload once at the top and check everything together; that would mean
-//     acting on unauthenticated claims.
+//  5. Only now are exp, the lifetime it puts on the token, and aud read and
+//     checked. The instinct is to parse the payload once at the top and check
+//     everything together; that would mean acting on unauthenticated claims.
 func Verify(token string, keyFor func(string) (ed25519.PublicKey, bool), wantAud string, now time.Time) (string, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -139,8 +171,16 @@ func Verify(token string, keyFor func(string) (ed25519.PublicKey, bool), wantAud
 	}
 
 	// Authenticated from here down.
-	if now.Unix() >= c.Exp {
+	//
+	// The order of the expiry comparison and the maximum changes no answer: an
+	// expired token's distance from now is negative and so passes the maximum,
+	// and a far-future token is not expired and so is refused by it. Expiry is
+	// first because it was here first.
+	if now.Add(-clockLeeway).Unix() >= c.Exp {
 		return "", ErrExpired
+	}
+	if c.Exp-now.Unix() > int64(maxCredentialLifetime/time.Second) {
+		return "", ErrLifetimeTooLong
 	}
 	if c.Aud != wantAud {
 		return "", ErrWrongAudience
