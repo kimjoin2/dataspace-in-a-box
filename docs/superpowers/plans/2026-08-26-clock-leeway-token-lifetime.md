@@ -261,7 +261,7 @@ git commit -m "feat: a minute of clock leeway, and a lifetime the verifier measu
 
 ## Task 2: Every sentence the widened window makes false
 
-**Files:** `DECISIONS.md`, `README.md`, `internal/auth/token.go`, `internal/dsp/router.go`, `internal/dsp/callback.go`, `docs/goal-gap-analysis.md`, `docs/milestone-sequence.md`
+**Files:** `DECISIONS.md`, `README.md`, `internal/auth/token.go`, `internal/auth/roster.go`, `internal/dsp/router.go`, `internal/dsp/callback.go`, `cmd/dsops/main.go`, `docs/goal-gap-analysis.md`, `docs/milestone-sequence.md`
 
 Each edit names the code fact it was checked against. Open the code for every claim; a previous milestone here shipped documentation checked against its plan instead, and a later cross-check found false statements throughout it.
 
