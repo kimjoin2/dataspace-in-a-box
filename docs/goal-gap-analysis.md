@@ -155,16 +155,33 @@ This is the promise "dataspace" makes, and no milestone owns it.
   verifying wherever it is held, including on a connector nobody restarted.
   Both are inside the signature. The bound is real only because
   `maxRosterLifetime` caps how far ahead the expiry may sit — without a cap it
-  would be whatever the operator typed, which is the same shape as a token
-  lifetime the issuer picks and the verifier never bounds (`auth.Verify`
-  compares `exp` and nothing else; `credentialTTL` lives at the minting site).
-  No dataspace identifier was added; nothing needed one.)*
+  would be whatever the operator typed, which was then the same shape as a
+  token lifetime the issuer picked and the verifier never bounded
+  (`auth.Verify` compared `exp` and nothing else; `credentialTTL` lives at the
+  minting site, and still does). The comparison holds and the tense no longer
+  does: `maxCredentialLifetime` gave the token the same kind of cap on
+  2026-08-26, `DECISIONS.md` §37. No dataspace identifier was added; nothing
+  needed one.)*
 - **Clock skew has zero tolerance.** `Verify` checks `now.Unix() >= c.Exp`
-  and nothing else (`internal/auth/token.go:136`) — no leeway, no `nbf`,
+  and nothing else (`internal/auth/token.go`) — no leeway, no `nbf`,
   and `iat` is minted but never checked. Credentials live five minutes, so
   two participants whose clocks differ by more than that fail every request,
   and the caller receives an unexplained 401 because `refuse` deliberately
   hides the reason. No document states an NTP requirement.
+  *(2026-08-26: closed, as `DECISIONS.md` §37. `Verify` now compares against
+  `now` less a minute of leeway, so a lagging clock costs a minute rather
+  than every request, and it separately refuses an `exp` sitting more than an
+  hour ahead of its own clock — the half this bullet did not ask for, and the
+  one that closes the opposite direction, where a clock running ahead used to
+  extend its own credential's life with nothing capping it. `nbf` was
+  declined for the reason §36.9 gives. `iat` is still minted and still never
+  read, deliberately: §37.2 bounds `exp - now`, because `iat` and `exp` are
+  both the issuer's to choose. The line number this bullet cited was accurate
+  when it was written and went stale when the new constants above `Verify`
+  pushed the check down the file; it is removed rather than
+  corrected, since the next edit there would stale it again. The unexplained
+  401 is unchanged and is still deliberate. The NTP sentence is also still
+  true — §37 records the assumption as accepted rather than closed.)*
 - **The bootstrap ends in an admitted unsolved step.** `config.example.yaml`
   says it plainly: distributing `roster_signer`'s public half "is still an
   out-of-band problem". `make demo` does not disprove this — `demo/run.sh`
@@ -387,12 +404,25 @@ promotion is what pushed three of the four promises out of the document.
    and no decision, and their evidence is opposite. Both harnesses exercise
    the roster half simply by coming up; neither can exercise a clock
    difference, because every container shares one host clock. What is still
-   owed is leeway on the `exp` comparison and a bound on `exp - iat` — not
-   `nbf`, which would newly refuse pairs that transact fine. §36.9 records
-   why it split, and what deferring it costs §36 is that the fleet stops
-   across its clock spread rather than at one instant. `config.example.yaml`
-   now describes the roster procedure, so the "before any onboarding
-   document" instruction was met for this half.)*
+   owed is leeway on the `exp` comparison and a bound on the credential's
+   lifetime — not `nbf`, which would newly refuse pairs that transact fine.
+   §36.9 records why it split, and what deferring it costs §36 is that the
+   fleet stops across its clock spread rather than at one instant.
+   `config.example.yaml` now describes the roster procedure, so the "before
+   any onboarding document" instruction was met for this half.)*
+
+   *(2026-08-26: the clock half is done — `DECISIONS.md` §37. The addendum
+   above said `exp - iat` until this correction, and that quantity measures
+   nothing: `iat` and `exp` are both integers the issuer signs, so an issuer
+   wanting a decade sets `iat` a decade ahead and `exp` an hour after it and
+   passes any bound on their difference. It was corrected in place rather
+   than left with a note beside it, because a sentence saying what is owed
+   goes on prescribing what it names. What shipped bounds `exp - now` against
+   the verifier's own clock, alongside a minute of leeway on the expiry
+   comparison; both constants are in `internal/auth/token.go`. `nbf` stayed
+   declined. The evidence prediction held exactly: `go test` is the only gate
+   that carries it, and both harnesses stayed green because neither can
+   express a clock difference.)*
 
 4. **Discovery** — a catalog client. After 2, because it mints outbound
    credentials whose audience 2 decides; before 5, because a ten-minute

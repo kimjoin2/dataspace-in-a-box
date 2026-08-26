@@ -90,7 +90,8 @@ func pushCallback(url string, v any, aud string) bool {
 	}
 	for attempt := 0; ; attempt++ {
 		// Minted per attempt, not once per call: a retry schedule that runs
-		// past the credential's five-minute life would otherwise present an
+		// past the credential's five-minute life — and past the leeway
+		// internal/auth allows on top of it — would otherwise present an
 		// expired token on its last try, which is the hardest kind of
 		// intermittent failure to read from a log. Minting per attempt is
 		// also what makes an expiry landing mid-schedule observable: it is

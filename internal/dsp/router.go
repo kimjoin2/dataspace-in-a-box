@@ -215,6 +215,13 @@ func mountVersionEndpoint(mux *http.ServeMux) {
 }
 
 // credentialTTL is how long a credential this connector mints stays valid.
-// Five minutes, from DECISIONS.md section 10. Short enough to bound replay,
-// long enough that a whole TCK run (54 seconds) fits inside one token.
+// Five minutes, from DECISIONS.md section 10. Short enough to bound replay —
+// the window a captured one is good for is this plus the leeway a verifier
+// allows on expiry — and long enough that a whole TCK run (54 seconds) fits
+// inside one token.
+//
+// It is not the ceiling a counterparty enforces. That is internal/auth's
+// maxCredentialLifetime, which is wider and is measured against the
+// verifier's own clock rather than read off the token (DECISIONS.md section
+// 37).
 const credentialTTL = 5 * time.Minute

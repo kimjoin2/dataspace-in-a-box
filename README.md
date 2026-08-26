@@ -100,8 +100,11 @@ against, resolution is only how an operator builds or checks a roster entry,
 on purpose (see `DECISIONS.md` section 9 and the design spec: putting
 resolution on the request path would add a network dependency to
 authentication and change nothing about who ends up trusted). And a captured
-credential can be replayed until it expires, five minutes after it was
-minted.
+credential can be replayed until it expires: five minutes after it was
+minted, plus the minute of leeway a verifier allows so that clocks need not
+agree exactly — and longer than that against a verifier whose clock lags the
+minter's, up to the hour beyond which a verifier refuses a credential
+outright (`DECISIONS.md` section 37).
 
     make demo   # two connectors, one negotiated agreement, one file moved
     make tck    # the compliance gate: 65 of 65, 0 outside it

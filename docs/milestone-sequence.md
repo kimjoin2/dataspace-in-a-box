@@ -199,6 +199,25 @@ The harness rosters expire a day out, which permanently trips the boot log's
 approaching-expiry warning. Whoever reads `tck-connector.txt` should know
 that line is expected.
 
+**Clock leeway, and a lifetime the verifier measures** (2026-08-26,
+`DECISIONS.md` §37). The half §36 deferred. `Verify` compares `exp` against
+`now` less a minute, so an issuer whose clock lags a counterparty's costs
+itself a minute rather than every request; and it refuses an `exp` sitting
+more than an hour ahead of the verifier's own clock, so how long a credential
+lives is something the verifier measures rather than something the minter
+promises. `nbf` stayed declined. Spec:
+`specs/2026-08-26-clock-leeway-token-lifetime-design.md`.
+
+**Its verification situation is §36's, and this time it was forecast rather
+than discovered.** `go test` is the only gate that carries it, because no
+harness can exercise a clock difference — every container shares one host
+clock — which is what §36.9 wrote down when it deferred this work. `make tck`
+and `make demo` are still worth running rather than assuming, for a reason
+this milestone found: `test/tck/run.sh` mints with `-ttl 30m`, so a maximum
+picked without reading the harness would have turned the suite red. Thirty
+minutes sits inside the hour that shipped, and neither harness script
+changed.
+
 ## The milestone that was next: authorizing the initiate hooks — done, `DECISIONS.md` §35
 
 > The framing of this section was disputed and is now settled — see the note

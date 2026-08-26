@@ -1,6 +1,8 @@
 // Package auth mints and verifies the credential connectors present to each
-// other: a JWT signed EdDSA over Ed25519, valid for five minutes
-// (DECISIONS.md section 10).
+// other: a JWT signed EdDSA over Ed25519. Five minutes is what this connector
+// mints (DECISIONS.md section 10); what Verify accepts is wider and is a
+// separate number, because an issuer's clock is not this connector's — see
+// clockLeeway and maxCredentialLifetime below.
 //
 // Written against the standard library rather than a JWT package, following
 // CLAUDE.md's rule that the default answer to a dependency is the standard
@@ -56,8 +58,8 @@ const clockLeeway = 60 * time.Second
 // An hour rather than the five minutes DECISIONS.md section 10 sets for a
 // minted credential, because the TCK harness mints with a longer life for a
 // recorded reason — it mints before a cold image build. So this refuses an
-// absurd lifetime rather than enforcing section 10, and the design spec's
-// section 5.2 is precise about how little that buys.
+// absurd lifetime rather than enforcing section 10, and DECISIONS.md section
+// 37 is precise about how little that buys.
 const maxCredentialLifetime = time.Hour
 
 // Why a token was refused. The middleware logs these and never echoes them:

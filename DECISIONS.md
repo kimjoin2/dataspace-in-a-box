@@ -1510,6 +1510,25 @@ has not chosen, which is a §10-level decision, not an implementation detail
 `DECISIONS.md` already made, and this section is that ask answered "not yet,"
 recorded rather than worked around.
 
+*Amended by §37 (2026-08-26).* This trade-off's account of the replay window
+moved, and its statement of what bounds the exposure was not true when it was
+written. The window is no longer the five minutes alone: `Verify` compares `exp` against `now` less `clockLeeway`
+(`internal/auth/token.go`), so a captured credential stays usable for the
+minted lifetime plus that minute. And "§10's own choice of window length" did
+not bound the exposure, because `Verify` read `exp` without measuring it — an
+issuer whose clock ran ahead of its counterparty's extended its own
+credential's life by the whole of that offset, and nothing refused it.
+`maxCredentialLifetime` is what makes a bound exist at all, and it is an hour
+rather than §10's five minutes, so what bounds the exposure is that ceiling
+plus the leeway rather than §10's number. Measured across an issuer's
+clock-ahead offset the accepted window is the smaller of the offset plus the
+lifetime or the maximum, plus the leeway;
+`docs/superpowers/specs/2026-08-26-clock-leeway-token-lifetime-design.md`'s
+§7 has the shape, including that past that point a credential spends the
+beginning of its life refused outright. What §37 does not do is reopen replay
+defense, and §37's own trade-off is precise about how little the ceiling buys
+against a participant holding its own key.
+
 ## 29. `CN:02-07` closed: VERIFIED's choice of FINALIZED or TERMINATED is a dataset declaration
 
 **Decision.** `config.Dataset` gains `TerminateOnVerify bool` (default
@@ -2998,6 +3017,14 @@ claims is whatever the operator typed, which is the defect §10's five minutes
 has on the token side: a lifetime the issuer chooses and the verifier does
 not check.
 
+*Amended by §37 (2026-08-26).* The token side has its own cap now.
+`maxCredentialLifetime` in `internal/auth/token.go` refuses an `exp` sitting
+further ahead than an hour of the verifier's own clock, so the sentence above
+describes what the credential was rather than what it is. §10's five minutes
+remains a convention of what this connector mints — the caps are the same
+kind of thing, not the same number, and §37 says why the token's cannot be
+five minutes.
+
 `version` is required and must be at least the first revision. An absent
 field decodes to zero, and that zero is the rejection rather than a default,
 because a compatibility path would let a document without the field keep the
@@ -3171,11 +3198,21 @@ exercise the roster half simply by coming up, and neither can exercise a
 clock difference, since every container shares one host clock. `nbf` is not
 deferred, it is declined: without it a token from an issuer whose clock runs
 ahead is accepted, and adding it would newly refuse pairs that transact fine,
-so it tightens where what was wanted is a bound on `exp - iat`.
+so it tightens where what was wanted is a bound on the credential's lifetime.
 `docs/goal-gap-analysis.md`'s ordered item 3 says the same.
 Binding `connectorAddress` to a roster entry is also not here; it moves to
 `docs/goal-gap-analysis.md`'s ordered item 4, and the argument is in this
 file at 35.5 and in that document.
+
+*Amended by §37 (2026-08-26).* The deferred milestone shipped. This
+paragraph named the quantity to bound as `exp - iat` until this amendment
+corrected it, and that quantity measures nothing: `iat` and `exp` are both
+integers the issuer signs, so an issuer wanting a decade sets `iat` a decade
+ahead and `exp` an hour after it and passes any bound on their difference.
+§37 bounds `exp - now` against the verifier's own clock instead. The sentence
+is corrected rather than left standing beside a note, because a sentence
+saying what is wanted goes on prescribing what it names. What it got right is
+that `nbf` was declined, and why.
 
 *Trade-off accepted.* Deferring leeway is what makes the fleet stop across
 its clock spread rather than at one instant, and a connector whose clock runs
@@ -3226,3 +3263,125 @@ a second boot with a lowered `version` would exercise the refusal end to end
 — and does not, because the demo's job is to show a transfer working and a
 run that deliberately fails a boot in the middle of it is a different
 artifact. That is a judgement, not an impossibility.
+
+---
+
+## 37. A minute of clock leeway, and a lifetime the verifier measures
+
+**Decision.** `Verify` compares `exp` against `now` less `clockLeeway`, a
+minute, so an issuer whose clock lags this connector's costs itself a minute
+rather than every request. It also refuses a credential whose `exp` sits
+further ahead than `maxCredentialLifetime`, an hour, measured against this
+connector's own clock — so how long a credential lives becomes something the
+verifier measures rather than something the minter promises. Both are
+constants in `internal/auth/token.go`, both checks sit after the signature
+verifies, and `ErrLifetimeTooLong` joins the sentinel set there. `nbf` is not
+added. The design spec is
+`docs/superpowers/specs/2026-08-26-clock-leeway-token-lifetime-design.md`.
+
+What it closes is `docs/goal-gap-analysis.md`'s P3 clock-skew bullet — "no
+leeway, no `nbf`, and `iat` is minted but never checked" — plus the half of
+that bullet nobody had filed. `Verify` read `exp` and never measured it, so a
+roster participant could mint itself a decade with its own key and every
+other connector would accept it for a decade. §28 named §10's window length
+as what bounds replay exposure, and until this section that was a convention
+of the minter rather than anything the verifier enforced.
+
+**37.1 The failure was one-directional, which is why the fix is two
+constants.** An issuer whose clock runs behind mints a credential already
+closer to expiry than the verifier thinks, and past `credentialTTL` of lag it
+is refused on every call. An issuer whose clock runs ahead was simply
+accepted, and its credential lived `credentialTTL` plus the offset with
+nothing capping it. The leeway answers the first. Only a bound answers the
+second, and they are not the same mechanism dressed differently.
+
+**37.2 The bound measures `exp - now`, never `exp - iat`.** The distance
+between two claims the issuer signs bounds nothing: an issuer wanting a
+decade sets `iat` a decade ahead and `exp` an hour after it, and the
+difference sits inside any maximum while the credential is neither expired
+nor addressed to anyone else. An earlier draft of the spec bounded exactly
+that, was implemented in full on a throwaway copy, and passed `go vet`, `go
+test -race`, `make tck`, and `make demo` with a check in it that stopped
+nothing — then accepted a credential dated a year ahead. Measuring against
+the verifier's own clock is what closes it, and it costs nothing elsewhere:
+`iat` is still minted and still never read, so a counterparty omitting it —
+which RFC 7519 permits — is unaffected. `claims` declares `iat` as an
+integer, so a counterparty sending it as a float or a string is still refused
+as malformed; that gate is older than this section and is neither widened nor
+closed here.
+
+**37.3 A minute, because a test fixture is what holds it.**
+`TestVerifyRefusals`'s expired case mints at a fixed instant with a
+five-minute life and verifies six minutes later. At sixty seconds of leeway
+that comparison lands exactly on the boundary and `>=` still refuses; at
+sixty-one it returns no error and the case stops testing expiry at all. So
+sixty is the largest value the existing suite tolerates without moving its
+fixture, and buying more leeway would mean weakening the test that proves
+expiry works. The constant and that fixture are welded, and the comment
+beside each says so. The value does not trace to any measurement of how far
+apart real participants' clocks run.
+
+**37.4 An hour, and it cannot be five minutes.** The obvious value is
+`credentialTTL`, and this repository's own harness rules it out.
+`test/tck/run.sh` mints with `-ttl 30m` because it mints before a cold image
+build — the same string has to reach the connector as `DSBOX_MGMT_TOKEN`
+before it starts, which is what §35's trade-off block records. At five
+minutes the credential dies before the suite begins, and the harness goes red
+on every required result except the metadata suite's version-document test,
+whose endpoint is mounted outside the credential check (§36.4). One hour holds the harness's
+thirty minutes with room and still refuses the decade-long credential above.
+Like the leeway, it traces to a script rather than to an exposure budget.
+
+**37.5 `nbf` is declined, and the difference between it and this section's
+bound is one of degree.** `nbf` would refuse a credential until its issuer's
+clock-ahead offset elapsed — it would start refusing the direction that works
+today, at zero tolerance. The bound refuses that direction too, only past the maximum:
+an issuer an hour ahead transacts and one three hours ahead does not.
+Choosing the bound is choosing an hour of tolerance over none, not choosing
+to leave the direction alone, and saying otherwise would overstate the
+milestone in the way this section exists to avoid.
+
+**37.6 `go test` is the only gate that carries this.** No harness can
+exercise a clock difference, because every container shares one host clock —
+which §36.9 predicted when it deferred this work, and which is why both
+harnesses are still worth running rather than assumed: the harness's `-ttl
+30m` is what a maximum chosen without looking would have broken.
+
+*Trade-off accepted.* **The replay window widens**, by the leeway, on every
+credential. §28 accepted a window bounded by its length and this makes that
+window longer; the alternative is refusing every slow-clock pair, which is
+the failure 37.1 describes.
+
+**And for the first time the window is bounded.** Before this an issuer's
+clock-ahead offset added to it with nothing capping it, so §28's claim that
+the window length bounds the exposure was not true. The worst case is now the
+maximum plus the leeway whatever any issuer's clock says, because both are
+measured against the verifier's own.
+
+**The bound does not enforce §10, and it buys little against a participant
+holding its own key.** A participant can mint itself fifty minutes and be
+accepted, and can re-mint a five-minute credential whenever it likes. What
+the bound closes is narrower and worth naming rather than dressing up: a key
+compromised once and then discarded cannot mint a credential that outlives
+the operator's response, and a counterparty emitting milliseconds where this
+protocol expects seconds is refused rather than trusted for forty years.
+Limits on a long-lived credential already existed and this bound is not the
+first of them: it dies when the roster drops its issuer, and it dies when the
+roster itself expires (§36). This is the smallest.
+
+**A constant rather than configuration, for both values.** Neither is
+per-deployment, on §36.2's argument for `maxRosterLifetime`: a policy nothing
+signs is only as strong as the most generous deployment.
+
+**Nothing here requires NTP and nothing checks for it.** A minute of leeway
+is an assumption about how far apart two participants' clocks run, and no
+document in this repository states that as a requirement. This section does
+not add one; it makes the assumption survivable rather than removing it.
+`time.Now()` is the wall clock, so a step correction larger than the leeway
+is a refusal this design does not soften.
+
+**The management listener is untouched.** It compares its token byte for byte
+and never parses it, so neither constant reaches it — its own comment already
+records that a credential used there goes on being accepted after the
+credential inside it has expired. 37.4's harness constraint is about the
+protocol listener alone.

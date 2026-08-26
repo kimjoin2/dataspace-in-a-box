@@ -32,9 +32,11 @@ func canonicalRosterBytes(doc rosterDocument) []byte {
 
 // maxRosterLifetime bounds how far ahead an expiry may sit. Without it the
 // upper bound this milestone puts on revocation is whatever the operator
-// typed, which is the same defect DECISIONS.md section 10's five minutes has
-// on the token side: a lifetime the issuer chooses and the verifier does not
-// check.
+// typed, which is the shape a credential's lifetime had on the token side
+// until maxCredentialLifetime: chosen by the issuer, unmeasured by the
+// verifier. DECISIONS.md section 10's five minutes is still what this
+// connector mints; what changed is that a verifier now caps what it accepts,
+// so the sentence above draws a parallel rather than naming a live defect.
 //
 // A constant and not configuration. A configurable maximum is a second
 // policy the signature does not carry, so a deployment could widen its own

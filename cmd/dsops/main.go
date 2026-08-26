@@ -46,6 +46,11 @@ const usage = `usage:
 
   dsops token -key <path> -iss <participant> -aud <participant> [-ttl 5m]
         Mint a credential. Prints the token, with no "Bearer " prefix.
+        -ttl is unbounded here and bounded at the far end: a connector
+        refuses a credential whose expiry sits more than an hour ahead of its
+        own clock, and its 401 says only that a credential is required, so an
+        over-long token fails the same way a forged one does and the operator
+        who minted it is not told which (DECISIONS.md section 37).
 
   dsops roster sign -roster <path> -key <path>
         Sign a roster with the operator's key. Prints the signature; it does
