@@ -90,9 +90,17 @@ that works today.
 And it is unnecessary, for a reason the first draft of this spec got wrong.
 §5's bound is measured at the verifier against the verifier's own clock, so
 however far ahead an issuer's clock runs, the token is refused once `exp` sits
-further out than the maximum. That is the fast-clock extension closed, and it
-is closed more precisely than `nbf` would close it. **A bound on `exp - iat`
-would not have done this** — §11 has the sequence.
+further out than the maximum. That is the fast-clock extension closed. **A
+bound on `exp - iat` would not have done this** — §11 has the sequence.
+
+**The first paragraph's argument cuts against §5's bound too, and the
+difference is one of degree rather than kind.** `nbf` refuses a fast clock at
+zero tolerance: an issuer a second ahead is refused for that second. §5's
+bound refuses one only past the maximum, so an issuer an hour ahead transacts
+and one three hours ahead does not. Both narrow the direction that works
+today. Choosing the bound is choosing an hour of tolerance over none, not
+choosing to leave the direction alone, and saying otherwise would be the same
+overstatement §5.2 exists to avoid.
 
 ### 3.3 Out: making `credentialTTL` the enforced bound
 
@@ -123,6 +131,12 @@ fixture, and moving that fixture to buy more leeway would mean weakening the
 test that proves expiry works in order to widen expiry's tolerance. If a
 deployment ever needs more, the fixture moves first and deliberately.
 
+**The constant and that fixture are welded, and the comment beside each says
+so.** The fixture's `now + 6m` is the only thing standing between the leeway
+and any value at all — tidy it to a rounder number and the leeway loses its
+only gate silently. Measured: at sixty the case still refuses, at sixty-one it
+returns no error.
+
 A constant, not configuration. A configurable leeway is a second policy
 nothing signs, so the most generous deployment would be the weak link — the
 same argument `maxRosterLifetime` records for its own cap.
@@ -144,12 +158,18 @@ difference is inside any maximum, the token is not expired, and it is accepted
 for a decade. That is byte for byte the token §1.2 names, surviving the check
 written to stop it. §11 has the sequence as the cross-check found it.
 
-Measuring `exp - now` fixes it, and simplifies twice over. It needs no `iat`
-at all, so this milestone does not make a claim RFC 7519 leaves optional into
-a requirement, and a conformant counterparty that omits `iat` is unaffected —
+Measuring `exp - now` fixes it, and simplifies twice over. It reads no `iat`,
+so this milestone does not make a claim RFC 7519 leaves optional into a
+requirement, and a conformant counterparty that omits `iat` is unaffected —
 which matters, because the refusal is a bodiless 401 whose reason is
 deliberately hidden, so the counterparty's operator would have had no way to
-learn what was wrong. And it is what actually closes §1.1's fast-clock
+learn what was wrong.
+
+**`iat` is still a parse gate, though, and that is pre-existing rather than
+fixed here.** `claims` declares it as an integer, so a counterparty sending it
+as a float or a string is refused as malformed — the same hidden-reason 401,
+arrived at a different way. This milestone does not widen that and does not
+close it; it only declines to add a second such refusal. And it is what actually closes §1.1's fast-clock
 extension: the measurement happens on the verifier's clock, so an issuer's
 offset cannot buy lifetime.
 
@@ -163,7 +183,10 @@ repository's own harness.
 connector as `DSBOX_MGMT_TOKEN` before it starts. That reason is in §35's
 trade-off block, after §35.5 — not in §35.4, which is about the harness's
 participant identity. At five minutes the credential dies before the suite
-begins, so a five-minute bound turns `make tck` red.
+begins, so a five-minute bound turns `make tck` red — measured: sixty-four of
+the sixty-five required results fail. The survivor is the metadata suite's
+version-document test, because that endpoint is mounted outside the credential
+check, which is the same fact the roster milestone had to write down.
 
 One hour, then. It holds the harness's thirty minutes with room, and it
 refuses the year-long token §1.2 describes — which the first draft's quantity
@@ -211,6 +234,12 @@ argued for the reverse order, and that argument only existed because a token
 missing `iat` would otherwise have been misreported as over-long — a failure
 mode §5.1 removed.
 
+**Which means nothing holds this order, and that is the honest reading.**
+Swapping the two checks was applied as a mutation and survived every gate, as
+this section predicts it would. The preference is for the smaller diff, not
+for a behaviour, and §9 carries no row for it because a row that cannot fail
+is the thing this repository has shipped too often already.
+
 ---
 
 ## 7. What becomes false
@@ -218,6 +247,18 @@ mode §5.1 removed.
 The accepted replay window moves from the token's lifetime to its lifetime
 plus the leeway. Every sentence that states the number is affected, and one of
 them says explicitly that the number did not change.
+
+**That is the number for two clocks that agree, and this is a milestone about
+clocks that do not.** Measured across an issuer's clock-ahead offset, the
+window is the smaller of the offset plus the lifetime or the maximum, plus the
+leeway. At half a minute of offset it is six and a half minutes; at ten
+minutes of offset it is sixteen; and it stops climbing at the maximum plus the
+leeway however far the offset goes. Past that the token is not merely capped —
+it spends the beginning of its life refused outright, which is a second thing
+an operator meeting an unexplained refusal should be able to look up. The
+documents below take the agreeing-clocks number, because that is what an
+operator budgets against, and this paragraph is what they point at for the
+rest.
 
 - `DECISIONS.md` §28 — "it until it expires, five minutes after minting —
   unchanged from before this". That clause is what this milestone changes, and
@@ -355,7 +396,26 @@ There is no "ordered item 3a" in the gap analysis. And the draft's own edit
 list missed `credentialTTL`'s doc comment, which is the same class of sentence
 the list exists for.
 
+**The draft was implemented, and it passed everything.** A cross-check built
+the first design on a throwaway copy and ran the whole gate set: `go build`,
+`go vet`, `go test -race -count=2`, `make tck` sixty-five of sixty-five, and
+`make demo` both rounds — all green, with a check in it that stopped nothing.
+Three of its six prescribed mutations were killed correctly, which is what a
+green board looks like when the quantity being measured is the wrong one. Then
+the same implementation minted a token dated a year ahead and `Verify`
+returned no error.
+
+That is the strongest argument in this document for why a spec gets
+implemented before it gets planned, and it is why §9's table now carries a row
+for exactly that substitution.
+
 **What survived unchanged.** The leeway half reproduced exactly: sixty seconds
 is the largest value `TestVerifyRefusals` tolerates without moving its fixture,
 the boundary is exact, and it depends on the comparison staying `>=` — which
 §9 now has a row for.
+
+**And one row of §9's own table could not be applied.** The first draft's
+"accept a token with no `iat`" describes, under the revised design, the
+correct behaviour rather than a mutation. It is gone. A table written against
+a design that changed underneath it is the failure §9's closing paragraph
+names, and it happened here between one draft and the next.
