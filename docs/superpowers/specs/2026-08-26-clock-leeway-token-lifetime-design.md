@@ -161,9 +161,15 @@ written to stop it. §11 has the sequence as the cross-check found it.
 Measuring `exp - now` fixes it, and simplifies twice over. It reads no `iat`,
 so this milestone does not make a claim RFC 7519 leaves optional into a
 requirement, and a conformant counterparty that omits `iat` is unaffected —
-which matters, because the refusal is a bodiless 401 whose reason is
-deliberately hidden, so the counterparty's operator would have had no way to
-learn what was wrong.
+which matters, because the refusal is a 401 whose reason is deliberately
+hidden, so the counterparty's operator would have had no way to learn what was
+wrong.
+
+*(2026-08-26: this said "bodiless 401" here and in §11, and that is wrong —
+`refuse` calls `writeError`, which emits a JSON error document saying a valid
+participant credential is required. What the argument needs is that the caller
+cannot learn **which** check it tripped, and that holds. Found by the
+implementation, which declined to propagate it.)*
 
 **`iat` is still a parse gate, though, and that is pre-existing rather than
 fixed here.** `claims` declares it as an integer, so a counterparty sending it
@@ -385,7 +391,7 @@ it.
 **The `iat` requirement the draft accepted was hostile at the boundary.** RFC
 7519 makes `iat` optional. A conformant counterparty omitting it would have
 decoded to zero, been refused for an enormous lifetime, and received a
-bodiless 401 whose reason this connector deliberately hides — the same
+401 whose reason this connector deliberately hides — the same
 unexplained refusal across an organizational boundary that
 `docs/goal-gap-analysis.md` files as the reason this milestone exists.
 Measuring against `now` removes the requirement entirely.
