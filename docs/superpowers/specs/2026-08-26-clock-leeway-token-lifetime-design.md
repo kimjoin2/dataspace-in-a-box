@@ -236,6 +236,11 @@ outlives the operator's response — the attacker gets an hour, not a decade.
 And a counterparty emitting milliseconds where this protocol expects seconds
 is refused with a reason instead of being trusted for forty years.
 
+*(2026-08-26: "forty years" is wrong. A millisecond `exp` against a
+second-valued `now` sits tens of thousands of years out, not forty.
+`DECISIONS.md` §37.4 carries the corrected magnitude; this sentence is left
+standing because dated specs are annotated rather than rewritten.)*
+
 Two things already limit a long token, and neither is this: it dies when the
 roster drops its issuer, and it dies when the roster itself expires, which the
 previous milestone capped. The bound is the third and smallest of the three.
