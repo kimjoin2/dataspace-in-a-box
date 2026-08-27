@@ -3028,11 +3028,11 @@ serializes is a plain string or an int.
 
 *Amended by §37 (2026-08-26).* The token side has its own cap now.
 `maxCredentialLifetime` in `internal/auth/token.go` refuses an `exp` sitting
-further ahead than an hour of the verifier's own clock, so this subsection's
-closing sentence describes what the credential was rather than what it is.
-§10's five minutes remains a convention of what this connector mints — the
-caps are the same kind of thing, not the same number, and §37 says why the
-token's cannot be five minutes.
+further ahead than an hour of the verifier's own clock, so the sentence that
+closes this subsection's first paragraph describes what the credential was
+rather than what it is. §10's five minutes remains a convention of what this
+connector mints — the caps are the same kind of thing, not the same number,
+and §37 says why the token's cannot be five minutes.
 
 **36.3 An expired connector answers `409` on the DSP listener, not `401` and
 not `503`.** Not `401`, because the caller's credential may be perfect and

@@ -43,9 +43,11 @@ lifetime, which §1.2 is about.
 a finding section should carry — but a reader carrying them forward gets them
 wrong. After §4 the slow-clock refusal starts at `credentialTTL` plus the
 leeway rather than at `credentialTTL`, and after §5 the fast-clock extension
-stops. §7's cross-offset paragraph is the post-milestone shape and is the one
-to quote. Bracketed after `DECISIONS.md` §37.1 inherited the first of them in
-the present tense.)*
+is capped rather than ended — an issuer ten minutes ahead still buys its
+offset, and what §5 stops is the climb past the maximum. §7's cross-offset
+paragraph is the post-milestone shape and is the one to quote. Bracketed
+after `DECISIONS.md` §37.1 inherited the first of them in the present
+tense.)*
 
 ### 1.2 `Verify` does not bound `exp`, and `iat` is never read
 
@@ -104,15 +106,20 @@ bound on `exp - iat` would not have done this** — §11 has the sequence.
 **The first paragraph's argument cuts against §5's bound too, and the
 difference is one of degree rather than kind.** `nbf` refuses a fast clock at
 zero tolerance: an issuer a second ahead is refused for that second. §5's
-bound refuses one only past the maximum, so an issuer well short of it
-transacts and one far past it does not. *(2026-08-26: an earlier wording put
-that line at an hour of offset. It is not — a freshly minted credential
-carries the offset plus `credentialTTL`, so tolerance ends at the maximum
-less the credential's lifetime. §7's cross-offset paragraph has the shape;
-this sentence should not have carried a second, rounder number.)* Both narrow the direction that works
+bound refuses one only past the maximum, so an issuer an hour ahead transacts
+and one three hours ahead does not. Both narrow the direction that works
 today. Choosing the bound is choosing an hour of tolerance over none, not
 choosing to leave the direction alone, and saying otherwise would be the same
 overstatement §5.2 exists to avoid.
+
+*(2026-08-26: the paragraph above puts the tolerance line at an hour of
+offset — in the sentence about who transacts, and again in the clause about
+what choosing the bound chooses. It sits short of that: a freshly minted
+credential carries its issuer's offset on top of `credentialTTL`, so
+tolerance ends at the maximum less the credential's lifetime. §7's
+cross-offset paragraph is the shape to quote, and neither sentence should
+have restated it with a rounder number. Bracketed after `DECISIONS.md` §37.5
+inherited the error.)*
 
 ### 3.3 Out: making `credentialTTL` the enforced bound
 
@@ -173,11 +180,11 @@ written to stop it. §11 has the sequence as the cross-check found it.
 Measuring `exp - now` fixes it, and simplifies twice over. It reads no `iat`,
 so this milestone does not make a claim RFC 7519 leaves optional into a
 requirement, and a conformant counterparty that omits `iat` is unaffected —
-which matters, because the refusal is a 401 whose reason is deliberately
-hidden, so the counterparty's operator would have had no way to learn what was
-wrong.
+which matters, because the refusal is a bodiless 401 whose reason is
+deliberately hidden, so the counterparty's operator would have had no way to
+learn what was wrong.
 
-*(2026-08-26: this said "bodiless 401" here and in §11, and that is wrong —
+*(2026-08-26: this says "bodiless 401" here and in §11, and that is wrong —
 `refuse` calls `writeError`, which emits a JSON error document saying a valid
 participant credential is required. What the argument needs is that the caller
 cannot learn **which** check it tripped, and that holds. Found by the
@@ -403,10 +410,15 @@ it.
 **The `iat` requirement the draft accepted was hostile at the boundary.** RFC
 7519 makes `iat` optional. A conformant counterparty omitting it would have
 decoded to zero, been refused for an enormous lifetime, and received a
-401 whose reason this connector deliberately hides — the same
+bodiless 401 whose reason this connector deliberately hides — the same
 unexplained refusal across an organizational boundary that
 `docs/goal-gap-analysis.md` files as the reason this milestone exists.
 Measuring against `now` removes the requirement entirely.
+
+*(2026-08-26: "bodiless" is wrong here for the reason §5.1's bracket gives —
+`refuse` calls `writeError`, which emits a JSON error document. What this
+paragraph rests on is the half that holds: the caller is not told which check
+its credential tripped.)*
 
 **Smaller corrections.** The `-ttl 30m` reason is in §35's trade-off block,
 not §35.4. The roster parallel in §1.2 was a compression presented as a quote.

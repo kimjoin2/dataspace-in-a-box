@@ -295,7 +295,7 @@ Each edit names the code fact it was checked against. Open the code for every cl
 - `DECISIONS.md` §36.2 makes the same claim about the verifier not checking a token's lifetime, from the roster milestone's side.
 - `docs/milestone-sequence.md` gains this milestone, and the fact that `go test` is the only gate that carries it — no harness can exercise a clock difference, because every container shares one host clock.
 
-**A sentence this milestone should add rather than fix.** `cmd/dsops/main.go` documents `-ttl` with no upper bound, and after this a longer one produces a credential every connector refuses with a bodiless 401. Say so where the flag is documented.
+**A sentence this milestone should add rather than fix.** `cmd/dsops/main.go` documents `-ttl` with no upper bound, and after this a longer one produces a credential every connector refuses with a bodiless 401. *(2026-08-26: not bodiless — `refuse` in `internal/dsp/auth_middleware.go` calls `writeError`, which emits a JSON error document saying a valid participant credential is required. What the step needs is that the body does not name which check the credential tripped, and that holds; the spec's §5.1 carries the same correction.)* Say so where the flag is documented.
 
 - [ ] **Step 5: Verify and commit**
 
