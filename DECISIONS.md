@@ -3372,10 +3372,10 @@ accepted, and can re-mint a five-minute credential whenever it likes. What
 the bound closes is narrower and worth naming rather than dressing up: a key
 compromised once and then discarded cannot mint a credential that outlives
 the operator's response, and a counterparty emitting milliseconds where this
-protocol expects seconds is refused rather than trusted for forty years.
-Limits on a long-lived credential already existed and this bound is not the
-first of them: it dies when the roster drops its issuer, and it dies when the
-roster itself expires (§36). This is the smallest.
+protocol expects seconds is refused rather than trusted for tens of thousands
+of years. Limits on a long-lived credential already existed and this bound is
+not the first of them: it dies when the roster drops its issuer, and it dies
+when the roster itself expires (§36). This is the smallest.
 
 **A constant rather than configuration, for both values.** Neither is
 per-deployment, on §36.2's argument for `maxRosterLifetime`: a policy nothing

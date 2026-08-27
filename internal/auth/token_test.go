@@ -23,6 +23,10 @@ func staticKey(id string, pub ed25519.PublicKey) func(string) (ed25519.PublicKey
 
 func noKeys(string) (ed25519.PublicKey, bool) { return nil, false }
 
+// The TTL here is the other half of what bounds clockLeeway from above:
+// TestVerifyRefusals' "expired" case weighs it against that fixture's
+// verification time, so shortening it raises the leeway's ceiling with the
+// suite still green. Moving it means moving that constant, deliberately.
 func mustMint(t *testing.T, priv ed25519.PrivateKey, iss, aud string, now time.Time) string {
 	t.Helper()
 	tok, err := Mint(priv, iss, aud, now, 5*time.Minute)
@@ -192,8 +196,8 @@ func TestVerifyAcceptsTokenExpiredWithinLeeway(t *testing.T) {
 
 // The lifetime is measured against the verifier's own clock, so no issuer can
 // buy one by moving its claims. A token dated a year ahead carries a
-// perfectly ordinary hour between iat and exp — which is why the quantity
-// being measured has to be the distance from now.
+// perfectly ordinary five minutes between iat and exp — which is why the
+// quantity being measured has to be the distance from now.
 func TestVerifyRefusesLifetimeBoughtByAClockRunningAhead(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	now := time.Unix(1_700_000_000, 0)

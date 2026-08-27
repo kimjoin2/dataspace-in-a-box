@@ -174,10 +174,13 @@ func Verify(token string, keyFor func(string) (ed25519.PublicKey, bool), wantAud
 
 	// Authenticated from here down.
 	//
-	// The order of the expiry comparison and the maximum changes no answer: an
-	// expired token's distance from now is negative and so passes the maximum,
-	// and a far-future token is not expired and so is refused by it. Expiry is
-	// first because it was here first.
+	// Expiry is checked first, and the order decides which refusal a token
+	// earns rather than whether it earns one. At an exp of math.MinInt64 the
+	// subtraction below wraps positive, so checking the maximum first would
+	// call that token over-long where expiry calls it expired. Both refuse,
+	// the middleware echoes neither, and no wrap of that kind reaches the
+	// accept path: by the time the subtraction runs, expiry has put c.Exp
+	// above now less the leeway.
 	if now.Add(-clockLeeway).Unix() >= c.Exp {
 		return "", ErrExpired
 	}

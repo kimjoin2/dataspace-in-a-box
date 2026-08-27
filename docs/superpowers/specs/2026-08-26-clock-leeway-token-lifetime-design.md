@@ -156,6 +156,13 @@ and any value at all — tidy it to a rounder number and the leeway loses its
 only gate silently. Measured: at sixty the case still refuses, at sixty-one it
 returns no error.
 
+*(2026-08-26: `now + 6m` is not the only thing standing there — `mustMint`'s
+five-minute TTL is that comparison's other operand, and the ceiling is the
+verification time less the TTL. Measured: a TTL of 280 seconds with a leeway
+of 70 leaves the whole `internal/auth` suite green, the ceiling having moved
+without a word. Bracketed after the final whole-branch review found the
+warning on one half of the weld; `mustMint` now carries the other.)*
+
 A constant, not configuration. A configurable leeway is a second policy
 nothing signs, so the most generous deployment would be the weak link — the
 same argument `maxRosterLifetime` records for its own cap.
