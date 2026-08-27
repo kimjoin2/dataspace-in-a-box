@@ -177,11 +177,14 @@ This is the promise "dataspace" makes, and no milestone owns it.
   declined for the reason §36.9 gives. `iat` is still minted and still never
   read, deliberately: §37.2 bounds `exp - now`, because `iat` and `exp` are
   both the issuer's to choose. The line number this bullet cited was accurate
-  when it was written and went stale when the new constants above `Verify`
-  pushed the check down the file; it is removed rather than
-  corrected, since the next edit there would stale it again. The unexplained
-  401 is unchanged and is still deliberate. The NTP sentence is also still
-  true — §37 records the assumption as accepted rather than closed.)*
+  when it was written and had already gone stale before this milestone
+  existed: the expiry check moved off line 136 at `6a2f4c8`, the roster
+  milestone's own documentation commit, which lengthened the comment above
+  the sentinel block; the constants this milestone added moved it again. It
+  is removed rather than corrected, since the next edit above `Verify` would
+  stale it a third time. The unexplained 401 is unchanged and is still
+  deliberate. The NTP sentence is also still true — §37 records the
+  assumption as accepted rather than closed.)*
 - **The bootstrap ends in an admitted unsolved step.** `config.example.yaml`
   says it plainly: distributing `roster_signer`'s public half "is still an
   out-of-band problem". `make demo` does not disprove this — `demo/run.sh`

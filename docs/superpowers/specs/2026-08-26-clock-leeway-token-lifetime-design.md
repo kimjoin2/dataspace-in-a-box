@@ -39,6 +39,14 @@ So the failure this milestone fixes is the slow-clock direction, and the
 fast-clock direction is not a failure at all — it is a silent extension of the
 lifetime, which §1.2 is about.
 
+*(2026-08-26: both thresholds above are the pre-milestone ones, which is what
+a finding section should carry — but a reader carrying them forward gets them
+wrong. After §4 the slow-clock refusal starts at `credentialTTL` plus the
+leeway rather than at `credentialTTL`, and after §5 the fast-clock extension
+stops. §7's cross-offset paragraph is the post-milestone shape and is the one
+to quote. Bracketed after `DECISIONS.md` §37.1 inherited the first of them in
+the present tense.)*
+
 ### 1.2 `Verify` does not bound `exp`, and `iat` is never read
 
 `credentialTTL = 5 * time.Minute` lives at the minting site

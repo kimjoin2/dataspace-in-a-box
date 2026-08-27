@@ -1512,9 +1512,10 @@ recorded rather than worked around.
 
 *Amended by §37 (2026-08-26).* This trade-off's account of the replay window
 moved, and its statement of what bounds the exposure was not true when it was
-written. The window is no longer the five minutes alone: `Verify` compares `exp` against `now` less `clockLeeway`
-(`internal/auth/token.go`), so a captured credential stays usable for the
-minted lifetime plus that minute. And "§10's own choice of window length" did
+written. The window is no longer the five minutes alone: `Verify` compares
+`exp` against `now` less `clockLeeway` (`internal/auth/token.go`), so a
+captured credential stays usable for the minted lifetime plus that minute.
+And "§10's own choice of window length" did
 not bound the exposure, because `Verify` read `exp` without measuring it — an
 issuer whose clock ran ahead of its counterparty's extended its own
 credential's life by the whole of that offset, and nothing refused it.
@@ -3017,14 +3018,6 @@ claims is whatever the operator typed, which is the defect §10's five minutes
 has on the token side: a lifetime the issuer chooses and the verifier does
 not check.
 
-*Amended by §37 (2026-08-26).* The token side has its own cap now.
-`maxCredentialLifetime` in `internal/auth/token.go` refuses an `exp` sitting
-further ahead than an hour of the verifier's own clock, so the sentence above
-describes what the credential was rather than what it is. §10's five minutes
-remains a convention of what this connector mints — the caps are the same
-kind of thing, not the same number, and §37 says why the token's cannot be
-five minutes.
-
 `version` is required and must be at least the first revision. An absent
 field decodes to zero, and that zero is the rejection rather than a default,
 because a compatibility path would let a document without the field keep the
@@ -3032,6 +3025,14 @@ guarantee the field exists to provide. `expires_at` is carried as a string
 and parsed only for comparison, so `canonicalRosterBytes` can go on
 discarding `json.Marshal`'s error on the argument that every field it
 serializes is a plain string or an int.
+
+*Amended by §37 (2026-08-26).* The token side has its own cap now.
+`maxCredentialLifetime` in `internal/auth/token.go` refuses an `exp` sitting
+further ahead than an hour of the verifier's own clock, so this subsection's
+closing sentence describes what the credential was rather than what it is.
+§10's five minutes remains a convention of what this connector mints — the
+caps are the same kind of thing, not the same number, and §37 says why the
+token's cannot be five minutes.
 
 **36.3 An expired connector answers `409` on the DSP listener, not `401` and
 not `503`.** Not `401`, because the caller's credential may be perfect and
@@ -3290,10 +3291,12 @@ of the minter rather than anything the verifier enforced.
 **37.1 The failure was one-directional, which is why the fix is two
 constants.** An issuer whose clock runs behind mints a credential already
 closer to expiry than the verifier thinks, and past `credentialTTL` of lag it
-is refused on every call. An issuer whose clock runs ahead was simply
-accepted, and its credential lived `credentialTTL` plus the offset with
-nothing capping it. The leeway answers the first. Only a bound answers the
-second, and they are not the same mechanism dressed differently.
+was refused on every call — the leeway moves that line out to `credentialTTL`
+plus `clockLeeway`, which is the whole of what it buys. An issuer whose clock
+runs ahead was simply accepted, and its credential lived `credentialTTL` plus
+the offset with nothing capping it. The leeway answers the first. Only a
+bound answers the second, and they are not the same mechanism dressed
+differently.
 
 **37.2 The bound measures `exp - now`, never `exp - iat`.** The distance
 between two claims the issuer signs bounds nothing: an issuer wanting a
@@ -3328,18 +3331,23 @@ build — the same string has to reach the connector as `DSBOX_MGMT_TOKEN`
 before it starts, which is what §35's trade-off block records. At five
 minutes the credential dies before the suite begins, and the harness goes red
 on every required result except the metadata suite's version-document test,
-whose endpoint is mounted outside the credential check (§36.4). One hour holds the harness's
-thirty minutes with room and still refuses the decade-long credential above.
-Like the leeway, it traces to a script rather than to an exposure budget.
+whose endpoint is mounted outside the credential check (§36.4). One hour
+holds the harness's thirty minutes with room and still refuses the
+decade-long credential above. Like the leeway, it traces to a script rather
+than to an exposure budget.
 
 **37.5 `nbf` is declined, and the difference between it and this section's
 bound is one of degree.** `nbf` would refuse a credential until its issuer's
 clock-ahead offset elapsed — it would start refusing the direction that works
-today, at zero tolerance. The bound refuses that direction too, only past the maximum:
-an issuer an hour ahead transacts and one three hours ahead does not.
-Choosing the bound is choosing an hour of tolerance over none, not choosing
-to leave the direction alone, and saying otherwise would overstate the
-milestone in the way this section exists to avoid.
+today, at zero tolerance. The bound refuses that direction too, only past the
+maximum less the credential's lifetime: what a verifier measures is
+`exp - now`, and a freshly minted credential carries its issuer's offset on
+top of `credentialTTL`, so tolerance runs out short of the maximum rather
+than at it. The design spec's §7 has the shape across offsets, and this
+section does not restate it with a rounder number. Choosing the bound is
+choosing that much tolerance over none, not choosing to leave the direction
+alone, and saying otherwise would overstate the milestone in the way this
+section exists to avoid.
 
 **37.6 `go test` is the only gate that carries this.** No harness can
 exercise a clock difference, because every container shares one host clock —

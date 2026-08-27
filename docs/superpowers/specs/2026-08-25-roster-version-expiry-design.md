@@ -101,6 +101,13 @@ against.
 Their content is already decided and belongs in its own milestone: add leeway
 to the `exp` comparison, do not add `nbf`, and bound `exp - iat`.
 
+*(2026-08-26: that last quantity was retracted before it shipped. `iat` and
+`exp` are both integers the issuer signs, so a bound on their difference
+measures nothing — an issuer wanting a decade sets `iat` a decade ahead and
+`exp` an hour after it. `DECISIONS.md` §37 bounds `exp - now` against the
+verifier's own clock instead; the clock milestone's spec carries the sequence
+at its §5.1 and §11.)*
+
 Not adding `nbf` is the part worth recording now, because it is
 counter-intuitive. Without it, a token from an issuer whose clock runs ahead
 is accepted — the only refusal today is one-directional. Adding `nbf` would
