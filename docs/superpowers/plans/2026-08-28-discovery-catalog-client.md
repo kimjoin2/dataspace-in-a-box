@@ -804,8 +804,8 @@ and **above** the early return:
 	// Non-nil only when there is a roster to consult, the rule
 	// knownParticipant above follows. Built here rather than inside the
 	// authenticated branch for the reason the initiate handlers already
-	// carry: NewRouter returns from two places and both have to hand the
-	// hooks a complete handler.
+	// carry: NewRouter returns from more than one place, and each of them has to
+	// hand the hooks a complete handler.
 	var providerAddress func(string) (string, bool)
 	if cfg.AuthRequired() {
 		providerAddress = roster.AddressFor
@@ -1229,7 +1229,7 @@ func TestFetchCatalogRefusesAHalfDecodedDocument(t *testing.T) {
 }
 
 // The provider's own status reaches the operator: a refused credential, a
-// missing endpoint and a broken provider are three different next actions.
+// missing endpoint and a broken provider are each a different next action.
 func TestFetchCatalogReportsTheProvidersStatus(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusInternalServerError} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1749,7 +1749,7 @@ func newRouterWithTable(cfg config.Config, st *store.Store, rosterUsable func() 
 	tbl.handle("POST /transfers/initiate", cfg.MgmtToken, transferInitiate)
 	// Asking a counterparty for its catalog is an operator action, and it
 	// writes nothing -- which is the property section 25.3's boundary is drawn
-	// around and what admitted the two read routes above. The concrete guard
+	// around and what admitted the read routes above. The concrete guard
 	// is that no catalog is stored: every call asks the counterparty again.
 	tbl.handle("GET /catalog", cfg.MgmtToken, catalogLookup)
 	return tbl.mux, tbl
