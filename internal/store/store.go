@@ -59,10 +59,14 @@ type ConsumerNegotiation struct {
 	// ProviderPID is empty until the initial request's synchronous response
 	// reveals it.
 	ProviderPID string
-	// ProviderBaseURL is the connectorAddress the management listener's
-	// POST /negotiations/initiate supplied — every subsequent outbound call
-	// this connector makes as consumer for this negotiation is addressed
-	// relative to it.
+	// ProviderBaseURL is the address this connector dialed — every subsequent
+	// outbound call it makes as consumer for this negotiation is addressed
+	// relative to it. Where the value comes from is decided by handleInitiate
+	// in internal/dsp/negotiation_consumer_handler.go: it is the roster's
+	// connector_address for the counterparty wherever a roster exists, and the
+	// connectorAddress the management listener's POST /negotiations/initiate
+	// supplied only with authentication off, where there is no roster to
+	// resolve a participant against.
 	ProviderBaseURL string
 	State           string
 	DatasetID       string
@@ -848,8 +852,13 @@ func (s *Store) explainNoTransferUpdate(providerPID, want string) error {
 type ConsumerTransfer struct {
 	ConsumerPID string
 	ProviderPID string
-	// ProviderBaseURL is connectorAddress from the initiate call — the base
-	// every later outbound message is addressed against.
+	// ProviderBaseURL is the address this connector dialed — the base every
+	// later outbound message is addressed against. handleTransferInitiate in
+	// internal/dsp/transfer_consumer_handler.go decides it the way
+	// handleInitiate decides the negotiation's: the roster's
+	// connector_address for the counterparty wherever a roster exists, and
+	// connectorAddress from the initiate call only with authentication off,
+	// where there is no roster.
 	ProviderBaseURL string
 	AgreementID     string
 	Format          string

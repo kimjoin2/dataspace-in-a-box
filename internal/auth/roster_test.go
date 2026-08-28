@@ -337,8 +337,9 @@ func TestCanonicalRosterBytesCarryAPresentConnectorAddress(t *testing.T) {
 	}
 }
 
-// Optional in the document does not mean removable from a signed one. All
-// three mutations an attacker would want are refused, and each is refused by
+// Optional in the document does not mean removable from a signed one. Every
+// mutation an attacker would want -- stripping an address out, adding one to
+// an entry that had none, rewriting one -- is refused, and each is refused by
 // the signature rather than by a rule written for it.
 func TestSignatureCoversTheConnectorAddress(t *testing.T) {
 	t.Parallel()
@@ -375,9 +376,10 @@ func TestSignatureCoversTheConnectorAddress(t *testing.T) {
 	}
 }
 
-// signatureOf and expiryOf pull the two document-level fields back out of a
-// body signedRosterBody produced, so a case can pair one document's signature
-// with another's participants without rebuilding either by hand.
+// signatureOf and expiryOf pull the document-level fields back out of a body
+// signedRosterBody produced -- the signature and the expiry, each by its own
+// helper -- so a case can pair one document's signature with another's
+// participants without rebuilding either by hand.
 func signatureOf(t *testing.T, body string) string {
 	t.Helper()
 	var doc rosterDocument
