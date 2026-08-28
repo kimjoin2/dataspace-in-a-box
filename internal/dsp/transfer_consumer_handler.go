@@ -156,7 +156,7 @@ func (h transferHandler) handleTransferInitiate(w http.ResponseWriter, r *http.R
 	// reports what name resolution told this connector.
 	if baseURL != body.ConnectorAddress {
 		if err := validateOutgoingCallback(baseURL); err != nil {
-			slog.Warn("reject initiate", "connector_address", baseURL, "error", err)
+			slog.Warn("reject transfer initiate", "connector_address", baseURL, "error", err)
 			writeError(w, TransferErrorType, http.StatusBadRequest,
 				"the roster's connector_address for "+body.ProviderID+
 					" is not an address this connector will send to")

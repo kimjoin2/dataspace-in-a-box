@@ -141,6 +141,26 @@ func (h catalogLookupHandler) handleCatalogLookup(w http.ResponseWriter, r *http
 			"the roster lists no connector_address for providerId "+providerID)
 		return
 	}
+	// The guard runs where it already runs: on the address this connector is
+	// about to dial. LoadRoster deliberately does not run it -- internal/auth
+	// cannot import this package, and a counterparty's host does not resolve
+	// while this connector is booting -- so a roster entry naming a loopback
+	// or link-local host is admitted at boot and refused here. Without this,
+	// discovery would dial an address both initiate hooks refuse, and hand the
+	// operator pairs for an exchange this connector will not transact.
+	//
+	// The reason is logged rather than echoed, for the reason handleInitiate's
+	// equivalent guard gives: it reports what name resolution told this
+	// connector, which the caller did not supply. The refusal names the roster
+	// as what is at fault, because nothing the caller sent can correct it.
+	if err := validateOutgoingCallback(address); err != nil {
+		slog.Warn("reject catalog lookup", "provider_id", providerID,
+			"connector_address", address, "error", err)
+		writeError(w, CatalogErrorType, http.StatusBadRequest,
+			"the roster's connector_address for "+providerID+
+				" is not an address this connector will send to")
+		return
+	}
 
 	c, err := fetchCatalog(address, providerID)
 	if err != nil {

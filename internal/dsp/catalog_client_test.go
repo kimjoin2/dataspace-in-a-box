@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -111,6 +112,21 @@ func TestANullDatasetListIsAnEmptyCatalogRatherThanAnError(t *testing.T) {
 	}
 }
 
+// admitLoopback replaces the address guard handleCatalogLookup runs on the
+// roster's address, so a test can point the handler at an httptest server.
+// That server listens on a loopback address, which the real guard refuses --
+// the property TestCatalogLookupRefusesARosterAddressItWillNotDialTo holds --
+// and every test below is about what the route does once the guard has passed.
+//
+// A caller must not run in parallel: validateOutgoingCallback is a package
+// variable.
+func admitLoopback(t *testing.T) {
+	t.Helper()
+	restore := validateOutgoingCallback
+	validateOutgoingCallback = func(string) error { return nil }
+	t.Cleanup(func() { validateOutgoingCallback = restore })
+}
+
 // The request carries no filter. This connector's own provider side refuses
 // one -- DSP leaves the filter expression implementation-defined, so serving a
 // full catalog to a consumer that asked for a subset is a worse failure than a
@@ -132,6 +148,36 @@ func TestFetchCatalogSendsNoFilter(t *testing.T) {
 	}
 	if _, ok := msg["filter"]; ok {
 		t.Errorf("the request carries a filter: %s", body)
+	}
+}
+
+// Where the request goes and how it is framed, pinned the way the sibling
+// clients pin theirs -- negotiation_client_test.go captures r.URL.Path and
+// asserts it. A wrong path, a GET where DSP defines a POST, and a missing
+// content type each fail against a real counterparty in a way that reads like
+// an unreachable one, and no other test here observes any of them.
+//
+// The path is written out rather than compared against consumerCatalogPath:
+// asserting a constant against itself holds nothing.
+func TestFetchCatalogPostsWhereTheProviderServesItsCatalog(t *testing.T) {
+	var method, path, contentType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, contentType = r.Method, r.URL.Path, r.Header.Get("Content-Type")
+		writeJSON(w, http.StatusOK, map[string]any{"participantId": "p"})
+	}))
+	t.Cleanup(srv.Close)
+
+	if _, err := fetchCatalog(srv.URL, ""); err != nil {
+		t.Fatalf("fetchCatalog: %v", err)
+	}
+	if method != http.MethodPost {
+		t.Errorf("method = %q, want POST", method)
+	}
+	if want := "/catalog/request"; path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+	if want := "application/json"; contentType != want {
+		t.Errorf("Content-Type = %q, want %q", contentType, want)
 	}
 }
 
@@ -243,6 +289,7 @@ func TestCatalogLookupRefusesAnExpiredRosterWithoutDialing(t *testing.T) {
 // own comment draws. It is also the one place where evidence about what an
 // address actually serves can contradict the roster.
 func TestCatalogLookupRefusesAMismatchedParticipant(t *testing.T) {
+	admitLoopback(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"participantId": "urn:participant:someone-else"})
 	}))
@@ -295,16 +342,63 @@ func TestCatalogLookupRefusesWhatItCannotAddress(t *testing.T) {
 	}
 }
 
+// The roster's address is the address this connector dials, so it is guarded
+// where every other outbound site guards -- both initiate hooks run this on
+// the address they derive, and so do the consumer messages that follow. It
+// cannot run in LoadRoster: internal/auth cannot import this package, and a
+// counterparty's host does not resolve while this connector is booting. So a
+// roster entry naming a loopback or link-local host is admitted at boot, and
+// without this check discovery would dial it and hand the operator pairs for
+// an exchange the initiate hooks then refuse.
+//
+// No t.Parallel: this is the one test here that leaves validateOutgoingCallback
+// alone, and its siblings replace it.
+func TestCatalogLookupRefusesARosterAddressItWillNotDialTo(t *testing.T) {
+	dialed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dialed = true
+	}))
+	t.Cleanup(srv.Close)
+
+	h := catalogLookupHandler{
+		knownParticipant: func(string) bool { return true },
+		// The httptest server's own URL. It is a loopback address, which is
+		// exactly the entry an operator can sign into a roster and the real
+		// guard refuses.
+		providerAddress: func(string) (string, bool) { return srv.URL, true },
+	}
+	rec := httptest.NewRecorder()
+	h.handleCatalogLookup(rec, httptest.NewRequest(http.MethodGet,
+		"/catalog?providerId=urn:participant:provider", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "the roster's connector_address") {
+		t.Errorf("the refusal does not name the roster's address as what is at fault: %s", rec.Body)
+	}
+	if dialed {
+		t.Error("the connector dialed an address it will not send to")
+	}
+}
+
 // The success body is the wire contract the management route answers with, and
 // nothing else in this package holds it: demo/run.sh reads connectorAddress and
-// offerId straight out of this document, and a renamed or swapped field would
-// reach an operator's terminal before it reached a test. So this asserts on the
-// decoded response rather than on the status.
+// offerId straight out of this document with sed, and a renamed or transposed
+// field would reach an operator's terminal before it reached a test.
+//
+// So the assertion is on the JSON the route emitted, not on a value decoded
+// back through catalogLookupResponse. Decoding through the struct that encoded
+// it moves both sides of a tag together, and the rename this test exists to
+// catch is invisible to it -- which is the mechanism its own comment used to
+// name as the fix.
 //
 // connectorAddress is the address this connector resolved and dialed, which is
 // why it is asserted against the fake provider's own URL rather than against
 // anything the query carried.
+//
+// No t.Parallel: admitLoopback replaces a package variable.
 func TestCatalogLookupAnswersWithThePairsAnInitiateCallNeeds(t *testing.T) {
+	admitLoopback(t)
 	const provider = "urn:participant:provider"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -334,23 +428,21 @@ func TestCatalogLookupAnswersWithThePairsAnInitiateCallNeeds(t *testing.T) {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
 	}
 
-	var got catalogLookupResponse
+	var got map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("the response does not decode: %v: %s", err, rec.Body)
 	}
-	want := catalogLookupResponse{
-		ParticipantID:    provider,
-		ConnectorAddress: srv.URL,
-		Datasets: []datasetOffer{
-			{DatasetID: "urn:dataset:one", OfferID: "urn:dataset:one#offer"},
-			{DatasetID: "urn:dataset:two", OfferID: "urn:dataset:two#offer"},
+	want := map[string]any{
+		"participantId":    provider,
+		"connectorAddress": srv.URL,
+		"datasets": []any{
+			map[string]any{"id": "urn:dataset:one", "offerId": "urn:dataset:one#offer"},
+			map[string]any{"id": "urn:dataset:two", "offerId": "urn:dataset:two#offer"},
 		},
 	}
-	if got.ParticipantID != want.ParticipantID || got.ConnectorAddress != want.ConnectorAddress {
-		t.Errorf("got %+v, want %+v", got, want)
-	}
-	if !slices.Equal(got.Datasets, want.Datasets) {
-		t.Errorf("datasets = %+v, want %+v", got.Datasets, want.Datasets)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the response document is not what an operator and demo/run.sh read:\n got %s\nwant %+v",
+			rec.Body, want)
 	}
 }
 
@@ -366,6 +458,7 @@ func TestCatalogLookupAnswersWithThePairsAnInitiateCallNeeds(t *testing.T) {
 //
 // No t.Parallel: mintOutboundCredential is a package variable.
 func TestCatalogLookupAddressesItsCredentialToTheProvider(t *testing.T) {
+	admitLoopback(t)
 	const provider = "urn:participant:provider"
 	restore := mintOutboundCredential
 	mintOutboundCredential = func(aud string) (string, bool) { return "Bearer aud=" + aud, true }
@@ -410,6 +503,7 @@ func TestCatalogLookupAddressesItsCredentialToTheProvider(t *testing.T) {
 // No t.Parallel: slog.Default is process-global, so a parallel sibling would be
 // logging into this test's buffer.
 func TestCatalogLookupSaysWhichDatasetsItLeftOut(t *testing.T) {
+	admitLoopback(t)
 	const provider = "urn:participant:provider"
 	var buf bytes.Buffer
 	restoreLogger := slog.Default()
@@ -453,6 +547,7 @@ func TestCatalogLookupSaysWhichDatasetsItLeftOut(t *testing.T) {
 //
 // No t.Parallel: slog.Default is process-global.
 func TestCatalogLookupSaysItDidNotWalkTheSubCatalogs(t *testing.T) {
+	admitLoopback(t)
 	const provider = "urn:participant:broker"
 	var buf bytes.Buffer
 	restoreLogger := slog.Default()
