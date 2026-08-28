@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -57,6 +59,7 @@ const maxRosterLifetime = 400 * 24 * time.Hour
 // section 9 already accepted as the cost of a static registry.
 type Roster struct {
 	keys      map[string]ed25519.PublicKey
+	addresses map[string]string
 	version   int
 	expiresAt time.Time
 }
@@ -66,6 +69,15 @@ type Roster struct {
 func (r Roster) KeyFor(id string) (ed25519.PublicKey, bool) {
 	pub, ok := r.keys[id]
 	return pub, ok
+}
+
+// AddressFor returns the address the roster lists for a participant, and
+// whether it lists one. False covers both a participant that is absent and
+// one that carries no address; a caller that has to tell those apart asks
+// KeyFor first, which every caller in this repository already does.
+func (r Roster) AddressFor(id string) (string, bool) {
+	addr, ok := r.addresses[id]
+	return addr, ok
 }
 
 // Version returns the revision this roster declares, which a connector
@@ -108,6 +120,25 @@ type rosterDocument struct {
 type rosterEntry struct {
 	ID        string `json:"id"`
 	PublicKey string `json:"public_key"`
+	// ConnectorAddress is where this participant receives DSP messages: the
+	// base that message paths are appended to, which is the same string an
+	// initiate call names as connectorAddress. Optional, and omitempty is
+	// load-bearing — canonicalRosterBytes re-marshals the parsed document, so
+	// without it every roster signed before this field existed stops
+	// verifying and the error an operator meets names the signer key rather
+	// than the upgrade.
+	//
+	// Optional is not a weakness. The signature covers the field in both
+	// directions: stripping one out, adding one, and rewriting one each break
+	// verification. What is optional is the operator's choice, not an
+	// attacker's.
+	//
+	// public_key serves the inbound direction and this serves the outbound
+	// one, which is why a participant this connector only ever receives from
+	// needs no address. DECISIONS.md section 36.9 declined this field on the
+	// cost of re-signing; scoping it to the participants an operator dials is
+	// what bounds that cost.
+	ConnectorAddress string `json:"connector_address,omitempty"`
 }
 
 // checkRosterDocument validates what the document must carry regardless of
@@ -157,6 +188,54 @@ func checkRosterExpiry(path string, doc rosterDocument, now time.Time) (time.Tim
 		return time.Time{}, fmt.Errorf("roster %q expired at %s — re-sign it with a later expires_at", path, doc.ExpiresAt)
 	}
 	return expiresAt, nil
+}
+
+// checkConnectorAddress applies the rules a roster address must satisfy for
+// this connector to dial it. They are syntactic. Nothing here resolves a name
+// or judges a network: validateOutgoingCallback in internal/dsp owns that
+// question and runs where the address is about to be used, which is the only
+// place it can. internal/dsp imports this package, so the reverse is an import
+// cycle, and boot is too early besides — a counterparty's container does not
+// exist when this connector starts.
+//
+// Several checks read the raw string rather than the parse, and that is not
+// belt-and-braces. url.Parse is a tokenizer, not a validator: it almost never
+// errors; it folds the scheme to lower case, so a check for a lower-case
+// scheme could never fire; and a bare "?" or "#" leaves RawQuery and Fragment
+// empty while url.String() silently drops the "#", so the stored string and
+// the parsed value would disagree. url.IsAbs reports only that a scheme is
+// present and is true for an opaque URL with no host at all, which is why the
+// host check carries that rule instead.
+//
+// There is no case rule and no normalization. The address is used rather than
+// compared (see the initiate hooks), so the string that is approved is the
+// string that is dialed and there is nothing for a normalization to reconcile.
+func checkConnectorAddress(path, id, addr string) error {
+	if strings.ContainsAny(addr, "?#") {
+		return fmt.Errorf("roster %q: participant %q connector_address %q carries a query or a fragment", path, id, addr)
+	}
+	if strings.ContainsAny(addr, " \t\r\n") {
+		return fmt.Errorf("roster %q: participant %q connector_address %q contains whitespace", path, id, addr)
+	}
+	// Every DSP path this connector appends begins with a slash, so a
+	// trailing one produces a doubled separator in the URL it dials.
+	if strings.HasSuffix(addr, "/") {
+		return fmt.Errorf("roster %q: participant %q connector_address %q ends in a slash", path, id, addr)
+	}
+	u, err := url.Parse(addr)
+	if err != nil {
+		return fmt.Errorf("roster %q: participant %q connector_address %q is not a URL: %w", path, id, addr, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("roster %q: participant %q connector_address %q must use http or https", path, id, addr)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("roster %q: participant %q connector_address %q has no host", path, id, addr)
+	}
+	if u.User != nil {
+		return fmt.Errorf("roster %q: participant %q connector_address %q carries userinfo", path, id, addr)
+	}
+	return nil
 }
 
 // LoadRoster reads, verifies, and validates the roster. Every failure below
@@ -215,6 +294,7 @@ func LoadRoster(path string, signer ed25519.PublicKey, now time.Time) (Roster, e
 	}
 
 	keys := make(map[string]ed25519.PublicKey, len(doc.Participants))
+	addresses := make(map[string]string)
 	for i, p := range doc.Participants {
 		if p.ID == "" {
 			return Roster{}, fmt.Errorf("roster %q: participants[%d] has no id", path, i)
@@ -234,8 +314,17 @@ func LoadRoster(path string, signer ed25519.PublicKey, now time.Time) (Roster, e
 				path, p.ID, len(raw), ed25519.PublicKeySize)
 		}
 		keys[p.ID] = ed25519.PublicKey(raw)
+		// Absent and explicitly empty are the same entry: omitempty makes
+		// them identical in the signed bytes, so they must mean the same
+		// thing here too.
+		if p.ConnectorAddress != "" {
+			if err := checkConnectorAddress(path, p.ID, p.ConnectorAddress); err != nil {
+				return Roster{}, err
+			}
+			addresses[p.ID] = p.ConnectorAddress
+		}
 	}
-	return Roster{keys: keys, version: doc.Version, expiresAt: expiresAt}, nil
+	return Roster{keys: keys, addresses: addresses, version: doc.Version, expiresAt: expiresAt}, nil
 }
 
 // SignRoster reads the roster at path, ignoring any signature already in it,

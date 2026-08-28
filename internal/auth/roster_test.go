@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -294,5 +295,175 @@ func TestRequiredFieldsAreCheckedBeforeTheSignature(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "version") {
 		t.Errorf("error %q reports the signature; the field check must come first", err)
+	}
+}
+
+// The signed bytes are what a signature is computed over, so a field added to
+// rosterEntry changes them for every roster ever signed unless it is
+// omitempty. Measured: without omitempty every other test in this file still
+// passes, because signedRosterBody re-marshals the participants it is given
+// and is therefore self-consistent under any struct shape. This assertion is
+// not, which is the whole reason it is written against bytes.
+func TestCanonicalRosterBytesOmitAnAbsentConnectorAddress(t *testing.T) {
+	t.Parallel()
+	doc := rosterDocument{
+		Participants: []rosterEntry{{ID: "alice", PublicKey: "AAAA"}},
+		Version:      3,
+		ExpiresAt:    "2030-01-01T00:00:00Z",
+	}
+	const want = `{"participants":[{"id":"alice","public_key":"AAAA"}],` +
+		`"version":3,"expires_at":"2030-01-01T00:00:00Z"}`
+	if got := string(canonicalRosterBytes(doc)); got != want {
+		t.Errorf("an entry with no connector_address no longer signs as it did:\n got %s\nwant %s", got, want)
+	}
+}
+
+// The companion. An entry with no address serializes identically whatever
+// order the fields are declared in, so the test above cannot see a reordering
+// — and a reordering changes the signed bytes for every entry that does carry
+// an address.
+func TestCanonicalRosterBytesCarryAPresentConnectorAddress(t *testing.T) {
+	t.Parallel()
+	doc := rosterDocument{
+		Participants: []rosterEntry{{ID: "alice", PublicKey: "AAAA", ConnectorAddress: "http://alice:8080/2025-1"}},
+		Version:      3,
+		ExpiresAt:    "2030-01-01T00:00:00Z",
+	}
+	const want = `{"participants":[{"id":"alice","public_key":"AAAA",` +
+		`"connector_address":"http://alice:8080/2025-1"}],` +
+		`"version":3,"expires_at":"2030-01-01T00:00:00Z"}`
+	if got := string(canonicalRosterBytes(doc)); got != want {
+		t.Errorf("an entry carrying a connector_address signs differently than expected:\n got %s\nwant %s", got, want)
+	}
+}
+
+// Optional in the document does not mean removable from a signed one. All
+// three mutations an attacker would want are refused, and each is refused by
+// the signature rather than by a rule written for it.
+func TestSignatureCoversTheConnectorAddress(t *testing.T) {
+	t.Parallel()
+	pub, priv := testSigner(t)
+	key := encodedKey(t)
+	withAddr := `[{"id":"alice","public_key":"` + key + `","connector_address":"http://alice:8080/2025-1"}]`
+	withoutAddr := `[{"id":"alice","public_key":"` + key + `"}]`
+	rewritten := `[{"id":"alice","public_key":"` + key + `","connector_address":"http://mallory:8080/2025-1"}]`
+
+	signedWith := signedRosterBody(t, withAddr, priv, 1, futureExpiry())
+	signedWithout := signedRosterBody(t, withoutAddr, priv, 1, futureExpiry())
+
+	// Each case takes the signature from one document and the participants
+	// from another, which is exactly the edit the file would suffer.
+	for _, c := range []struct {
+		name         string
+		participants string
+		donor        string
+	}{
+		{"the address is stripped out", withoutAddr, signedWith},
+		{"an address is added", withAddr, signedWithout},
+		{"the address is rewritten", rewritten, signedWith},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sig := signatureOf(t, c.donor)
+			body := `{"participants":` + c.participants + `,"version":1,"expires_at":"` +
+				expiryOf(t, c.donor) + `","signature":"` + sig + `"}`
+			if _, err := LoadRoster(writeRoster(t, body), pub, time.Now()); err == nil {
+				t.Fatal("LoadRoster accepted a roster whose participants do not match its signature")
+			} else if !strings.Contains(err.Error(), "signature does not verify") {
+				t.Errorf("refused for the wrong reason: %v", err)
+			}
+		})
+	}
+}
+
+// signatureOf and expiryOf pull the two document-level fields back out of a
+// body signedRosterBody produced, so a case can pair one document's signature
+// with another's participants without rebuilding either by hand.
+func signatureOf(t *testing.T, body string) string {
+	t.Helper()
+	var doc rosterDocument
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("signatureOf: %v", err)
+	}
+	return doc.Signature
+}
+
+func expiryOf(t *testing.T, body string) string {
+	t.Helper()
+	var doc rosterDocument
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("expiryOf: %v", err)
+	}
+	return doc.ExpiresAt
+}
+
+func TestLoadRosterRejectsBadConnectorAddresses(t *testing.T) {
+	t.Parallel()
+	pub, priv := testSigner(t)
+	for _, c := range []struct{ name, addr, want string }{
+		{"a bare question mark", "http://alice:8080/x?", "query or a fragment"},
+		{"a bare hash", "http://alice:8080/x#", "query or a fragment"},
+		{"a query", "http://alice:8080/x?a=1", "query or a fragment"},
+		{"a fragment", "http://alice:8080/x#f", "query or a fragment"},
+		{"a trailing slash", "http://alice:8080/2025-1/", "ends in a slash"},
+		{"whitespace", "http://alice:8080/a b", "whitespace"},
+		{"no scheme", "//alice:8080/x", "http or https"},
+		{"an opaque URL with no host", "alice:8080/2025-1", "http or https"},
+		{"a scheme this connector does not speak", "ftp://alice/x", "http or https"},
+		{"no host", "http:///2025-1", "has no host"},
+		{"userinfo", "http://u:p@alice:8080/x", "userinfo"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			participants := `[{"id":"alice","public_key":"` + encodedKey(t) +
+				`","connector_address":` + strconv.Quote(c.addr) + `}]`
+			body := signedRosterBody(t, participants, priv, 1, futureExpiry())
+			_, err := LoadRoster(writeRoster(t, body), pub, time.Now())
+			if err == nil {
+				t.Fatalf("LoadRoster accepted connector_address %q", c.addr)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error %q does not mention %q", err, c.want)
+			}
+		})
+	}
+}
+
+// The empty string is the one value omitempty makes indistinguishable from
+// absence, so it must read as absence rather than as a malformed address.
+// The case above expects a refusal; this one records why it is not a
+// contradiction: an operator who writes "" gets an entry with no address, and
+// every outbound site refuses that in its own words.
+func TestAnExplicitlyEmptyConnectorAddressIsNoAddress(t *testing.T) {
+	t.Parallel()
+	pub, priv := testSigner(t)
+	participants := `[{"id":"alice","public_key":"` + encodedKey(t) + `","connector_address":""}]`
+	body := signedRosterBody(t, participants, priv, 1, futureExpiry())
+	r, err := LoadRoster(writeRoster(t, body), pub, time.Now())
+	if err != nil {
+		t.Fatalf("LoadRoster: %v", err)
+	}
+	if addr, ok := r.AddressFor("alice"); ok {
+		t.Errorf(`an explicitly empty connector_address reported an address %q`, addr)
+	}
+}
+
+func TestAddressForReportsPresence(t *testing.T) {
+	t.Parallel()
+	pub, priv := testSigner(t)
+	participants := `[{"id":"alice","public_key":"` + encodedKey(t) +
+		`","connector_address":"http://alice:8080/2025-1"},` +
+		`{"id":"bob","public_key":"` + encodedKey(t) + `"}]`
+	body := signedRosterBody(t, participants, priv, 1, futureExpiry())
+	r, err := LoadRoster(writeRoster(t, body), pub, time.Now())
+	if err != nil {
+		t.Fatalf("LoadRoster: %v", err)
+	}
+	if addr, ok := r.AddressFor("alice"); !ok || addr != "http://alice:8080/2025-1" {
+		t.Errorf(`AddressFor("alice") = %q, %v`, addr, ok)
+	}
+	if addr, ok := r.AddressFor("bob"); ok {
+		t.Errorf(`AddressFor("bob") = %q, true; bob lists no address`, addr)
+	}
+	if _, ok := r.AddressFor("carol"); ok {
+		t.Error(`AddressFor("carol") = true; carol is not in the roster`)
 	}
 }
