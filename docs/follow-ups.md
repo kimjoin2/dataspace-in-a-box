@@ -282,3 +282,27 @@ accepted today — so it belongs to whoever next touches those clients rather
 than to this milestone. Surfaced by the review of §38, which had claimed the
 rest of the connector already bounded what it decodes; that claim is
 corrected in §38's trade-off paragraph and annotated in the design spec.
+
+**`admitLoopback` relaxes the outgoing-address guard for any argument, not
+just a loopback one.** The catalog lookup's tests dial an `httptest` server,
+which binds to loopback — exactly what `validateCallbackURL` exists to refuse
+— so they replace `validateOutgoingCallback` with a permissive stub, the
+convention that var's own doc comment prescribes and that several test files
+in `internal/dsp` already follow. Because the stub accepts anything, it cannot
+tell "the guard ran on the address" from "the guard ran on something else":
+changing `validateOutgoingCallback(address)` to pass the participant
+identifier instead leaves `go vet` clean and every package green, while in
+production it would refuse every lookup, since a URN has no http scheme. The
+end-to-end demo catches that; no unit test does. A stub that defers to the
+real guard unless the host is the loopback fixture closes it, and was measured
+to fail all of the helper's call sites under that mutation. Found by the
+whole-branch review's own re-review rather than shipped unnoticed.
+
+**The refusal log lines have no assertion on them.** `handleTransferInitiate`
+logs `reject transfer initiate` for both the request's address and the
+roster's, and an operator greps that string; nothing pins either. The branch
+that logs the roster-address refusal is already driven by
+`TestTransferInitiateRefusesARosterAddressItWillNotSendTo`, and this package
+already owns the slog-capture idiom, so pinning it needs no new mechanism.
+Left undone because pinning log strings has a real cost of its own, and the
+value here is an operator's grep rather than a behaviour.
