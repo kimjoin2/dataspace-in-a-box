@@ -214,3 +214,76 @@ func findDataset(cfg config.Config, id string) (Dataset, bool) {
 	}
 	return Dataset{}, false
 }
+
+// remoteCatalog is a counterparty's catalog document as this connector reads
+// it. Deliberately not Catalog above: the emitting side owes a complete
+// document and the reading side owes a handful of identifiers and a refusal,
+// which is DECISIONS.md section 24.7's rule for splitting a type by direction.
+// OfferRef is the existing precedent for a lean decode-only sibling.
+//
+// @context, @type and distribution are not decoded, and not reading them is
+// what makes this type work against a real counterparty: they carry the
+// JSON-LD shape variation, and discovery needs none of them. distribution
+// carries format, which POST /transfers/initiate requires -- that is a
+// deferral rather than a design argument, and the design's section 2.2 records
+// why it is safe: this connector advertises a placeholder format that is not
+// the value the transfer hook takes.
+//
+// Strict, like every inbound decode in this package. DECISIONS.md section 20
+// accepts that arbitrary JSON-LD input is not handled, and the TCK's own
+// schemas declare dataset and hasPolicy to be arrays.
+type remoteCatalog struct {
+	ParticipantID string          `json:"participantId"`
+	Dataset       []remoteDataset `json:"dataset"`
+	// Catalog is decoded but not walked: a catalog of sub-catalogs is how a
+	// federated broker advertises, and reporting one as empty would be a lie.
+	// Kept opaque so its presence can be logged without this connector
+	// claiming to understand it.
+	Catalog []json.RawMessage `json:"catalog"`
+}
+
+type remoteDataset struct {
+	ID        string        `json:"@id"`
+	HasPolicy []remoteOffer `json:"hasPolicy"`
+}
+
+type remoteOffer struct {
+	ID string `json:"@id"`
+}
+
+// datasetOffer is one negotiable pair. An initiate call takes exactly one, so
+// a dataset advertising several offers produces several of these rather than
+// one row with a list.
+type datasetOffer struct {
+	DatasetID string `json:"id"`
+	OfferID   string `json:"offerId"`
+}
+
+// catalogLookupResponse is what the management route answers with. It carries
+// enough to build an initiate call, and connectorAddress is a report of the
+// address this connector resolved and dialed rather than an echo of anything
+// the caller sent.
+type catalogLookupResponse struct {
+	ParticipantID    string         `json:"participantId"`
+	ConnectorAddress string         `json:"connectorAddress"`
+	Datasets         []datasetOffer `json:"datasets"`
+}
+
+// pairs flattens the catalog into the pairs an initiate call can name, and
+// reports how many datasets were dropped for advertising no offer. The count
+// is returned rather than logged here so the decision to log stays with the
+// handler, which is where the participant this is about is known.
+func (c remoteCatalog) pairs() ([]datasetOffer, int) {
+	out := make([]datasetOffer, 0, len(c.Dataset))
+	skipped := 0
+	for _, d := range c.Dataset {
+		if len(d.HasPolicy) == 0 {
+			skipped++
+			continue
+		}
+		for _, o := range d.HasPolicy {
+			out = append(out, datasetOffer{DatasetID: d.ID, OfferID: o.ID})
+		}
+	}
+	return out, skipped
+}
