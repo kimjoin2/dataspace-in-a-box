@@ -120,6 +120,27 @@ wait_ready() {
 wait_ready 9181 provider
 wait_ready 9281 consumer
 
+# Ask the provider what it advertises, instead of knowing it in advance. The
+# offer identifier is derived by a convention private to this implementation,
+# so a consumer that has not been told it out of band can only learn it here.
+#
+# What this does not remove: format below is still hardcoded, because the
+# catalog advertises a placeholder rather than a transfer format this connector
+# can honour. The design's section 2.2 records why.
+echo "==> discovery"
+catalog=$(curl -sf "http://127.0.0.1:9281/catalog?providerId=urn:participant:provider" \
+	-H "Authorization: Bearer demo-management-token")
+address=$(printf '%s' "$catalog" | sed -n 's/.*"connectorAddress":"\([^"]*\)".*/\1/p')
+offer=$(printf '%s' "$catalog" |
+	sed -n 's/.*"id":"urn:dataset:sample","offerId":"\([^"]*\)".*/\1/p' | head -1)
+resume_offer=$(printf '%s' "$catalog" |
+	sed -n 's/.*"id":"urn:dataset:sample-resume","offerId":"\([^"]*\)".*/\1/p' | head -1)
+if [ -z "$offer" ] || [ -z "$resume_offer" ] || [ -z "$address" ]; then
+	echo "discovery did not return what the negotiations need" >&2
+	printf '%s\n' "$catalog" >&2
+	exit 1
+fi
+
 echo "==> negotiate"
 # Driven from the host over the published ports: the image is distroless, so
 # there is no shell inside to drive it from. The initiate hooks are on the
@@ -130,7 +151,7 @@ echo "==> negotiate"
 curl -sf -X POST http://127.0.0.1:9281/negotiations/initiate \
 	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
-	-d '{"providerId":"urn:participant:provider","offerId":"urn:dataset:sample#offer","datasetId":"urn:dataset:sample","connectorAddress":"http://provider:8080/2025-1"}' \
+	-d "{\"providerId\":\"urn:participant:provider\",\"offerId\":\"$offer\",\"datasetId\":\"urn:dataset:sample\",\"connectorAddress\":\"$address\"}" \
 	>/dev/null
 
 echo "==> waiting for the agreement"
@@ -155,7 +176,7 @@ echo "==> transfer"
 curl -sf -X POST http://127.0.0.1:9281/transfers/initiate \
 	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
-	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$agreement\",\"format\":\"HTTP-PULL\",\"connectorAddress\":\"http://provider:8080/2025-1\"}" \
+	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$agreement\",\"format\":\"HTTP-PULL\",\"connectorAddress\":\"$address\"}" \
 	>/dev/null
 
 echo "==> waiting for the file"
@@ -190,7 +211,7 @@ echo "==> negotiate (resume scenario)"
 curl -sf -X POST http://127.0.0.1:9281/negotiations/initiate \
 	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
-	-d '{"providerId":"urn:participant:provider","offerId":"urn:dataset:sample-resume#offer","datasetId":"urn:dataset:sample-resume","connectorAddress":"http://provider:8080/2025-1"}' \
+	-d "{\"providerId\":\"urn:participant:provider\",\"offerId\":\"$resume_offer\",\"datasetId\":\"urn:dataset:sample-resume\",\"connectorAddress\":\"$address\"}" \
 	>/dev/null
 
 echo "==> waiting for the resume-scenario agreement"
@@ -215,7 +236,7 @@ echo "==> transfer (resume scenario)"
 curl -sf -X POST http://127.0.0.1:9281/transfers/initiate \
 	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
-	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$resume_agreement\",\"format\":\"HTTP-PULL\",\"connectorAddress\":\"http://provider:8080/2025-1\"}" \
+	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$resume_agreement\",\"format\":\"HTTP-PULL\",\"connectorAddress\":\"$address\"}" \
 	>/dev/null
 
 echo "==> waiting for the resumed file"
