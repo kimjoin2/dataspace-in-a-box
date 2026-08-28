@@ -139,6 +139,12 @@ func rosterListing(t *testing.T, id string) auth.Roster {
 // closed. This is the same shape of hole cmd/dsbox/roster_version_test.go
 // guards for its own wiring.
 //
+// Both hooks are driven. They are separate literals in NewRouter, each one a
+// long line carrying many fields, so guarding only one leaves the other free
+// to lose the assignment without anything in the tree, the TCK, or the demo
+// reporting it — the demo cannot, because its request address happens to
+// equal the address its roster lists.
+//
 // No t.Parallel: the authenticated branch assigns mintOutboundCredential,
 // which is a package variable.
 func TestNewRouterGivesTheInitiateHooksTheRosterAddress(t *testing.T) {
@@ -171,7 +177,24 @@ func TestNewRouterGivesTheInitiateHooksTheRosterAddress(t *testing.T) {
 	routers.Initiate.Negotiation.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "connector_address") {
-		t.Errorf("initiate = %d %s; NewRouter did not hand the hook the roster address predicate",
+		t.Errorf("negotiations/initiate = %d %s; NewRouter did not hand the hook the roster address predicate",
+			rec.Code, rec.Body)
+	}
+
+	// The agreement is seeded before the transfer hook is driven, because
+	// that handler looks one up ahead of its roster check. Without it the
+	// refusal is "no agreement with id ..." and the predicate is never
+	// reached at all — which is why the assertion below reads the reason and
+	// not only the status: a 400 alone would be satisfied by that refusal.
+	seedAgreement(t, st, "urn:uuid:a-1")
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/transfers/initiate",
+		strings.NewReader(`{"providerId":"`+testPeer+`","agreementId":"urn:uuid:a-1",`+
+			`"format":"HTTP-PULL","connectorAddress":"`+testSendableAddress+`"}`))
+	routers.Initiate.Transfer.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "connector_address") {
+		t.Errorf("transfers/initiate = %d %s; NewRouter did not hand the hook the roster address predicate",
 			rec.Code, rec.Body)
 	}
 }
