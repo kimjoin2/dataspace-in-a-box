@@ -19,19 +19,67 @@ import (
 // short strings; anything larger is a mistake or an attack.
 const maxAgreementBodyBytes = 4 << 10
 
+// routeTable records every pattern this listener mounts as it mounts it. The
+// coverage test reads the record rather than parsing this file, which is what
+// the test did before: net/http's mux does not expose its patterns, a
+// hand-kept list goes stale, and a source parser cannot see a route registered
+// from another file -- measured, such a route ships anonymous with nothing
+// failing. Recording at registration is the only form that cannot disagree
+// with what was registered.
+//
+// The property that buys is narrower than "any route anywhere is seen", and
+// the difference is worth stating: it is "any route mounted through the table
+// is seen, and the table is the only way NewRouter mounts one". A route
+// registered on tbl.mux directly is invisible again -- measured -- so the
+// mux field stays unexported and is touched only by the methods below.
+type routeTable struct {
+	mux      *http.ServeMux
+	patterns []string
+	open     map[string]bool
+}
+
+func newRouteTable() *routeTable {
+	return &routeTable{mux: http.NewServeMux(), open: map[string]bool{}}
+}
+
+// handle mounts a route behind the operator's token.
+func (t *routeTable) handle(pattern, token string, h http.Handler) {
+	t.patterns = append(t.patterns, pattern)
+	t.mux.Handle(pattern, authenticated(token, h))
+}
+
+// handleOpen mounts a route deliberately outside the token check. Naming the
+// method rather than passing a flag means opening one is a visible edit here
+// as well as in the test's expectations.
+func (t *routeTable) handleOpen(pattern string, h http.HandlerFunc) {
+	t.patterns = append(t.patterns, pattern)
+	t.open[pattern] = true
+	t.mux.Handle(pattern, h)
+}
+
 // NewRouter returns the handler for the management listener. It takes the
 // configuration for the bearer token, the store because importing an
 // agreement writes to it, the predicate that reports whether the roster is
-// still usable, and the initiate hooks as plain http.Handler values: this
-// package mounts them behind the operator's token and holds no opinion about
-// the protocol package they came from.
+// still usable, and the initiate hooks and the catalog lookup as plain
+// http.Handler values: this package mounts them behind the operator's token
+// and holds no opinion about the protocol package they came from.
 //
 // rosterUsable is a plain func() bool by the same route the hooks travel, and
 // nil means there is no roster to expire — a connector with authentication
 // off, which is healthy. Absence must not read as expiry, the convention
 // internal/dsp already follows on the predicate it hands over.
-func NewRouter(cfg config.Config, st *store.Store, rosterUsable func() bool, negotiationInitiate, transferInitiate http.Handler) http.Handler {
-	mux := http.NewServeMux()
+func NewRouter(cfg config.Config, st *store.Store, rosterUsable func() bool,
+	negotiationInitiate, transferInitiate, catalogLookup http.Handler) http.Handler {
+	h, _ := newRouterWithTable(cfg, st, rosterUsable, negotiationInitiate, transferInitiate, catalogLookup)
+	return h
+}
+
+// newRouterWithTable is NewRouter plus the record of what it mounted. The
+// coverage test uses it; nothing else does, and no state is shared between
+// constructions.
+func newRouterWithTable(cfg config.Config, st *store.Store, rosterUsable func() bool,
+	negotiationInitiate, transferInitiate, catalogLookup http.Handler) (http.Handler, *routeTable) {
+	tbl := newRouteTable()
 
 	// /health is deliberately unauthenticated: a readiness probe should not
 	// need a credential. It does carry something now — whether this
@@ -39,7 +87,7 @@ func NewRouter(cfg config.Config, st *store.Store, rosterUsable func() bool, neg
 	// DSP listener already makes to any caller it refuses for that reason,
 	// and a probe that cannot see it is not reporting readiness: it would
 	// keep a connector in rotation that can serve no counterparty.
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+	tbl.handleOpen("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if rosterUsable != nil && !rosterUsable() {
 			// 503 and not the 409 the DSP listener answers with. This is a
@@ -53,9 +101,9 @@ func NewRouter(cfg config.Config, st *store.Store, rosterUsable func() bool, neg
 	})
 
 	h := agreementHandler{store: st}
-	mux.Handle("POST /agreements", authenticated(cfg.MgmtToken, http.HandlerFunc(h.importAgreement)))
-	mux.Handle("GET /agreements", authenticated(cfg.MgmtToken, http.HandlerFunc(h.listAgreements)))
-	mux.Handle("GET /transfers", authenticated(cfg.MgmtToken, http.HandlerFunc(h.listTransfers)))
+	tbl.handle("POST /agreements", cfg.MgmtToken, http.HandlerFunc(h.importAgreement))
+	tbl.handle("GET /agreements", cfg.MgmtToken, http.HandlerFunc(h.listAgreements))
+	tbl.handle("GET /transfers", cfg.MgmtToken, http.HandlerFunc(h.listTransfers))
 
 	// The hooks that ask this connector to start an exchange as consumer.
 	// They live in package dsp as code and here as routes: starting an
@@ -65,10 +113,16 @@ func NewRouter(cfg config.Config, st *store.Store, rosterUsable func() bool, neg
 	//
 	// No /2025-1 prefix: this listener carries no protocol version on any
 	// route.
-	mux.Handle("POST /negotiations/initiate", authenticated(cfg.MgmtToken, negotiationInitiate))
-	mux.Handle("POST /transfers/initiate", authenticated(cfg.MgmtToken, transferInitiate))
+	tbl.handle("POST /negotiations/initiate", cfg.MgmtToken, negotiationInitiate)
+	tbl.handle("POST /transfers/initiate", cfg.MgmtToken, transferInitiate)
 
-	return mux
+	// Asking a counterparty for its catalog is an operator action, and it
+	// writes nothing -- which is the property section 25.3's boundary is drawn
+	// around and what admitted the read routes above. The concrete guard
+	// is that no catalog is stored: every call asks the counterparty again.
+	tbl.handle("GET /catalog", cfg.MgmtToken, catalogLookup)
+
+	return tbl.mux, tbl
 }
 
 // bearerPrefix is the auth-scheme token plus its separating space, as it

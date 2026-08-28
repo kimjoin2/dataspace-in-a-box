@@ -16,8 +16,8 @@ import (
 
 const testToken = "0123456789abcdef"
 
-// stubInitiate stands in for one of the initiate hooks package dsp supplies,
-// answering with the name it was given.
+// stubInitiate stands in for one of the handlers package dsp supplies to this
+// listener, answering with the name it was given.
 //
 // Non-nil on purpose: a nil handler compiles and is still wrapped by
 // authenticated, which is non-nil, so registration succeeds and the panic
@@ -36,6 +36,7 @@ func stubInitiate(name string) http.Handler {
 const (
 	negotiationHook = "negotiation-initiate"
 	transferHook    = "transfer-initiate"
+	catalogHook     = "catalog-lookup"
 )
 
 func newTestRouter(t *testing.T) (http.Handler, *store.Store) {
@@ -48,13 +49,31 @@ func newTestRouter(t *testing.T) (http.Handler, *store.Store) {
 // caller — including the route-coverage assertions — is untouched.
 func newTestRouterWithRoster(t *testing.T, usable func() bool) (http.Handler, *store.Store) {
 	t.Helper()
+	st := testStore(t)
+	return NewRouter(config.Config{MgmtToken: testToken}, st, usable,
+		stubInitiate(negotiationHook), stubInitiate(transferHook), stubInitiate(catalogHook)), st
+}
+
+// newTestRouterWithTable builds the same router the helpers above do and hands
+// back the record of what it mounted, which is what the route-coverage
+// assertions read instead of parsing router.go. Each call constructs its own
+// table, so the tests in this package keep running in parallel.
+func newTestRouterWithTable(t *testing.T) (http.Handler, *routeTable) {
+	t.Helper()
+	return newRouterWithTable(config.Config{MgmtToken: testToken}, testStore(t), func() bool { return true },
+		stubInitiate(negotiationHook), stubInitiate(transferHook), stubInitiate(catalogHook))
+}
+
+// testStore opens the in-memory store the helpers above share and closes it
+// when the test ends.
+func testStore(t *testing.T) *store.Store {
+	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return NewRouter(config.Config{MgmtToken: testToken}, st, usable,
-		stubInitiate(negotiationHook), stubInitiate(transferHook)), st
+	return st
 }
 
 // TestHealthReturnsOK sends no Authorization header, so it also pins that
@@ -259,7 +278,8 @@ func TestPostAgreementsIs401WhenNoTokenIsConfigured(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	// no token configured
 	// nil roster predicate: this is about the token, not the roster.
-	h := NewRouter(config.Config{}, st, nil, stubInitiate(negotiationHook), stubInitiate(transferHook))
+	h := NewRouter(config.Config{}, st, nil,
+		stubInitiate(negotiationHook), stubInitiate(transferHook), stubInitiate(catalogHook))
 	body := strings.NewReader(`{"agreementId":"urn:uuid:a-1","datasetId":"urn:dataset:a"}`)
 	req := httptest.NewRequest(http.MethodPost, "/agreements", body)
 	req.Header.Set("Authorization", "Bearer ")
@@ -313,7 +333,7 @@ func TestImportAgreementRecordsAnOptionalCounterparty(t *testing.T) {
 			}
 			t.Cleanup(func() { st.Close() })
 			h := NewRouter(config.Config{MgmtToken: "t"}, st, nil,
-				stubInitiate(negotiationHook), stubInitiate(transferHook))
+				stubInitiate(negotiationHook), stubInitiate(transferHook), stubInitiate(catalogHook))
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/agreements", strings.NewReader(tc.body))
 			req.Header.Set("Authorization", "Bearer t")

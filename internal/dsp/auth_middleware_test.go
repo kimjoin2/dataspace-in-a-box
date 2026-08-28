@@ -319,3 +319,23 @@ func TestTheOldInitiatePathsAnswerMethodNotAllowed(t *testing.T) {
 		}
 	}
 }
+
+// The catalog lookup is an operator action and belongs on the management
+// listener. Registering it here would put an outbound-triggering route behind
+// nothing but participant authentication, which is the shape section 35.1
+// removed.
+//
+// The pattern keys on the handler rather than on the word: this listener
+// legitimately registers the catalog protocol's own routes, so a pattern
+// matching "catalog" reports them and proves nothing.
+func TestTheCatalogLookupIsNotRegisteredOnTheDSPListener(t *testing.T) {
+	t.Parallel()
+	src, err := os.ReadFile("router.go")
+	if err != nil {
+		t.Fatalf("read router.go: %v", err)
+	}
+	registration := regexp.MustCompile(`mux\.Handle(?:Func)?\([^)]*handleCatalogLookup`)
+	if found := registration.FindAllString(string(src), -1); len(found) != 0 {
+		t.Errorf("router.go registers the catalog lookup on the DSP listener: %v", found)
+	}
+}

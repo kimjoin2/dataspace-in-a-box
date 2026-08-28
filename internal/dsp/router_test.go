@@ -22,6 +22,12 @@ import (
 // authenticated still answers 401 to an anonymous request — the panic only
 // arrives once a caller authenticates, and neither harness runs with
 // authentication off.
+//
+// CatalogLookup is checked here too, by that same argument: it travels the
+// same route to the same listener and is set in every literal the initiate
+// hooks are set in, so omitting it from any one of them builds, vets and
+// mounts a handler that panics on the first authenticated call. The name
+// stays as it is because DECISIONS.md cites it.
 func TestNewRouterReturnsInitiateHandlersWithAuthenticationOff(t *testing.T) {
 	t.Parallel()
 	st, err := store.Open(":memory:")
@@ -46,6 +52,9 @@ func TestNewRouterReturnsInitiateHandlersWithAuthenticationOff(t *testing.T) {
 	r := NewRouter(cfg, st, auth.Roster{}, nil)
 	if r.Initiate.Negotiation == nil || r.Initiate.Transfer == nil {
 		t.Fatal("NewRouter returned a nil initiate handler on the authentication-off path")
+	}
+	if r.CatalogLookup == nil {
+		t.Fatal("NewRouter returned a nil catalog lookup handler on the authentication-off path")
 	}
 }
 

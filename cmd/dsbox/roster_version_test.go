@@ -74,3 +74,28 @@ func TestMainGivesTheManagementListenerTheRosterPredicate(t *testing.T) {
 			"while it can serve no counterparty")
 	}
 }
+
+// Which handler reaches which route is decided here, positionally, among
+// arguments of one type. Transposing a pair compiles, satisfies every
+// assertion in internal/mgmt -- whose tests pass their own stubs and so
+// exercise the router rather than this wiring -- and surfaces only as the TCK
+// failing its consumer-role suites for what reads like a protocol fault.
+// Measured on the pair that already existed.
+//
+// This is the third guard in this file for one class of defect: a call site Go
+// does not require and no test observes. The pattern names the arguments in
+// order rather than merely requiring the call, because what a transposition
+// changes is the order and not the call.
+func TestMainWiresTheManagementHandlersInOrder(t *testing.T) {
+	t.Parallel()
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	wiring := regexp.MustCompile(`mgmt\.NewRouter\(\s*cfg\s*,\s*st\s*,\s*routers\.RosterUsable\s*,` +
+		`\s*routers\.Initiate\.Negotiation\s*,\s*routers\.Initiate\.Transfer\s*,\s*routers\.CatalogLookup\s*,?\s*\)`)
+	if !wiring.Match(src) {
+		t.Error("main.go does not pass the management handlers to mgmt.NewRouter in the order it declares them; " +
+			"a transposed pair compiles and surfaces only as consumer-role suites failing")
+	}
+}

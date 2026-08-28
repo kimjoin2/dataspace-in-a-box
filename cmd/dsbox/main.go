@@ -184,8 +184,9 @@ func run() error {
 		IdleTimeout:       120 * time.Second,
 	}
 	mgmtSrv := &http.Server{
-		Addr:              cfg.MgmtAddr,
-		Handler:           mgmt.NewRouter(cfg, st, routers.RosterUsable, routers.Initiate.Negotiation, routers.Initiate.Transfer),
+		Addr: cfg.MgmtAddr,
+		Handler: mgmt.NewRouter(cfg, st, routers.RosterUsable,
+			routers.Initiate.Negotiation, routers.Initiate.Transfer, routers.CatalogLookup),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

@@ -24,6 +24,10 @@ type Routers struct {
 	// not a message from a counterparty. cmd/dsbox hands them to
 	// internal/mgmt, so that package needs no opinion about this one.
 	Initiate InitiateHandlers
+	// CatalogLookup asks a counterparty for its catalog. Like the initiate
+	// hooks it belongs on the management listener -- it is an operator action
+	// -- and like them it is returned rather than registered here.
+	CatalogLookup http.Handler
 	// RosterUsable reports whether the roster is still usable, and is nil
 	// when authentication is off and there is no roster to expire. It is
 	// returned rather than rebuilt from the roster by whoever needs it, so
@@ -158,6 +162,12 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 		Transfer:    http.HandlerFunc(tr.handleTransferInitiate),
 	}
 
+	catalogLookup := http.HandlerFunc(catalogLookupHandler{
+		guard:            guard,
+		knownParticipant: knownParticipant,
+		providerAddress:  providerAddress,
+	}.handleCatalogLookup)
+
 	if !cfg.AuthRequired() {
 		// A disabled check is absent, not silently true. Installing a
 		// middleware that always passes would leave a reader unable to tell
@@ -165,7 +175,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 		outer := http.NewServeMux()
 		mountVersionEndpoint(outer)
 		outer.Handle("/", mux)
-		return Routers{Protocol: outer, Initiate: initiate, RosterUsable: guard.check, Pulls: pulls, CancelPulls: cancelPulls}
+		return Routers{Protocol: outer, Initiate: initiate, CatalogLookup: catalogLookup, RosterUsable: guard.check, Pulls: pulls, CancelPulls: cancelPulls}
 	}
 
 	// Outbound is armed here rather than in each client, so "authentication
@@ -207,7 +217,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	outer := http.NewServeMux()
 	mountVersionEndpoint(outer)
 	outer.Handle("/", requireParticipant(roster, cfg.ParticipantID, guard, mux))
-	return Routers{Protocol: outer, Initiate: initiate, RosterUsable: guard.check, Pulls: pulls, CancelPulls: cancelPulls}
+	return Routers{Protocol: outer, Initiate: initiate, CatalogLookup: catalogLookup, RosterUsable: guard.check, Pulls: pulls, CancelPulls: cancelPulls}
 }
 
 // mountVersionEndpoint puts the version document on a mux, in two patterns.
