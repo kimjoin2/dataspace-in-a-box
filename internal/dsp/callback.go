@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// callbackHTTPClient carries every outbound DSP call this connector makes,
+// callbackHTTPClient carries the outbound DSP messages this connector sends,
 // and those come in kinds this client does not distinguish between. A
 // callback push is fire-and-forget: it runs in its own goroutine
 // (DECISIONS.md section 23.8), is retried on the schedule below, and nothing
@@ -21,9 +21,11 @@ import (
 // the *_client.go files in this package do — is synchronous, is not retried,
 // and its response is read and decoded by the caller that sent it. The name
 // is the older kind's. The client is shared because each of them is a single
-// POST to a counterparty, which is the property its settings are chosen for;
-// a call site wanting different ones brings its own client and says why, as
-// dataPullHTTPClient does.
+// POST carrying a protocol message, which is the property its settings are
+// chosen for. A data pull is not one of them and does not belong here: it
+// fetches the product rather than a message, so its body may legitimately
+// take hours and its bounds are different ones — dataPullHTTPClient carries
+// it and states them.
 //
 // A finite timeout keeps a counterparty that accepts the TCP connection and
 // never responds from blocking the caller indefinitely. On a push nothing
@@ -33,8 +35,10 @@ import (
 // multiplied by the retry schedule below, it is also what bounds the whole
 // push. On a synchronous request it bounds the wait of whoever asked, and it
 // covers the response body — which bounds a hostile counterparty in time but
-// not in what it can allocate inside that window, so a caller that decodes a
-// body bounds its size as well.
+// not in what it can allocate inside that window. A caller decoding a
+// response therefore has to bound its size itself, and only fetchCatalog
+// does: sendInitialRequest and sendTransferRequest decode straight off
+// resp.Body, which docs/follow-ups.md records.
 //
 // Redirects are disabled: a DSP endpoint has no legitimate reason to
 // redirect, and following one would let a URL that passed

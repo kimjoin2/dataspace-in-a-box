@@ -69,8 +69,9 @@ participant_key: /etc/dsbox/participant.key
 
 # The participant roster: whose signatures this connector accepts
 # (DECISIONS.md section 9). Required unless require_auth is false. A JSON
-# document mapping participant identifiers to base64url Ed25519 public keys,
-# carrying its own revision and expiry, signed by roster_signer below:
+# document mapping participant identifiers to a base64url Ed25519 public key
+# and, where this connector dials that participant, the address it is reached
+# at — carrying its own revision and expiry, signed by roster_signer below:
 #
 #     {"participants": [{"id": "urn:participant:peer", "public_key": "...",
 #                        "connector_address": "http://peer:8080/2025-1"}],

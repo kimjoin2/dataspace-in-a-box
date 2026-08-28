@@ -729,6 +729,18 @@ shapes refused are the shapes the TCK's own schema rejects.
 be discovered.** §6.2. The alternative is an unbounded read of a counterparty's
 document, which nothing else in this connector permits.
 
+*(2026-08-28: the second sentence is false, and it was written into
+`DECISIONS.md` §38 verbatim before a review caught it. Two outbound clients
+permit exactly that read: `sendInitialRequest` in
+`internal/dsp/negotiation_client.go` and `sendTransferRequest` in
+`internal/dsp/transfer_client.go` both call
+`json.NewDecoder(resp.Body).Decode(&doc)` with no `io.LimitReader`.
+`fetchCatalog` is the only outbound client that bounds a response body, and
+this milestone is what gave it one. What the bound buys stands; the claim that
+it matches the rest of the connector does not. `docs/follow-ups.md` records
+the residual, and §38's trade-off paragraph was corrected rather than left to
+repeat this.)*
+
 **This milestone's evidence lives where the pipeline is weakest.** `go test`
 carries it and `make demo` demonstrates it, and only the first runs in CI
 (§9.1).

@@ -255,8 +255,11 @@ to verify a milestone by playing the role the milestone implements. Spec:
 > warning in `internal/dsp/transfer_handler.go`, and
 > `internal/dsp/transfer_consumer_handler.go` — because a provider-role
 > counterparty is a verified issuer while a consumer-role one stays an
-> operator's assertion, which §35.5 sharpens: a roster name is not
-> necessarily the participant at `connectorAddress`.
+> operator's assertion. §35.5 used to sharpen that with a roster name not
+> necessarily being the participant at `connectorAddress`; §38 closed it —
+> the address comes from the signed roster now — so what remains of the
+> asymmetry is the provenance of the *name*, and that is enough to keep the
+> comments above worth reading.
 
 **Every milestone above reads done, and until this section this document had no
 forward entry at all** — which is the exact failure a sequencing document exists

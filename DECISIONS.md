@@ -3665,10 +3665,14 @@ call.
 roster carries one — logged, not refused — so an operator who typed a
 different address is told so only in the log. A federated catalog is
 reported without its sub-catalogs. The catalog response is bounded, so a
-catalog larger than the bound cannot be discovered; the alternative is an
-unbounded read of a counterparty's document, which nothing else in this
-connector permits, and the client's timeout does not substitute for it — a
-streamed response can allocate a great deal inside that window. Strict
+catalog larger than the bound cannot be discovered; what the bound buys is
+that a hostile or broken provider cannot make this connector allocate without
+limit, which the client's timeout does not buy — a streamed response can
+allocate a great deal inside that window. The other outbound clients have no
+such bound: `sendInitialRequest` and `sendTransferRequest` decode straight
+off `resp.Body`, so this milestone bounds the body whose size scales with the
+counterparty's holdings and leaves theirs where it found them.
+`docs/follow-ups.md` records that. Strict
 decoding refuses documents some connectors may emit, which §20 already
 accepted and which the schemas above bound. And the ten-minute claim this
 milestone serves is improved rather than satisfied, because `format` still

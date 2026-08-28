@@ -262,3 +262,22 @@ no reader today. Closing it means deciding what the field means when the
 roster carries an address — dropped from the body, or accepted and ignored
 without validation — which is a decision about the management API's contract
 rather than a cleanup.
+
+**Two outbound clients read a counterparty's response unbounded.**
+`sendInitialRequest` in `internal/dsp/negotiation_client.go` and
+`sendTransferRequest` in `internal/dsp/transfer_client.go` both decode with
+`json.NewDecoder(resp.Body).Decode(&doc)` and no `io.LimitReader`.
+`fetchCatalog` is the only outbound client that bounds a body, and this
+milestone is what gave it one — for the reason `maxCatalogResponseBytes`
+records, that a catalog's size scales with the counterparty's holdings.
+
+The other bodies are a negotiation state document and a transfer process
+document, each read for its `providerPid`, so the exposure is smaller and it
+is not nothing: `callbackHTTPClient`'s timeout covers the body but bounds
+only elapsed time, and a counterparty that streams inside that window can
+make this connector allocate. Bounding them is a behaviour change — a body
+over the bound would start being refused where it is accepted today — so it
+belongs to whoever next touches those clients rather than to this milestone.
+Surfaced by the review of §38, which had claimed the rest of the connector
+already bounded what it decodes; that claim is corrected in §38's trade-off
+paragraph and annotated in the design spec.
