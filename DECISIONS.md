@@ -2652,6 +2652,15 @@ itself, so what it pins is the wiring **inside** `mgmt.NewRouter`;
 transposed on 2026-08-24 and `go test -count=1 ./...` stayed green, so only
 `make tck` and `make demo` cover it.
 
+*Amended by §38 (2026-08-28).* The last clause stopped being true when
+discovery added a handler to that same positional list.
+`TestMainWiresTheManagementHandlersInOrder` in `cmd/dsbox` now reads `main.go`
+and requires the arguments in the order `mgmt.NewRouter` declares them, so a
+transposition there fails `go test` rather than waiting for a harness. The
+rest of the sentence stands: the wiring is still positional, and it is still
+invisible to `internal/mgmt`, whose tests pass their own stubs. §38.7 says why
+the handlers stayed positional.
+
 **35.2 `providerId` must name a roster participant, and the check reaches the
 handlers as a nil-able predicate.** Both hooks refuse with 400 a `providerId`
 the roster does not list. This answers the sequence document's question with
@@ -2698,6 +2707,15 @@ after the token check passes, as a connection reset with no error document.
 The management route-coverage test would not catch it either, because a nil
 handler still answers 401 to an unauthenticated request, and neither harness
 runs with authentication off.
+
+*Amended by §38 (2026-08-28).* That test now also asserts the catalog lookup
+handler is non-nil on the same return, so what it pins is every handler
+`NewRouter` hands to the management listener rather than the initiate hooks
+alone, and its name is narrower than its assertions. It was not renamed:
+`docs/superpowers/plans/2026-08-26-initiate-hook-authorization.md` cites it by
+name, and a dated document under `docs/superpowers/` is annotated rather than
+rewritten in this repository. The citation is corrected here instead, which is
+the copy a reader of this file has.
 
 **The check runs last**, after required fields, `validateOutgoingCallback`,
 and — in the transfer hook — the agreement lookup. That is a unit-test
@@ -2924,6 +2942,16 @@ what an *entry* means, and would make every address change a re-signed roster
 and a fleet-wide restart. It moves to the gap analysis's ordered item 4,
 discovery, which is where something actually consumes an address. Until then
 this gap stays open, and `SECURITY.md` names it.
+
+*Closed by §38 (2026-08-28).* Ordered item 4 shipped and took it. A roster
+entry may carry `connector_address`, and where it does, that is the address
+both initiate hooks dial — `handleInitiate` and `handleTransferInitiate` set
+`ProviderBaseURL` from the roster rather than from the request body, so the
+call no longer chooses an address for this connector to send a credential to.
+A participant the roster lists with no address is refused rather than dialed
+at the caller's word. §38.4 is the argument for deriving rather than
+comparing, and §38.1 corrects how §36.9 is cited about it. `SECURITY.md` now
+records this as closed instead of naming it.
 
 **The harness stops demonstrating the five-minute credential lifetime §10
 set.** Nothing in the connector changes — `credentialTTL` is untouched, and
@@ -3192,6 +3220,14 @@ within the cap — that is the operator's policy. The CLI surface does not
 change and it still writes nothing, so §27.3's print-don't-write principle is
 intact: validating is not managing.
 
+*Amended by §38 (2026-08-28).* The faults that print cleanly now include a
+malformed `connector_address`: `checkConnectorAddress` runs inside
+`LoadRoster`'s per-participant loop and `SignRoster` still stops at the
+document checks. The boundary did not move, which is the point — a new
+per-entry field lands on the side it was already drawn on — and
+`config.example.yaml`'s paragraph naming these faults gained the address in
+the same milestone.
+
 **36.9 What this section did not take.** Clock leeway on `exp` and a maximum
 token lifetime are deferred to their own milestone: they share no code and no
 decision with the roster, and their evidence is opposite — both harnesses
@@ -3393,3 +3429,247 @@ and never parses it, so neither constant reaches it — its own comment already
 records that a credential used there goes on being accepted after the
 credential inside it has expired. 37.4's harness constraint is about the
 protocol listener alone.
+
+---
+
+## 38. Discovery: a catalog client, and an address a roster entry may carry
+
+**Decision.** This connector asks a counterparty for its catalog. A roster
+entry may carry `connector_address` — the base that DSP message paths are
+appended to, the same string an initiate call names as `connectorAddress` —
+optional in the document and needed only where this connector dials out.
+Both initiate hooks derive the address they dial from that field rather than
+from the request body, and `GET /catalog?providerId=...` on the management
+listener resolves a participant to that address, sends a
+`CatalogRequestMessage`, and answers with the negotiable
+`(datasetId, offerId)` pairs the response advertises. Nothing about a fetched
+catalog is written down. `demo/run.sh` obtains its offer identifiers that
+way instead of hardcoding them. The design spec is
+`docs/superpowers/specs/2026-08-28-discovery-catalog-client-design.md`.
+
+What it closes is `docs/goal-gap-analysis.md`'s P1 for the catalog protocol
+— that protocol was implemented in the provider role only,
+`CatalogRequestMessage` appearing solely in `catalog_handler.go`, and the
+TCK could not see the gap because it plays the consumer in that suite — and
+the residual §35.5 left open, which is why §36.9 sent it here.
+
+**38.1 §36.9 deferred this field. It did not decline it, and that paragraph
+is where the distinction comes from.** §36.9 uses "declined" as a term of
+art: `nbf` "is not deferred, it is declined", meaning it will not be built
+at all. The address is the other kind — §36.9 moves it to
+`docs/goal-gap-analysis.md`'s ordered item 4 and says the argument is "in
+this file at 35.5". So §35.5 is also where the cost sits: an address in a
+roster entry "would make every address change a re-signed roster and a
+fleet-wide restart". `internal/auth/roster.go`'s comment on the field cites
+it that way, and this paragraph exists so the code and the record say the
+same thing.
+
+**38.2 The cost is bounded rather than denied, and `omitempty` is what
+bounds it.** The field is optional in the document and needed only where
+this connector dials out, so an operator re-signs for the participants they
+initiate toward and pays nothing for the ones they only receive from —
+`public_key` serves the inbound direction, `connector_address` the outbound
+one. The Go tag is load-bearing: `canonicalRosterBytes` re-marshals the
+parsed document, so an entry carrying no address produces the bytes it
+produced before the field existed and every signature made before this
+change still verifies. Without the tag every existing roster stops verifying
+and the error an operator meets names the signer key rather than the
+upgrade. That is the contrast with §36.12, where there was no compatibility
+path and none was wanted, and `config.example.yaml` now states both cases
+side by side.
+
+Optional is the operator's choice and never an attacker's. The signature
+covers the field in both directions: stripping an address out of a signed
+roster, adding one to an entry that had none, and rewriting one each break
+verification. An explicit empty string is an entry with no address, and
+every outbound site refuses it rather than falling back to anything.
+
+**38.3 The route writes nothing, which is the §25.3 answer §35.5 asked the
+next route for.** §35.5 said whoever added the next management route should
+be made to say why the API is still small, and named the properties that
+made the initiate hooks admissible: they are triggers rather than resources,
+and they arrived by subtraction from another listener. This route is a
+trigger and it is not subtraction. `GET /catalog` is a verb — ask that
+participant for their catalog — and the thing it names is not a resource
+this connector owns, but it is addition, and no argument should pretend
+otherwise.
+
+It stands on the property §25.3's boundary is actually drawn around: it
+writes nothing. That is what admitted `GET /agreements` and then
+`GET /transfers`, and the concrete guard is that no catalog is stored — every
+call asks the counterparty again, and `catalogLookupHandler` holds no store
+to write one with. A later milestone that wants to cache a catalog is asking
+for a write path and argues for it on its own merits. The genuinely new
+capability is an operator-triggered outbound request to a third party, and
+that is not new to this listener either: §35.1 put both initiate hooks here
+and each of them dials a counterparty.
+
+`GET` rather than `POST`, because everything else this listener answers with
+`POST` is a write or a trigger; DSP's own catalog request is a `POST`, but
+that is the message this connector sends outward rather than the shape of
+the operator's instruction to send it. Rejections use this connector's
+catalog error type, the JSON-LD document the rest of `internal/dsp` emits,
+because §35.5 already ruled on that shape for the initiate hooks and
+accepted the inconsistency with the listener's plain-text errors: a new
+route must not introduce another shape.
+
+With authentication off the route refuses and says so. The nil-predicate
+convention `internal/dsp` follows — absence is a check that is not there
+rather than a check that fails — cannot apply, because what is absent is not
+a check but the value itself: `cmd/dsbox/main.go` loads a roster only under
+`cfg.AuthRequired()`, and `config` forbids the other half of the matrix.
+
+**38.4 The roster's address is used, not compared, and the difference is a
+measurement rather than a taste.** When the roster carries an address for
+`providerId`, that value becomes `ProviderBaseURL` and is what
+`validateOutgoingCallback` runs on; the request's `connectorAddress` is not
+consulted, and a difference is logged at warning level with both values
+rather than refused. A participant the roster lists with no address is
+refused.
+
+Comparison was the obvious design and it had a hole in the very property
+this section adds. A byte comparison needs normalization, and normalization
+was measured to fail in both directions. The direction that matters is the
+false acceptance: with the scheme and host lowercased before comparing, a
+host written with U+212A KELVIN SIGN folds onto an ASCII host and passes,
+while the raw non-ASCII string is what gets stored and dialed — the
+comparison approves one string and the connector uses another.
+Percent-encoding, an explicit default port, and a leading-zero port each
+produce false refusals by the same mechanism. Derivation removes all of it:
+the approved string and the dialed string are the same string by
+construction. It is also §35.1's own move — "removes the primitive rather
+than mitigating it" — applied to the address instead of to the audience, and
+it keeps the harness from having to hold, byte for byte, the
+`connectorAddress` a digest-pinned TCK image emits.
+
+§35.2's counter-argument does not transfer. It validated `providerId` after
+§35.1 had closed the hole structurally, because "an unverifiable name
+accepted at initiate time surfaces later as blanket refusals in someone
+else's subsystem". A wrong `providerId` is stored and every later inbound
+message is compared against it; a wrong `connectorAddress` is not stored at
+all, so nothing downstream is left holding a value that will confuse it.
+
+**38.5 The decode type is strict and separate.** A decode-only
+`remoteCatalog`, unexported, carrying the catalog's `participantId`, each
+dataset's `@id` and each offer's `@id`, and decoding neither `@context` nor
+`@type` nor `distribution`. Not decoding those is what makes it work:
+measured against realistic catalog documents, the existing encoder structs
+failed most of them and skipping those fields removed all but the documents
+supplying a single object where the schema requires an array.
+
+Separate from the encoder structs on §24.7's rule — split when the two
+directions carry different obligations, and say what differs — the emitting
+side owing a complete catalog document and the reading side owing a handful
+of identifiers and a refusal. `OfferRef` is the existing precedent.
+
+Strict, because every inbound decode site in `internal/dsp` already is, and
+that is not an accident: §20 accepted that arbitrary JSON-LD input is not
+handled and `CLAUDE.md` states the fixed compact form as the convention.
+Tolerating a single object where the schema requires an array was proposed
+and dropped, and what dropped it was measurement. The TCK's own
+`catalog-schema.json` and `dataset-schema.json`, read out of the image
+`test/tck/compose.yaml` pins by digest, declare `dataset` and `hasPolicy` to
+be non-empty arrays, so tolerance would buy interoperability only with
+documents the TCK itself rejects — and a connector stricter about what it
+receives than about what it reads is a shape no test can adjudicate.
+Tolerance is worse on `null` besides: a `null` dataset list decodes to a
+phantom dataset and a `null` policy list to a phantom offer with an empty
+`@id`, which is a value the operator would paste into an initiate call.
+
+**38.6 An empty catalog and a non-catalog must not look alike.** A type
+error is fatal, because `encoding/json` populates what it can before
+returning one, so a document with a malformed policy list would otherwise
+decode into a structurally valid catalog with its offers missing. That is
+necessary and not sufficient: an empty JSON object, a DSP error document, an
+unrelated JSON document, and a bare `null` all decode without error into a
+catalog with no datasets, and what the operator would be told is that the
+counterparty advertises nothing — a conclusion about the counterparty in
+place of a failure of the request, which is the worst available failure for
+a discovery tool. So an empty `participantId` is fatal, and that single
+check rejects all of them. `sendInitialRequest` refuses a response carrying
+no `providerPid` for the same reason.
+
+A catalog declaring a `participantId` other than the one asked for is
+refused too. The declared value is an unauthenticated claim — this connector
+authenticates to the provider, not the response to itself — and refusing on
+one is fail-closed, which `LoadRoster`'s own comment distinguishes from
+acting on one. It is also the one place where evidence about what an address
+actually serves can contradict the roster, which is the shape §35.5 named.
+
+**38.7 A registration table replaced the source parser the coverage test
+would have needed.** A management route registered from a sibling file ships
+anonymous with nothing failing, and widening `internal/mgmt`'s coverage test
+to parse the whole package catches that but also fails on an ordinary test
+helper's own mux and on a route pattern quoted in a comment.
+`newRouterWithTable` records what it mounted and the coverage test asserts
+over that record, which catches the same defect with neither false positive.
+
+The management handlers stayed positional. A named struct was drafted and
+withdrawn: transposing named fields on a handler struct leaves the
+build, the vet, and the whole suite green — the same state already recorded
+here for the positional form — so the struct would have moved the defect
+without closing it, while making §35.2's paragraph above and the test
+comments that explain themselves with the word "positional" false about
+their own subject. What guards it instead is another source-parsing check in
+`cmd/dsbox`, joining the ones already there for exactly this class of defect
+— a call site Go does not require and no test observes — pinning which
+handler is passed in which position.
+
+**38.8 What this section did not take.** A version-metadata client is out
+because the harness settles it: the TCK's mock serves DSP at the root and
+`dsbox` serves it under `VersionPath`, so an address is the base message
+paths are appended to and there is nothing for a version document to
+resolve. That protocol stays served-only and `README.md` says so in words
+rather than leaving it to the table's shape.
+
+`distribution`, and therefore `format`, is deferred rather than argued away.
+`transferInitiateBody` requires `format` and `format` lives in
+`dataset[].distribution[].format`, so the transfer half of an exchange still
+takes a value out of band. Deferring is safe for a concrete reason: this
+connector advertises `unspecifiedFormat`, whose own comment calls it a
+placeholder, while `demo/run.sh` sends `HTTP-PULL` — decoding the advertised
+value today would supply a string `POST /transfers/initiate` cannot use.
+
+Nested catalogs are not walked; `catalog-schema.json` permits a `catalog`
+array of sub-catalogs, which is how a federated broker advertises, and the
+route logs what it did not walk rather than reporting such a document as
+empty. A dataset advertising no offer cannot be negotiated for and is
+omitted, also logged.
+
+Making `connectorAddress` optional in the initiate body is not taken. The
+TCK hardcodes that body in a pinned image and cannot be configured, so
+leaving the shape alone keeps the suite safe structurally rather than by
+argument, and a field required only when authentication is off is a rule
+with no reader today. `docs/follow-ups.md` records what that leaves behind.
+
+Putting `make demo` in CI is not taken; ordered item 5 is the item that
+defines what CI measures.
+
+**38.9 `go test` is the whole gate, and this time the reason is new.** The
+TCK's catalog suite plays the consumer and the pinned image carries no
+consumer-role catalog test — confirmed by listing the runtime jar — so `make
+tck` is a regression check for this section and not evidence for it. That is
+§36.13's situation arriving through a different door: there the harnesses
+could not express the input, here the suite plays the role this section
+implements. `make demo` does exercise the client end to end and is not in
+CI, so `go test` carries everything that must not regress unattended.
+
+`TestNewRouterReturnsInitiateHandlersWithAuthenticationOff` now asserts the
+catalog lookup handler is non-nil as well, by the same argument that put the
+initiate hooks in it: it travels the same route to the same listener and is
+set in every literal they are set in, so omitting it from any one of them
+builds, vets, and mounts a handler that panics on the first authenticated
+call.
+
+*Trade-off accepted.* An operator's `connectorAddress` is ignored when the
+roster carries one — logged, not refused — so an operator who typed a
+different address is told so only in the log. A federated catalog is
+reported without its sub-catalogs. The catalog response is bounded, so a
+catalog larger than the bound cannot be discovered; the alternative is an
+unbounded read of a counterparty's document, which nothing else in this
+connector permits, and the client's timeout does not substitute for it — a
+streamed response can allocate a great deal inside that window. Strict
+decoding refuses documents some connectors may emit, which §20 already
+accepted and which the schemas above bound. And the ten-minute claim this
+milestone serves is improved rather than satisfied, because `format` still
+travels out of band.

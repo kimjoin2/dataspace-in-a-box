@@ -126,7 +126,10 @@ wait_ready 9281 consumer
 #
 # What this does not remove: format below is still hardcoded, because the
 # catalog advertises a placeholder rather than a transfer format this connector
-# can honour. The design's section 2.2 records why.
+# can honour. The design's section 2.2 records why. Nor does it change how the
+# agreement ids are read further down — those sed calls still depend on the
+# field order of the agreements response, exactly as they did before, and this
+# script stays a demonstration rather than a client anyone should copy.
 echo "==> discovery"
 catalog=$(curl -sf "http://127.0.0.1:9281/catalog?providerId=urn:participant:provider" \
 	-H "Authorization: Bearer demo-management-token")

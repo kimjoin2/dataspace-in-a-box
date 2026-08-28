@@ -72,7 +72,8 @@ participant_key: /etc/dsbox/participant.key
 # document mapping participant identifiers to base64url Ed25519 public keys,
 # carrying its own revision and expiry, signed by roster_signer below:
 #
-#     {"participants": [{"id": "urn:participant:peer", "public_key": "..."}],
+#     {"participants": [{"id": "urn:participant:peer", "public_key": "...",
+#                        "connector_address": "http://peer:8080/2025-1"}],
 #      "version": 1,
 #      "expires_at": "2026-11-23T00:00:00Z",
 #      "signature": "..."}
@@ -85,6 +86,25 @@ participant_key: /etc/dsbox/participant.key
 # Build a participant's public_key with `dsops keygen` (theirs) or
 # `dsops resolve <did:web:...>` (a counterparty's, resolved rather than
 # copied by hand). Sign the finished file with `dsops roster sign`.
+#
+# connector_address is where that participant receives DSP messages: the base
+# that message paths are appended to, the same string an initiate call names
+# as connectorAddress. It is optional, and the rule for when you need one is
+# the direction of the call. public_key serves the inbound direction — it is
+# what verifies a message that participant sends here — and connector_address
+# serves the outbound one, so a participant this connector only ever receives
+# from needs none, and a participant this connector dials needs one. Where it
+# is present, it is what the connector dials: an initiate call naming that
+# participant uses this address rather than the one in the request, and asking
+# for a participant's catalog is only possible where it is present. Naming a
+# participant the roster lists without an address is refused rather than
+# dialed at your word.
+#
+# It must parse as an http or https URL with a host, carry no query, fragment,
+# userinfo or whitespace, and not end in a slash — every DSP path this
+# connector appends already begins with one, so a trailing slash produces a
+# doubled separator in the URL it dials. Nothing about it is normalized or
+# case-folded, because the address is used rather than compared.
 #
 # version is the roster's revision, at least 1, and it only ever goes up:
 # a connector refuses one older than it has already run, so a rolled-back
@@ -105,14 +125,25 @@ participant_key: /etc/dsbox/participant.key
 # out-of-range version or expires_at.
 #
 # It does not check the participant entries. A signature therefore prints
-# cleanly for an entry with an empty or repeated id, or a public_key that is
-# missing, not base64url, or the wrong length — and the connector then refuses
-# that roster at boot, naming the entry. Check the entries yourself, or boot a
-# connector against the file once before distributing it.
+# cleanly for an entry with an empty or repeated id, a public_key that is
+# missing, not base64url, or the wrong length, or a connector_address that
+# breaks any of the rules above — and the connector then refuses that roster
+# at boot, naming the entry. Check the entries yourself, or boot a connector
+# against the file once before distributing it.
 #
 # Upgrading: a roster written before version and expires_at existed will
 # not load. There is no compatibility path — add both fields and re-sign
 # with `dsops roster sign`. The load error names the missing field.
+#
+# connector_address is the contrasting case, and the difference is deliberate.
+# A roster written before it existed goes on loading and goes on verifying:
+# the field is omitted from what gets signed when an entry carries none, so
+# the bytes an address-free roster signs over are the bytes it signed over
+# before the field existed. Add an address only for the participants this
+# connector dials, and re-sign then — an entry you do not touch keeps working
+# untouched. The signature does cover the field once it is there: adding one,
+# removing one, or rewriting one breaks verification, so what is optional is
+# your choice and never an attacker's.
 #
 # Read once at startup, so adding or removing a participant means editing
 # this file, re-signing it, and restarting. An unusable roster — one with no

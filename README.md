@@ -23,13 +23,24 @@ the gaps are named rather than left to be found.
 | DSP protocol | TCK suite | Status |
 |---|---|---|
 | Version metadata | `MET` (served only) | gated in CI |
-| Catalog | `CAT` (served only) | gated in CI |
+| Catalog | `CAT` | gated in CI |
 | Contract negotiation | `CN` (provider role) | gated in CI, 15 of 15 |
 | Contract negotiation | `CN_C` (consumer role) | gated in CI, 16 of 16 |
 | Transfer process | `TP` (provider role) | gated in CI, 15 of 15 |
 | Transfer process | `TP_C` (consumer role) | gated in CI, 15 of 15 |
 
 Every suite the TCK runs is now in the gate's whitelist.
+
+The catalog row lost its *served only* marking, and the reason is worth
+stating rather than leaving to the table's shape. This connector now asks a
+counterparty for its catalog as well as answering one: `GET /catalog` on the
+management listener resolves a roster participant to an address, sends a
+catalog request, and reports back the negotiable pairs it found
+(`DECISIONS.md` section 38). Version metadata keeps the marking and means it —
+this connector serves a version document and requests none, so those rows say
+different things and the table should not be read as symmetric. The `CAT`
+suite covers only the half that was there before, because the TCK plays the
+consumer in it; the client's evidence is `go test` and `make demo`.
 
 Current TCK pass rate: **65 of 65 tests total** (`MET` 1 of 1, `CAT` 3 of 3,
 `CN` 15 of 15, `CN_C` 16 of 16, `TP` 15 of 15, `TP_C` 15 of 15). All 65 are
@@ -180,10 +191,13 @@ and, with authentication on, both refuse a `providerId` this connector's
 roster does not list. That is what turns the counterparty on a consumer-role
 exchange into an identity rather than a string, so a message arriving about
 one is checked against it the way a provider-role message already was.
-`DECISIONS.md` section 35 records it, including what it does not close: being
-in this connector's roster is not the same as being the participant at the
-address an initiate call names, so an operator who points one at the wrong
-connector still hands it a signed credential.
+`DECISIONS.md` section 35 records it. What it left open — that being in this
+connector's roster was not the same as being the participant at the address an
+initiate call named, so an operator who pointed one at the wrong connector
+still handed it a signed credential — is closed by `DECISIONS.md` section 38:
+a roster entry may now carry the address its participant is reached at, and
+where it does, that is the address an initiate call dials. The operator names
+a participant; the signed registry decides where that participant is.
 
 **A transfer now leaves a record, and an operator can read it.**
 `GET /transfers` lists every transfer this connector holds in both roles,

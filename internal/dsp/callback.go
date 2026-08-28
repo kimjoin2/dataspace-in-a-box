@@ -13,17 +13,34 @@ import (
 	"time"
 )
 
-// callbackHTTPClient is used for every callback push. A finite timeout keeps
-// a consumer that accepts the TCP connection and never responds from
-// blocking the caller indefinitely. Pushes run in their own goroutines
-// (DECISIONS.md section 23.8), so nothing waits on this — but a goroutine
-// that never returns is never collected either, and one per push against an
-// unauthenticated endpoint is a leak with a public trigger. The timeout is
-// what bounds that lifetime; multiplied by the retry schedule below, it is
-// also what bounds the whole push. Redirects are disabled: a DSP callback
-// endpoint has no legitimate reason to redirect, and following one would let
-// a URL that passed validateCallbackURL hop to an address that check never
-// saw.
+// callbackHTTPClient carries every outbound DSP call this connector makes,
+// and those come in kinds this client does not distinguish between. A
+// callback push is fire-and-forget: it runs in its own goroutine
+// (DECISIONS.md section 23.8), is retried on the schedule below, and nothing
+// waits for its response. A request this connector sends as consumer — what
+// the *_client.go files in this package do — is synchronous, is not retried,
+// and its response is read and decoded by the caller that sent it. The name
+// is the older kind's. The client is shared because each of them is a single
+// POST to a counterparty, which is the property its settings are chosen for;
+// a call site wanting different ones brings its own client and says why, as
+// dataPullHTTPClient does.
+//
+// A finite timeout keeps a counterparty that accepts the TCP connection and
+// never responds from blocking the caller indefinitely. On a push nothing
+// waits on it — but a goroutine that never returns is never collected
+// either, and one per push against an unauthenticated endpoint is a leak
+// with a public trigger. The timeout is what bounds that lifetime;
+// multiplied by the retry schedule below, it is also what bounds the whole
+// push. On a synchronous request it bounds the wait of whoever asked, and it
+// covers the response body — which bounds a hostile counterparty in time but
+// not in what it can allocate inside that window, so a caller that decodes a
+// body bounds its size as well.
+//
+// Redirects are disabled: a DSP endpoint has no legitimate reason to
+// redirect, and following one would let a URL that passed
+// validateCallbackURL hop to an address that check never saw. Every caller
+// therefore meets a redirect as a status at or above 300, which is a
+// refusal to report rather than a hop to follow.
 var callbackHTTPClient = &http.Client{
 	Timeout: 10 * time.Second,
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {

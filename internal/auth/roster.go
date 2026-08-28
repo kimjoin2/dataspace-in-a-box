@@ -135,9 +135,13 @@ type rosterEntry struct {
 	//
 	// public_key serves the inbound direction and this serves the outbound
 	// one, which is why a participant this connector only ever receives from
-	// needs no address. DECISIONS.md section 36.9 declined this field on the
-	// cost of re-signing; scoping it to the participants an operator dials is
-	// what bounds that cost.
+	// needs no address. DECISIONS.md section 36.9 deferred this field rather
+	// than declining it — that paragraph uses "declined" for what will not be
+	// built, and it moves this to the discovery milestone instead. The cost
+	// it names is stated at section 35.5: an address in a roster entry makes
+	// every address change a re-signed roster and a fleet-wide restart.
+	// Scoping the field to the participants an operator dials is what bounds
+	// that cost, which section 38.2 records.
 	ConnectorAddress string `json:"connector_address,omitempty"`
 }
 

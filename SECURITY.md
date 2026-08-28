@@ -112,15 +112,10 @@ row from a real one.
 It is sharpest for a narrow reason worth stating, because it is not the most
 alarming thing this file has ever named. It is the only item left that an
 outsider can trigger alone, with no mistake by the operator, using a message
-that is exactly what an honest counterparty sends. The alternatives are not
-that. `DECISIONS.md` §35.2 leaves a real gap — being in the roster is not the
-same as being the participant at `connectorAddress`, so an operator who points
-an initiate call at the wrong connector still hands a credential this
-connector signed to whoever is there — but the smallest sequence that
-demonstrates it begins with the operator being wrong rather than with a
-request anyone makes. And rate limiting is absent on the public listener,
-which costs this connector work rather than handing anyone anything that
-lasts; `docs/goal-gap-analysis.md` notes it is filed nowhere else.
+that is exactly what an honest counterparty sends. The alternative is not
+that: rate limiting is absent on the public listener, which costs this
+connector work rather than handing anyone anything that lasts;
+`docs/goal-gap-analysis.md` notes it is filed nowhere else.
 
 **What this section used to name is closed**, and saying so is part of the
 practice below. The `initiate` hooks accepting an unvalidated `providerId` and
@@ -130,6 +125,22 @@ composition `docs/goal-gap-analysis.md` built from that, the absence of replay
 defense (§28), and the absence of rate limiting no longer has an untrusted
 caller to start it. The item above ends in a database row, where that one
 ended in a signed credential handed to whoever asked for it.
+
+**And the residual §35.5 left behind is closed too**, by `DECISIONS.md` §38.
+This file used to name it among the alternatives above: being in the roster
+was not the same as being the participant at `connectorAddress`, so an
+operator who pointed an initiate call at the wrong connector still handed a
+credential this connector signed to whoever was there. A roster entry may now
+carry the address its participant is reached at, and where it does, that is
+the address both initiate hooks dial — the request's `connectorAddress` is
+not consulted, and a participant the roster lists with no address is refused
+rather than dialed at the operator's word. So the call no longer chooses an
+address at all, which is removal rather than validation, and it is the same
+move §35.1 made when it took the hooks off the public listener. It closes the
+credential exit completely rather than narrowing it: a credential is signed
+only where authentication is on, and that is exactly where a roster exists to
+derive the address from — with authentication off this connector attaches
+nothing, so there is no signed credential for a mistyped address to reach.
 
 This is a deliberate trade-off and it deserves stating plainly rather than
 being left to be inferred:

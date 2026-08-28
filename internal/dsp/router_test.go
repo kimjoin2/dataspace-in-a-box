@@ -27,7 +27,10 @@ import (
 // same route to the same listener and is set in every literal the initiate
 // hooks are set in, so omitting it from any one of them builds, vets and
 // mounts a handler that panics on the first authenticated call. The name
-// stays as it is because DECISIONS.md cites it.
+// stays as it is because it is cited by name in DECISIONS.md and in a dated
+// plan document under docs/superpowers/, which this repository annotates
+// rather than rewrites. DECISIONS.md section 38.9 records what this test now
+// pins, and section 35.2 carries the amendment note.
 func TestNewRouterReturnsInitiateHandlersWithAuthenticationOff(t *testing.T) {
 	t.Parallel()
 	st, err := store.Open(":memory:")

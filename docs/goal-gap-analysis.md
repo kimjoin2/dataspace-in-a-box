@@ -62,6 +62,22 @@ role for every protocol. It already names roles for `CN`/`CN_C` and
 where a role is missing in the code, so the table reads as symmetric at the
 one place it is not.
 
+*(2026-08-28: half of this closed, and the half that did not is worth naming
+as precisely as the half that did. `DECISIONS.md` §38 added
+`internal/dsp/catalog_client.go` and `GET /catalog` on the management
+listener, so `CatalogRequestMessage` is now sent as well as received, and
+`demo/run.sh` obtains its offer identifiers by asking rather than by
+hardcoding `#offer`. `README.md`'s catalog row lost its served-only marking
+and the section says in words what the table cannot: version metadata is
+still served and never requested — `internal/dsp/version.go` holds a document
+builder and a handler and no client — so those rows mean different things.
+The paragraph's conclusion also stands: the authentication profile is
+unchanged, so the counterparties this connector can transact with are still
+another `dsbox` and the TCK. And the transfer half of an exchange still takes
+`format` out of band, because the catalog advertises a placeholder format
+this connector's own transfer hook cannot use; §38.8 records why decoding it
+today would supply a string that fails.)*
+
 ### P2. It moves the right bytes, and keeps no record that it did
 
 > **Superseded in part, 2026-08-24.** Seven of this section's findings are no
@@ -292,6 +308,14 @@ does not blunt it.**
 > a re-signed roster and a fleet-wide restart. It moves to ordered item 4,
 > discovery, where something actually consumes an address. This residual
 > stays open in the meantime.)*
+>
+> *(2026-08-28: the residual is closed, `DECISIONS.md` §38. Item 4 shipped
+> and the address now comes from the roster: `handleInitiate` and
+> `handleTransferInitiate` set `ProviderBaseURL` from
+> `Roster.AddressFor(providerId)`, and a participant the roster lists with no
+> address is refused. So an operator can no longer point an initiate call at
+> a connector the roster does not name, and nothing this connector signs
+> reaches an address the operator typed.)*
 
 §32.3 already names the vector — "an impersonation primitive against a third
 participant" — so the finding is not that it exists. The finding is what it
@@ -444,6 +468,19 @@ promotion is what pushed three of the four promises out of the document.
    that point with no discovery client. It lands here because this is where
    something actually consumes an address. Until then the gap §35.5 names
    stays open and `SECURITY.md` carries it.)*
+
+   *(2026-08-28: done, `DECISIONS.md` §38. The catalog client and the
+   management route that triggers it exist, and this item's inherited half
+   landed with them: a roster entry may carry `connector_address`, and both
+   initiate hooks set `ProviderBaseURL` from the roster rather than from the
+   request, so §35.5's gap is closed by removing the caller's choice rather
+   than by validating it — §38.4 says why comparison was measured and
+   rejected. `SECURITY.md` no longer carries the gap; it records the closure.
+   What this item did not do: no version-metadata client, no `distribution`
+   and therefore no `format`, and no walk of a catalog's sub-catalogs, each
+   with its reason in §38.8. The `omitempty` on the new field is what keeps
+   every roster signed before it existed verifying, which is the compatibility
+   path §36.12 had no need of.)*
 
 5. **Define and measure "ten minutes"** in CI. After 1–4, which change the
    steps being counted.

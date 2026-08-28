@@ -218,6 +218,19 @@ picked without reading the harness would have turned the suite red. Thirty
 minutes sits inside the hour that shipped, and neither harness script
 changed.
 
+**Discovery** (2026-08-28, `DECISIONS.md` §38). A catalog client, a
+`GET /catalog` route on the management listener that triggers it, and an
+optional `connector_address` on a roster entry that both initiate hooks dial
+in place of the address the request names. It closes
+`docs/goal-gap-analysis.md`'s P1 for the catalog protocol and the residual
+§35.5 left open. This document never planned it — the note at the top says
+discovery is one of the axes its ordering rule silently excluded — so there
+is no forecast here to correct. Its verification situation is recorded above
+instead, under "What can verify each remaining milestone", because the
+finding it carries is about that section's own subject: a suite can be unable
+to verify a milestone by playing the role the milestone implements. Spec:
+`specs/2026-08-28-discovery-catalog-client-design.md`.
+
 ## The milestone that was next: authorizing the initiate hooks — done, `DECISIONS.md` §35
 
 > The framing of this section was disputed and is now settled — see the note
@@ -349,6 +362,22 @@ starting rather than discovering halfway.
 offers, so adding constraint evaluation must leave them green; the suite is a
 guard against regression, not evidence the new code works. Evidence comes
 from unit tests.
+
+**Discovery is the second milestone the TCK cannot verify, and the reason is
+not the data plane's.** The data plane was out of reach because no test in
+either transfer suite asserts a byte. Discovery is out of reach because the
+`CAT` suite plays the consumer — that is the role this milestone implements,
+and the pinned image carries no consumer-role catalog test, confirmed by
+listing the runtime jar. So the suite exercises the half that was already
+there and cannot see the half being added: `make tck` is a regression check,
+not evidence. Unlike the data plane, discovery needs no new harness — `make
+demo` already stands both connectors up, and its negotiate rounds now obtain
+their offer identifiers by asking, which makes the client load-bearing rather
+than demonstrated. But `make demo` is not in CI: the pipeline runs `go vet`,
+the race suite, and the TCK. So the demo's evidence is only as good as
+someone running it, and `go test` is what carries this milestone unattended.
+That is a finding about the pipeline rather than about the milestone, and
+ordered item 5 of `docs/goal-gap-analysis.md` owns it.
 
 ## The order
 

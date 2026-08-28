@@ -240,3 +240,25 @@ reopens the "one table, one rule" argument in `store.Agreement`'s doc comment.
 That is a design decision with its own spec, not a cleanup, which is why it is
 recorded here instead of attempted. Severity is lower than the entries this
 replaces: none of these ends in bytes.
+
+## From the discovery milestone (2026-08)
+
+**The initiate body still requires a `connectorAddress` that decides
+nothing.** `DECISIONS.md` §38.4 made the roster's address the one both hooks
+dial, and the request's value is only logged when it differs. But
+`handleInitiate` and `handleTransferInitiate` still refuse a body that omits
+`connectorAddress`, still run `validateOutgoingCallback` on it before the
+roster is consulted, and still refuse the call when that check fails. So an
+operator whose stale address stops resolving — a hostname retired, a name that
+now resolves to loopback — is refused an initiate call this connector was
+going to make against a good address the roster names, and the rejection
+names the field that was about to be ignored.
+
+It was left as it is deliberately, and §38.8 records why: the TCK hardcodes
+the initiate body in a digest-pinned image that cannot be configured, so
+leaving the shape alone keeps the suite safe structurally rather than by
+argument, and a field required only when authentication is off is a rule with
+no reader today. Closing it means deciding what the field means when the
+roster carries an address — dropped from the body, or accepted and ignored
+without validation — which is a decision about the management API's contract
+rather than a cleanup.
