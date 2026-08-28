@@ -1271,7 +1271,6 @@ func TestCatalogLookupRefusesAnExpiredRosterWithoutDialing(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	h := catalogLookupHandler{
-		cfg:              testConfig(),
 		guard:            rosterGuard{check: func() bool { return false }, warn: &sync.Once{}},
 		knownParticipant: func(string) bool { return true },
 		providerAddress:  func(string) (string, bool) { return srv.URL, true },
@@ -1298,7 +1297,6 @@ func TestCatalogLookupRefusesAMismatchedParticipant(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	h := catalogLookupHandler{
-		cfg:              testConfig(),
 		knownParticipant: func(string) bool { return true },
 		providerAddress:  func(string) (string, bool) { return srv.URL, true },
 	}
@@ -1332,7 +1330,7 @@ func TestCatalogLookupRefusesWhatItCannotAddress(t *testing.T) {
 		{"authentication is off", "/catalog?providerId=p", nil, nil, "roster"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			h := catalogLookupHandler{cfg: testConfig(), knownParticipant: c.known, providerAddress: c.address}
+			h := catalogLookupHandler{knownParticipant: c.known, providerAddress: c.address}
 			rec := httptest.NewRecorder()
 			h.handleCatalogLookup(rec, httptest.NewRequest(http.MethodGet, c.query, nil))
 			if rec.Code != http.StatusBadRequest {
@@ -1396,8 +1394,8 @@ const maxCatalogResponseBytes = 1 << 20 // 1 MiB
 //
 // It reuses callbackHTTPClient. sendInitialRequest and sendTransferRequest
 // already do, and this is structurally what they are: one POST, bounded,
-// response decoded, no retry. Three of that client's behaviours come with it
-// and are worth knowing here -- redirects are not followed, so a load
+// response decoded, no retry. Behaviours of that client come with it and are
+// worth knowing here -- redirects are not followed, so a load
 // balancer's 308 is reported rather than chased; the connection pool is shared
 // with the callback pushes; and the timeout covers the body, which is why the
 // bound above exists rather than instead of it.
@@ -1459,7 +1457,6 @@ func fetchCatalog(baseURL, aud string) (remoteCatalog, error) {
 // about writing, and caching a fetched catalog is the write this route must
 // not make.
 type catalogLookupHandler struct {
-	cfg              config.Config
 	guard            rosterGuard
 	knownParticipant func(string) bool
 	providerAddress  func(string) (string, bool)
@@ -1635,7 +1632,6 @@ Beside the `initiate` value, above the early return:
 
 ```go
 	catalogLookup := http.HandlerFunc(catalogLookupHandler{
-		cfg:              cfg,
 		guard:            guard,
 		knownParticipant: knownParticipant,
 		providerAddress:  providerAddress,
