@@ -69,11 +69,25 @@ roster_expiry=$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # is safe because compose.yaml pins that image by digest, and if the pin ever
 # moves and the constant changes, the symptom is every CN_C and TP_C result
 # failing on a refusal that reads like a protocol bug.
+#
+# The address is http://tck:8083 with no version path: the harness serves DSP
+# at its root, where dsbox serves it under a version prefix, so an address is
+# the base that message paths are appended to and not a connector root. That
+# value was read off a run rather than assumed, and the evidence has to be the
+# right evidence -- the termination and agreement URLs a run logs are also the
+# paths the provider role formats against a callback address the TCK supplied,
+# so they settle nothing. The verification path settles it: it exists as an
+# outbound template only, formatted against a base that is set from the
+# initiate body and never updated afterwards.
+#
+# The connector dials this rather than comparing the harness's own
+# connectorAddress against it, so a pinned image that changes what it sends
+# costs nothing here.
 cat >"$identity/roster.json" <<EOF
 {
   "participants": [
     {"id": "urn:participant:dsbox-test", "public_key": "$connector_pub"},
-    {"id": "TCK_PARTICIPANT", "public_key": "$tck_pub"}
+    {"id": "TCK_PARTICIPANT", "public_key": "$tck_pub", "connector_address": "http://tck:8083"}
   ],
   "version": 1,
   "expires_at": "$roster_expiry"
@@ -84,7 +98,7 @@ cat >"$identity/roster.json" <<EOF
 {
   "participants": [
     {"id": "urn:participant:dsbox-test", "public_key": "$connector_pub"},
-    {"id": "TCK_PARTICIPANT", "public_key": "$tck_pub"}
+    {"id": "TCK_PARTICIPANT", "public_key": "$tck_pub", "connector_address": "http://tck:8083"}
   ],
   "version": 1,
   "expires_at": "$roster_expiry",

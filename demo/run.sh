@@ -48,10 +48,14 @@ chmod 644 "$gen/provider.key" "$gen/consumer.key"
 # fallback runs.
 roster_expiry=$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 	|| date -u -v+1d +%Y-%m-%dT%H:%M:%SZ)
+# The provider carries the in-network address the connectors reach each other
+# at, version path included -- dsbox serves DSP under one. The consumer
+# carries none: nothing in this demo initiates toward it, and a participant
+# this connector only ever receives from needs no address.
 cat >"$gen/roster.json" <<EOF
 {
   "participants": [
-    {"id": "urn:participant:provider", "public_key": "$provider_pub"},
+    {"id": "urn:participant:provider", "public_key": "$provider_pub", "connector_address": "http://provider:8080/2025-1"},
     {"id": "urn:participant:consumer", "public_key": "$consumer_pub"}
   ],
   "version": 1,
@@ -64,7 +68,7 @@ signature=$("$gen/dsops" roster sign -roster "$gen/roster.json" -key "$gen/opera
 cat >"$gen/roster.json" <<EOF
 {
   "participants": [
-    {"id": "urn:participant:provider", "public_key": "$provider_pub"},
+    {"id": "urn:participant:provider", "public_key": "$provider_pub", "connector_address": "http://provider:8080/2025-1"},
     {"id": "urn:participant:consumer", "public_key": "$consumer_pub"}
   ],
   "version": 1,
