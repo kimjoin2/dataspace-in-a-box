@@ -31,9 +31,9 @@ const maxCatalogRequestBodyBytes = 1 << 20 // 1 MiB
 type CatalogRequestMessage struct {
 	Context []string `json:"@context"`
 	Type    string   `json:"@type"`
-	// Filter is omitempty for the sake of the one place this type is
-	// marshalled rather than decoded: fetchCatalog sends a request carrying no
-	// filter, and without the tag a nil RawMessage goes out as an explicit
+	// Filter is omitempty for the sake of marshalling this type rather than
+	// decoding it: fetchCatalog sends a request carrying no filter, and
+	// without the tag a nil RawMessage goes out as an explicit
 	// "filter":null. The tag changes nothing on the decoding side, where an
 	// absent key and a null are already the same answer -- see hasFilter.
 	Filter json.RawMessage `json:"filter,omitempty"`

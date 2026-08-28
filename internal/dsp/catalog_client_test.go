@@ -1,10 +1,13 @@
 package dsp
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -220,7 +223,6 @@ func TestCatalogLookupRefusesAnExpiredRosterWithoutDialing(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	h := catalogLookupHandler{
-		cfg:              testConfig(),
 		guard:            rosterGuard{check: func() bool { return false }, warn: &sync.Once{}},
 		knownParticipant: func(string) bool { return true },
 		providerAddress:  func(string) (string, bool) { return srv.URL, true },
@@ -247,7 +249,6 @@ func TestCatalogLookupRefusesAMismatchedParticipant(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	h := catalogLookupHandler{
-		cfg:              testConfig(),
 		knownParticipant: func(string) bool { return true },
 		providerAddress:  func(string) (string, bool) { return srv.URL, true },
 	}
@@ -281,7 +282,7 @@ func TestCatalogLookupRefusesWhatItCannotAddress(t *testing.T) {
 		{"authentication is off", "/catalog?providerId=p", nil, nil, "roster"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			h := catalogLookupHandler{cfg: testConfig(), knownParticipant: c.known, providerAddress: c.address}
+			h := catalogLookupHandler{knownParticipant: c.known, providerAddress: c.address}
 			rec := httptest.NewRecorder()
 			h.handleCatalogLookup(rec, httptest.NewRequest(http.MethodGet, c.query, nil))
 			if rec.Code != http.StatusBadRequest {
@@ -291,5 +292,189 @@ func TestCatalogLookupRefusesWhatItCannotAddress(t *testing.T) {
 				t.Errorf("body %s does not mention %q", rec.Body, c.wantIn)
 			}
 		})
+	}
+}
+
+// The success body is the wire contract the management route answers with, and
+// nothing else in this package holds it: demo/run.sh reads connectorAddress and
+// offerId straight out of this document, and a renamed or swapped field would
+// reach an operator's terminal before it reached a test. So this asserts on the
+// decoded response rather than on the status.
+//
+// connectorAddress is the address this connector resolved and dialed, which is
+// why it is asserted against the fake provider's own URL rather than against
+// anything the query carried.
+func TestCatalogLookupAnswersWithThePairsAnInitiateCallNeeds(t *testing.T) {
+	const provider = "urn:participant:provider"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"@context":      []string{ContextURL},
+			"@type":         CatalogType,
+			"participantId": provider,
+			"dataset": []map[string]any{{
+				"@id":       "urn:dataset:one",
+				"@type":     DatasetType,
+				"hasPolicy": []map[string]any{{"@id": "urn:dataset:one#offer"}},
+			}, {
+				"@id":       "urn:dataset:two",
+				"@type":     DatasetType,
+				"hasPolicy": []map[string]any{{"@id": "urn:dataset:two#offer"}},
+			}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	h := catalogLookupHandler{
+		knownParticipant: func(string) bool { return true },
+		providerAddress:  func(string) (string, bool) { return srv.URL, true },
+	}
+	rec := httptest.NewRecorder()
+	h.handleCatalogLookup(rec, httptest.NewRequest(http.MethodGet, "/catalog?providerId="+provider, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	var got catalogLookupResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("the response does not decode: %v: %s", err, rec.Body)
+	}
+	want := catalogLookupResponse{
+		ParticipantID:    provider,
+		ConnectorAddress: srv.URL,
+		Datasets: []datasetOffer{
+			{DatasetID: "urn:dataset:one", OfferID: "urn:dataset:one#offer"},
+			{DatasetID: "urn:dataset:two", OfferID: "urn:dataset:two#offer"},
+		},
+	}
+	if got.ParticipantID != want.ParticipantID || got.ConnectorAddress != want.ConnectorAddress {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	if !slices.Equal(got.Datasets, want.Datasets) {
+		t.Errorf("datasets = %+v, want %+v", got.Datasets, want.Datasets)
+	}
+}
+
+// The credential is addressed to the participant the route was asked about.
+// Address it to anything else and a counterparty running with authentication on
+// answers 401, which reaches the operator as nothing more specific than the
+// request having failed -- so no status this connector reports would say what
+// is wrong.
+//
+// The minter is armed the way TestConsumerFollowUpsAreAddressedToTheCounterparty
+// arms it, and restored the same way: a pure function of its argument, so the
+// audience is readable straight off the wire.
+//
+// No t.Parallel: mintOutboundCredential is a package variable.
+func TestCatalogLookupAddressesItsCredentialToTheProvider(t *testing.T) {
+	const provider = "urn:participant:provider"
+	restore := mintOutboundCredential
+	mintOutboundCredential = func(aud string) (string, bool) { return "Bearer aud=" + aud, true }
+	t.Cleanup(func() { mintOutboundCredential = restore })
+
+	// Buffered and non-blocking, so the assertion reads what arrived without
+	// sharing a variable with the server's goroutine.
+	auth := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case auth <- r.Header.Get("Authorization"):
+		default:
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"participantId": provider})
+	}))
+	t.Cleanup(srv.Close)
+
+	h := catalogLookupHandler{
+		knownParticipant: func(string) bool { return true },
+		providerAddress:  func(string) (string, bool) { return srv.URL, true },
+	}
+	rec := httptest.NewRecorder()
+	h.handleCatalogLookup(rec, httptest.NewRequest(http.MethodGet, "/catalog?providerId="+provider, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	select {
+	case got := <-auth:
+		if want := "Bearer aud=" + provider; got != want {
+			t.Errorf("Authorization = %q, want %q", got, want)
+		}
+	default:
+		t.Fatal("the provider was never contacted")
+	}
+}
+
+// A dataset advertising no offer cannot be negotiated for, so it is left out of
+// the response -- and saying so in the log is what keeps that from being a
+// silent truncation. The pairs the catalog does carry still come back, which is
+// the other half: omitting one dataset must not cost the others.
+//
+// No t.Parallel: slog.Default is process-global, so a parallel sibling would be
+// logging into this test's buffer.
+func TestCatalogLookupSaysWhichDatasetsItLeftOut(t *testing.T) {
+	const provider = "urn:participant:provider"
+	var buf bytes.Buffer
+	restoreLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(restoreLogger) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"participantId":"` + provider + `","dataset":[` +
+			`{"@id":"urn:dataset:negotiable","hasPolicy":[{"@id":"urn:dataset:negotiable#offer"}]},` +
+			`{"@id":"urn:dataset:no-offer","hasPolicy":[]}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	h := catalogLookupHandler{
+		knownParticipant: func(string) bool { return true },
+		providerAddress:  func(string) (string, bool) { return srv.URL, true },
+	}
+	rec := httptest.NewRecorder()
+	h.handleCatalogLookup(rec, httptest.NewRequest(http.MethodGet, "/catalog?providerId="+provider, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	var got catalogLookupResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("the response does not decode: %v: %s", err, rec.Body)
+	}
+	want := []datasetOffer{{DatasetID: "urn:dataset:negotiable", OfferID: "urn:dataset:negotiable#offer"}}
+	if !slices.Equal(got.Datasets, want) {
+		t.Errorf("datasets = %+v, want %+v", got.Datasets, want)
+	}
+	if !strings.Contains(buf.String(), "omitted") {
+		t.Errorf("a dataset was left out of the response and the log does not say so: %s", buf.String())
+	}
+}
+
+// A catalog of sub-catalogs is how a federated broker advertises. This
+// connector does not walk them, and an operator reading a short list of pairs
+// has no way to tell that from a counterparty holding nothing -- so the log
+// says which of the two happened.
+//
+// No t.Parallel: slog.Default is process-global.
+func TestCatalogLookupSaysItDidNotWalkTheSubCatalogs(t *testing.T) {
+	const provider = "urn:participant:broker"
+	var buf bytes.Buffer
+	restoreLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(restoreLogger) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"participantId":"` + provider + `","dataset":[],` +
+			`"catalog":[{"@id":"urn:catalog:downstream","@type":"Catalog"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	h := catalogLookupHandler{
+		knownParticipant: func(string) bool { return true },
+		providerAddress:  func(string) (string, bool) { return srv.URL, true },
+	}
+	rec := httptest.NewRecorder()
+	h.handleCatalogLookup(rec, httptest.NewRequest(http.MethodGet, "/catalog?providerId="+provider, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(buf.String(), "sub_catalogs") {
+		t.Errorf("the catalog advertised sub-catalogs and the log does not say they went unwalked: %s", buf.String())
 	}
 }

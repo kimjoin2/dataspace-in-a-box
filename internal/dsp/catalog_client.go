@@ -17,8 +17,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-
-	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
 )
 
 // consumerCatalogPath is the path a catalog request is POSTed to, formatted
@@ -39,8 +37,8 @@ const maxCatalogResponseBytes = 1 << 20 // 1 MiB
 //
 // It reuses callbackHTTPClient. sendInitialRequest and sendTransferRequest
 // already do, and this is structurally what they are: one POST, bounded,
-// response decoded, no retry. Three of that client's behaviours come with it
-// and are worth knowing here -- redirects are not followed, so a load
+// response decoded, no retry. That client's behaviours come with it, and these
+// are the ones worth knowing here -- redirects are not followed, so a load
 // balancer's 308 is reported rather than chased; the connection pool is shared
 // with the callback pushes; and the timeout covers the body, which is why the
 // bound above exists rather than instead of it.
@@ -102,7 +100,6 @@ func fetchCatalog(baseURL, aud string) (remoteCatalog, error) {
 // about writing, and caching a fetched catalog is the write this route must
 // not make.
 type catalogLookupHandler struct {
-	cfg              config.Config
 	guard            rosterGuard
 	knownParticipant func(string) bool
 	providerAddress  func(string) (string, bool)
