@@ -210,3 +210,55 @@ func TestNewRouterGivesTheInitiateHooksTheRosterAddress(t *testing.T) {
 			rec.Code, rec.Body)
 	}
 }
+
+// NewRouter handing the catalog lookup handler its roster predicates is the
+// same class of wiring, and the same hole: catalog_client_test.go builds that
+// handler as a struct literal and sets both fields itself. Delete either
+// assignment from NewRouter's literal and the build, the vet and the whole
+// suite stay green, while GET /catalog answers 400 to every call an operator
+// makes -- the route that ships, dead, with nothing reporting it. The initiate
+// hooks' equivalent literal is guarded by the test above; this one was not.
+//
+// Both predicates are driven, one request each, because their refusals are the
+// only way to tell which one arrived. A participant the roster lists with no
+// address separates the address predicate: without it the route refuses for
+// holding no roster at all. A participant the roster does not list separates
+// the membership predicate: without it that check is skipped and the address
+// predicate answers instead, naming the missing address rather than the
+// missing participant.
+//
+// No t.Parallel: the authenticated branch assigns mintOutboundCredential,
+// which is a package variable.
+func TestNewRouterGivesTheCatalogLookupTheRosterPredicates(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	restoreMinter := mintOutboundCredential
+	t.Cleanup(func() { mintOutboundCredential = restoreMinter })
+
+	cfg := config.Config{ParticipantID: testSelf, PublicURL: "http://self:8080"}
+	if !cfg.AuthRequired() {
+		t.Fatal("the config above no longer selects the authenticated path, where the predicates are built")
+	}
+	routers := NewRouter(cfg, st, rosterListing(t, testPeer), nil)
+	t.Cleanup(routers.CancelPulls)
+
+	rec := httptest.NewRecorder()
+	routers.CatalogLookup.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/catalog?providerId="+testPeer, nil))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "connector_address") {
+		t.Errorf("catalog for a listed participant = %d %s; NewRouter did not hand the handler the roster address predicate",
+			rec.Code, rec.Body)
+	}
+
+	rec = httptest.NewRecorder()
+	routers.CatalogLookup.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/catalog?providerId="+testOther, nil))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "is not a participant") {
+		t.Errorf("catalog for an unlisted participant = %d %s; NewRouter did not hand the handler the roster membership predicate",
+			rec.Code, rec.Body)
+	}
+}
