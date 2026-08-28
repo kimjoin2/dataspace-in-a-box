@@ -165,10 +165,11 @@ func TestEachInitiateRouteReachesItsOwnHook(t *testing.T) {
 }
 
 // GET /catalog reaches the catalog lookup, asserted separately from the map
-// above because it is the one route here that is not a POST. The reason is
-// the same one: it is a further http.Handler in the same positional list, so
-// a swap with either initiate hook compiles and changes nothing the compiler
-// or a status-code assertion can see.
+// above because that map is keyed on path alone and reads every entry as a
+// POST, which this route is not. The reason for asserting it is the same one:
+// it is a further http.Handler in the same positional list, so a swap with
+// either initiate hook compiles and changes nothing the compiler or a
+// status-code assertion can see.
 func TestTheCatalogRouteReachesTheCatalogHandler(t *testing.T) {
 	t.Parallel()
 	h, _ := newTestRouter(t)

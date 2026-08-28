@@ -82,10 +82,10 @@ func TestMainGivesTheManagementListenerTheRosterPredicate(t *testing.T) {
 // failing its consumer-role suites for what reads like a protocol fault.
 // Measured on the pair that already existed.
 //
-// This is the third guard in this file for one class of defect: a call site Go
-// does not require and no test observes. The pattern names the arguments in
-// order rather than merely requiring the call, because what a transposition
-// changes is the order and not the call.
+// It joins the guards already in this file against one class of defect: a
+// call site Go does not require and no test observes. The pattern names the
+// arguments in order rather than merely requiring the call, because what a
+// transposition changes is the order and not the call.
 func TestMainWiresTheManagementHandlersInOrder(t *testing.T) {
 	t.Parallel()
 	src, err := os.ReadFile("main.go")

@@ -28,7 +28,13 @@ import (
 // the closure built here — holding this router's participant id and a nil
 // signing key — outlives the test and stands in for the package default in
 // everything that runs after it.
-func expiredRouter(t *testing.T) (http.Handler, InitiateHandlers) {
+//
+// The whole Routers value comes back rather than a widening list of returns,
+// for the reason Routers itself exists: a flat list would hand each call site
+// several http.Handler values in a row with nothing to tell them apart by.
+// The pull cleanup is registered here, so a caller needs nothing from those
+// fields.
+func expiredRouter(t *testing.T) Routers {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -86,7 +92,7 @@ func expiredRouter(t *testing.T) (http.Handler, InitiateHandlers) {
 	// Nothing here starts a pull, so this only keeps the pull context from
 	// outliving the test.
 	t.Cleanup(routers.CancelPulls)
-	return routers.Protocol, routers.Initiate
+	return routers
 }
 
 // Every DSP route refuses once the roster has expired. 409 and not 401: the
@@ -95,7 +101,7 @@ func expiredRouter(t *testing.T) (http.Handler, InitiateHandlers) {
 // immediately on the TCK's negative paths, exactly like the 404 that
 // DECISIONS.md section 25.1 forbids.
 func TestExpiredRosterRefusesEveryDSPRequest(t *testing.T) {
-	handler, _ := expiredRouter(t)
+	handler := expiredRouter(t).Protocol
 	for _, rt := range dspRoutes(t) {
 		if openRoutes[rt.path] {
 			continue
@@ -123,7 +129,7 @@ func TestExpiredRosterRefusesEveryDSPRequest(t *testing.T) {
 // refusals the expired router can produce, the 401 a wrapped route would give
 // an unauthenticated caller and the 409 the guard would give ahead of it.
 func TestExpiredRosterStillServesTheVersionDocument(t *testing.T) {
-	handler, _ := expiredRouter(t)
+	handler := expiredRouter(t).Protocol
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/.well-known/dspace-version", nil))
 	if rec.Code != http.StatusOK {
@@ -139,7 +145,7 @@ func TestExpiredRosterStillServesTheVersionDocument(t *testing.T) {
 // also pins that the expiry check runs first: move it below and this
 // answers 400.
 func TestExpiredRosterRefusesTheInitiateHooks(t *testing.T) {
-	_, initiate := expiredRouter(t)
+	initiate := expiredRouter(t).Initiate
 	for name, h := range map[string]http.Handler{
 		"negotiations": initiate.Negotiation,
 		"transfers":    initiate.Transfer,
@@ -153,9 +159,35 @@ func TestExpiredRosterRefusesTheInitiateHooks(t *testing.T) {
 	}
 }
 
+// The catalog lookup refuses too, for the reason the hooks above do: it lives
+// on the management listener, which requireParticipant never wraps, and it
+// dials a counterparty. Without its own check an expired connector goes on
+// asking counterparties for their catalogs and signing those requests with
+// its real key.
+//
+// This is also the only assertion driving a handler off NewRouter's
+// authenticated return. That return is a separate Routers literal from the
+// authentication-off one, and dropping CatalogLookup from it was measured to
+// leave go vet and the whole suite green while the management listener mounts
+// a nil handler that panics once a caller gets past the token check — on the
+// path that ships. Here a nil handler cannot pass: ServeHTTP on it panics.
+//
+// The query is empty on purpose, the way the hooks above are sent an empty
+// body: providerId is required, so this also pins that the expiry check runs
+// first. Move it below and this answers 400.
+func TestExpiredRosterRefusesTheCatalogLookup(t *testing.T) {
+	catalogLookup := expiredRouter(t).CatalogLookup
+	rec := httptest.NewRecorder()
+	catalogLookup.ServeHTTP(rec, httptest.NewRequest("GET", "/catalog", nil))
+	if rec.Code != http.StatusConflict {
+		t.Errorf("catalog lookup: got %d, want 409 — an expired connector must not ask a counterparty for its catalog",
+			rec.Code)
+	}
+}
+
 // The refusal names the roster rather than the caller's credential.
 func TestTheExpiryRefusalNamesTheRoster(t *testing.T) {
-	handler, _ := expiredRouter(t)
+	handler := expiredRouter(t).Protocol
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest("POST", VersionPath+"/catalog/request", strings.NewReader("{}")))
 	if !strings.Contains(strings.ToLower(rec.Body.String()), "roster") {
@@ -179,7 +211,8 @@ func TestTheExpiryWarningIsLoggedOnce(t *testing.T) {
 	// count of one is also what a connector where only one of them refuses
 	// produces, so without these the assertion below reads as "one warning
 	// across every surface" while measuring something weaker.
-	handler, initiate := expiredRouter(t)
+	routers := expiredRouter(t)
+	handler, initiate := routers.Protocol, routers.Initiate
 	for i := 0; i < 3; i++ {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("POST", VersionPath+"/catalog/request", strings.NewReader("{}")))

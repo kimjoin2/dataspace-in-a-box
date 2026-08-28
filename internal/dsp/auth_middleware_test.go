@@ -328,13 +328,22 @@ func TestTheOldInitiatePathsAnswerMethodNotAllowed(t *testing.T) {
 // The pattern keys on the handler rather than on the word: this listener
 // legitimately registers the catalog protocol's own routes, so a pattern
 // matching "catalog" reports them and proves nothing.
+//
+// The case class is what makes it cover both registration forms. Naming only
+// the method missed the likelier one -- measured: the value NewRouter already
+// builds is in scope a few lines above the returns, so re-adding the route
+// most plausibly reads mux.Handle(..., catalogLookup), and a pattern spelled
+// handleCatalogLookup let that through with the suite green. Matching either
+// case of the leading letter catches the variable, the method value and the
+// handler type, and still misses handleCatalogRequest and
+// handleDatasetRequest, which are the registrations that belong here.
 func TestTheCatalogLookupIsNotRegisteredOnTheDSPListener(t *testing.T) {
 	t.Parallel()
 	src, err := os.ReadFile("router.go")
 	if err != nil {
 		t.Fatalf("read router.go: %v", err)
 	}
-	registration := regexp.MustCompile(`mux\.Handle(?:Func)?\([^)]*handleCatalogLookup`)
+	registration := regexp.MustCompile(`mux\.Handle(?:Func)?\([^)]*[cC]atalogLookup`)
 	if found := registration.FindAllString(string(src), -1); len(found) != 0 {
 		t.Errorf("router.go registers the catalog lookup on the DSP listener: %v", found)
 	}
