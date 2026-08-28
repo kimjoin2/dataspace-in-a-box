@@ -95,6 +95,16 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 		}
 	}
 
+	// Non-nil only when there is a roster to consult, the rule
+	// knownParticipant above follows. Built here rather than inside the
+	// authenticated branch for the reason the initiate handlers already
+	// carry: NewRouter returns from more than one place, and each of them has to
+	// hand the hooks a complete handler.
+	var providerAddress func(string) (string, bool)
+	if cfg.AuthRequired() {
+		providerAddress = roster.AddressFor
+	}
+
 	// Non-nil only when there is a roster to expire. NewRouter's own rule
 	// applies: with authentication off the check is absent, not silently
 	// false — a zero Roster's zero expiry must not read as expired. Built
@@ -108,7 +118,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 		}
 	}
 
-	neg := negotiationHandler{cfg: cfg, store: st, knownParticipant: knownParticipant, guard: guard}
+	neg := negotiationHandler{cfg: cfg, store: st, knownParticipant: knownParticipant, providerAddress: providerAddress, guard: guard}
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/request", neg.handleContractRequest)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/request", neg.handleReRequest)
 	mux.HandleFunc("POST "+VersionPath+"/negotiations/{id}/events", neg.handleEvent)
@@ -128,7 +138,7 @@ func NewRouter(cfg config.Config, st *store.Store, roster auth.Roster, signKey e
 	// {id} on the five addressed transfer routes is this connector's own
 	// generated provider pid, the same convention the provider-role
 	// negotiation routes above use.
-	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}, pulls: pulls, pullCtx: pullCtx, knownParticipant: knownParticipant, guard: guard}
+	tr := transferHandler{cfg: cfg, store: st, stepDelay: transferStepDelay, pulling: &sync.Map{}, pulls: pulls, pullCtx: pullCtx, knownParticipant: knownParticipant, providerAddress: providerAddress, guard: guard}
 	mux.HandleFunc("POST "+VersionPath+"/transfers/request", tr.handleTransferRequest)
 
 	data := dataHandler{cfg: cfg, store: st}

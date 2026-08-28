@@ -985,3 +985,132 @@ func TestHandleAgreement_RecordsTheProviderAsCounterparty(t *testing.T) {
 		t.Errorf("CounterpartyID = %q, want the negotiation's counterparty %q", got.CounterpartyID, n.CounterpartyID)
 	}
 }
+
+// The address the roster lists is the address dialed, and the one the caller
+// sent is not. This is DECISIONS.md section 35.5's residual closed by
+// removing the caller's authority over the address rather than by checking
+// it.
+//
+// The fake provider refuses what it receives. Where the request went is the
+// whole subject, and a refusal ends the goroutine handleInitiate dispatched
+// at the response rather than leaving it writing to a store this test is
+// about to close.
+func TestHandleInitiateDialsTheRostersAddress(t *testing.T) {
+	// Buffered, and read from below rather than polled as a shared variable:
+	// the request arrives on the goroutine handleInitiate dispatches, so the
+	// channel is what orders that write against this test's read — the same
+	// reasoning TestHandleInitiate_Success gives.
+	dialed := make(chan string, 1)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dialed <- "http://" + r.Host
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(provider.Close)
+
+	h, _ := newTestHandler(t, config.Config{ParticipantID: testSelf, PublicURL: "http://consumer:8080"})
+	h.knownParticipant = func(string) bool { return true }
+	h.providerAddress = func(string) (string, bool) { return provider.URL, true }
+
+	rec := postJSON(t, h.handleInitiate, "/negotiations/initiate", map[string]string{
+		"providerId":       testPeer,
+		"offerId":          "urn:dataset:s#offer",
+		"datasetId":        "urn:dataset:s",
+		"connectorAddress": "http://somewhere-else:9999",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	select {
+	case got := <-dialed:
+		if got != provider.URL {
+			t.Errorf("the outbound request went to %q, want the roster's %q", got, provider.URL)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the roster's address was never dialed")
+	}
+}
+
+// A participant the roster lists with no address cannot be dialed, and saying
+// so is the whole of "optional in the document, mandatory where this
+// connector dials out".
+func TestHandleInitiateRefusesAParticipantWithNoAddress(t *testing.T) {
+	h, _ := newTestHandler(t, config.Config{ParticipantID: testSelf, PublicURL: "http://consumer:8080"})
+	h.knownParticipant = func(string) bool { return true }
+	h.providerAddress = func(string) (string, bool) { return "", false }
+
+	rec := postJSON(t, h.handleInitiate, "/negotiations/initiate", map[string]string{
+		"providerId":       testPeer,
+		"offerId":          "urn:dataset:s#offer",
+		"datasetId":        "urn:dataset:s",
+		"connectorAddress": "http://provider:8080/2025-1",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "connector_address") {
+		t.Errorf("the refusal does not name the missing field: %s", rec.Body)
+	}
+}
+
+// With authentication off there is no roster, the predicate is nil, and the
+// request's address is used exactly as it always was. Absence is not a check
+// that fails.
+func TestHandleInitiateUsesTheRequestsAddressWhenThereIsNoRoster(t *testing.T) {
+	dialed := make(chan string, 1)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dialed <- "http://" + r.Host
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(provider.Close)
+
+	h, _ := newTestHandler(t, config.Config{ParticipantID: testSelf, PublicURL: "http://consumer:8080"})
+	h.knownParticipant = nil
+	h.providerAddress = nil
+
+	rec := postJSON(t, h.handleInitiate, "/negotiations/initiate", map[string]string{
+		"providerId":       testPeer,
+		"offerId":          "urn:dataset:s#offer",
+		"datasetId":        "urn:dataset:s",
+		"connectorAddress": provider.URL,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	select {
+	case got := <-dialed:
+		if got != provider.URL {
+			t.Errorf("the outbound request went to %q, want %q", got, provider.URL)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the request's address was never dialed")
+	}
+}
+
+// The roster's address is the one dialed, so it is the one that has to pass
+// the guard. Nothing else in the tree exercises this: both harnesses carry
+// addresses that resolve.
+//
+// The request's own address is a documentation-range literal rather than a
+// hostname, so the real guard admits it without a name to resolve and the
+// refusal below can only be about the roster's.
+func TestHandleInitiateRefusesARosterAddressItWillNotSendTo(t *testing.T) {
+	h, _ := newTestHandler(t, config.Config{ParticipantID: testSelf, PublicURL: "http://consumer:8080"})
+	useRealCallbackGuard(t)
+	h.knownParticipant = func(string) bool { return true }
+	h.providerAddress = func(string) (string, bool) { return "http://127.0.0.1:9", true }
+
+	rec := postJSON(t, h.handleInitiate, "/negotiations/initiate", map[string]string{
+		"providerId":       testPeer,
+		"offerId":          "urn:dataset:s#offer",
+		"datasetId":        "urn:dataset:s",
+		"connectorAddress": testSendableAddress,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "roster's connector_address") {
+		t.Errorf("the refusal does not say the roster's address was the problem: %s", rec.Body)
+	}
+}

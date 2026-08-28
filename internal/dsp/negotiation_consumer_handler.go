@@ -103,6 +103,46 @@ func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// The address this connector will dial. When the roster carries one for
+	// providerId, that value wins and the request's connectorAddress is not
+	// consulted: the operator names a participant and the signed registry
+	// decides where that participant is. DECISIONS.md section 35.5 left the
+	// hole that an operator could name one participant and point the address
+	// at another; this removes the authority rather than checking it, which
+	// is the same move section 35.1 made when it moved these hooks.
+	//
+	// A difference is logged rather than refused. The comparison exists only
+	// for that line, so it needs no normalization to be sound -- which is
+	// exactly what a refusal would have needed, and what was measured to fail
+	// in both directions.
+	baseURL := body.ConnectorAddress
+	if h.providerAddress != nil {
+		addr, ok := h.providerAddress(body.ProviderID)
+		if !ok {
+			writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+				"the roster lists no connector_address for providerId "+body.ProviderID)
+			return
+		}
+		if addr != body.ConnectorAddress {
+			slog.Warn("initiate names an address the roster does not list; dialing the roster's",
+				"provider_id", body.ProviderID, "requested", body.ConnectorAddress, "roster", addr)
+		}
+		baseURL = addr
+	}
+	// The guard above ran on what the caller sent. What this connector is
+	// about to dial is baseURL, so when they differ the address actually used
+	// is checked too. The reason is echoed no more than the first one is: it
+	// reports what name resolution told this connector.
+	if baseURL != body.ConnectorAddress {
+		if err := validateOutgoingCallback(baseURL); err != nil {
+			slog.Warn("reject initiate", "connector_address", baseURL, "error", err)
+			writeError(w, ContractNegotiationErrorType, http.StatusBadRequest,
+				"the roster's connector_address for "+body.ProviderID+
+					" is not an address this connector will send to")
+			return
+		}
+	}
+
 	consumerPID, err := store.NewUUID()
 	if err != nil {
 		slog.Error("generate consumer pid", "error", err)
@@ -112,7 +152,7 @@ func (h negotiationHandler) handleInitiate(w http.ResponseWriter, r *http.Reques
 	now := time.Now()
 	n := store.ConsumerNegotiation{
 		ConsumerPID:     consumerPID,
-		ProviderBaseURL: body.ConnectorAddress,
+		ProviderBaseURL: baseURL,
 		// providerId is who the operator asked this connector to negotiate
 		// with, and is therefore the audience of everything it will send.
 		CounterpartyID: body.ProviderID,

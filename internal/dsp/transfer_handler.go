@@ -80,6 +80,10 @@ type transferHandler struct {
 	// a disabled check is absent rather than silently false. The same
 	// convention pulling uses below.
 	knownParticipant func(string) bool
+	// providerAddress reports the address the roster lists for a participant.
+	// Nil when authentication is off and there is no roster: absence is not a
+	// check that fails, the convention knownParticipant already follows.
+	providerAddress func(string) (string, bool)
 	// pulling tracks in-flight pullTransferData calls by ConsumerPID, so a
 	// restart that arrives while a previous pull for the same transfer is
 	// still running is dropped instead of racing it onto the same

@@ -62,6 +62,10 @@ type negotiationHandler struct {
 	// a disabled check is absent rather than silently false. The same
 	// convention pulling uses on transferHandler.
 	knownParticipant func(string) bool
+	// providerAddress reports the address the roster lists for a participant.
+	// Nil when authentication is off and there is no roster: absence is not a
+	// check that fails, the convention knownParticipant already follows.
+	providerAddress func(string) (string, bool)
 	// guard reports whether the roster is still usable, and carries the
 	// warning the refusal logs. The zero guard is usable rather than expired,
 	// which is how "there is no roster" is expressed — the same direction

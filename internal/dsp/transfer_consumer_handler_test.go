@@ -34,6 +34,13 @@ func useRealCallbackGuard(t *testing.T) {
 	t.Cleanup(func() { validateOutgoingCallback = stubbed })
 }
 
+// testSendableAddress is an address the real callback guard admits. It is a
+// documentation-range literal rather than a hostname, so the guard reaches
+// its verdict without resolving a name — which is what lets a test that
+// arms the real guard put a known-good address in the request body and be
+// sure that whatever refusal follows is about some other address.
+const testSendableAddress = "http://198.51.100.1:8080/2025-1"
+
 func initiateBody(fields map[string]string) *bytes.Reader {
 	raw, err := json.Marshal(fields)
 	if err != nil {
@@ -1909,4 +1916,118 @@ func waitForFileSize(t *testing.T, path string, size int64) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("%s never reached %d bytes", path, size)
+}
+
+// The transfer hook's twin of TestHandleInitiateDialsTheRostersAddress: the
+// address the roster lists is the address dialed, and the one the caller sent
+// is not.
+//
+// The fake provider refuses what it receives, so the goroutine
+// handleTransferInitiate dispatched ends at the response rather than writing
+// to a store this test is about to close. Where the request went is the whole
+// subject and the refusal does not change it.
+func TestTransferInitiateDialsTheRostersAddress(t *testing.T) {
+	// Buffered, and read from below rather than polled as a shared variable:
+	// the request arrives on the dispatched goroutine, so the channel is what
+	// orders that write against this test's read.
+	dialed := make(chan string, 1)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dialed <- "http://" + r.Host
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(provider.Close)
+
+	h, st := newTestTransferHandler(t, config.Config{})
+	seedAgreement(t, st, "urn:uuid:a-1")
+	h.knownParticipant = func(string) bool { return true }
+	h.providerAddress = func(string) (string, bool) { return provider.URL, true }
+
+	rec := httptest.NewRecorder()
+	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
+		"/transfers/initiate", initiateBody(fullInitiateFields("http://somewhere-else:9999"))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	select {
+	case got := <-dialed:
+		if got != provider.URL {
+			t.Errorf("the outbound request went to %q, want the roster's %q", got, provider.URL)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the roster's address was never dialed")
+	}
+}
+
+// A participant the roster lists with no address cannot be dialed, and the
+// transfer hook says so exactly as the negotiation hook does.
+func TestTransferInitiateRefusesAParticipantWithNoAddress(t *testing.T) {
+	h, st := newTestTransferHandler(t, config.Config{})
+	seedAgreement(t, st, "urn:uuid:a-1")
+	h.knownParticipant = func(string) bool { return true }
+	h.providerAddress = func(string) (string, bool) { return "", false }
+
+	rec := httptest.NewRecorder()
+	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
+		"/transfers/initiate", initiateBody(fullInitiateFields("http://provider:8080/2025-1"))))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "connector_address") {
+		t.Errorf("the refusal does not name the missing field: %s", rec.Body)
+	}
+}
+
+// With authentication off there is no roster, the predicate is nil, and the
+// request's address is used exactly as it always was. Absence is not a check
+// that fails.
+func TestTransferInitiateUsesTheRequestsAddressWhenThereIsNoRoster(t *testing.T) {
+	dialed := make(chan string, 1)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dialed <- "http://" + r.Host
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(provider.Close)
+
+	h, st := newTestTransferHandler(t, config.Config{})
+	seedAgreement(t, st, "urn:uuid:a-1")
+	h.knownParticipant = nil
+	h.providerAddress = nil
+
+	rec := httptest.NewRecorder()
+	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
+		"/transfers/initiate", initiateBody(fullInitiateFields(provider.URL))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	select {
+	case got := <-dialed:
+		if got != provider.URL {
+			t.Errorf("the outbound request went to %q, want %q", got, provider.URL)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the request's address was never dialed")
+	}
+}
+
+// The roster's address is the one dialed, so it is the one that has to pass
+// the guard. Nothing else in the tree exercises this: both harnesses carry
+// addresses that resolve.
+func TestTransferInitiateRefusesARosterAddressItWillNotSendTo(t *testing.T) {
+	h, st := newTestTransferHandler(t, config.Config{})
+	useRealCallbackGuard(t)
+	seedAgreement(t, st, "urn:uuid:a-1")
+	h.knownParticipant = func(string) bool { return true }
+	h.providerAddress = func(string) (string, bool) { return "http://127.0.0.1:9", true }
+
+	rec := httptest.NewRecorder()
+	h.handleTransferInitiate(rec, httptest.NewRequest(http.MethodPost,
+		"/transfers/initiate", initiateBody(fullInitiateFields(testSendableAddress))))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "roster's connector_address") {
+		t.Errorf("the refusal does not say the roster's address was the problem: %s", rec.Body)
+	}
 }

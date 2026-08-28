@@ -1,7 +1,15 @@
 package dsp
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/kimjoin2/dataspace-in-a-box/internal/auth"
 	"github.com/kimjoin2/dataspace-in-a-box/internal/config"
@@ -82,5 +90,88 @@ func TestNewRouterReturnsRosterUsableOnlyWithAuthenticationOn(t *testing.T) {
 	t.Cleanup(on.CancelPulls)
 	if on.RosterUsable == nil {
 		t.Error("RosterUsable is nil with authentication on, so nothing outside this package can ask whether the roster expired")
+	}
+}
+
+// rosterListing builds a signed roster naming one participant and carrying no
+// address for it, and loads it the way a connector does. The participant is
+// listed, so the membership check passes and the address predicate is what
+// answers — which is the only way a test can tell whether NewRouter handed a
+// hook that predicate at all.
+func rosterListing(t *testing.T, id string) auth.Roster {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	signerPub, signerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "roster.json")
+	// Held in one variable and interpolated into both copies of the document:
+	// the signature covers the expiry, so a second reading of the clock would
+	// sign one value and load another.
+	fields := `,"version":1,"expires_at":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `"`
+	participants := `[{"id":"` + id + `","public_key":"` + base64.RawURLEncoding.EncodeToString(pub) + `"}]`
+	if err := os.WriteFile(path, []byte(`{"participants":`+participants+fields+`}`), 0o600); err != nil {
+		t.Fatalf("write roster: %v", err)
+	}
+	sig, err := auth.SignRoster(path, signerPriv, time.Now())
+	if err != nil {
+		t.Fatalf("SignRoster: %v", err)
+	}
+	signed := `{"participants":` + participants + fields + `,"signature":"` + sig + `"}`
+	if err := os.WriteFile(path, []byte(signed), 0o600); err != nil {
+		t.Fatalf("write signed roster: %v", err)
+	}
+	roster, err := auth.LoadRoster(path, signerPub, time.Now())
+	if err != nil {
+		t.Fatalf("LoadRoster: %v", err)
+	}
+	return roster
+}
+
+// NewRouter handing the address predicate to the initiate hooks is wiring no
+// handler test can see: those build their handler as a struct literal and set
+// the field themselves. Deleting the assignment leaves them all green and
+// silently restores the caller's authority over the address that section 35.5
+// closed. This is the same shape of hole cmd/dsbox/roster_version_test.go
+// guards for its own wiring.
+//
+// No t.Parallel: the authenticated branch assigns mintOutboundCredential,
+// which is a package variable.
+func TestNewRouterGivesTheInitiateHooksTheRosterAddress(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	restoreMinter := mintOutboundCredential
+	t.Cleanup(func() { mintOutboundCredential = restoreMinter })
+
+	cfg := config.Config{ParticipantID: testSelf, PublicURL: "http://self:8080"}
+	if !cfg.AuthRequired() {
+		t.Fatal("the config above no longer selects the authenticated path, where the predicate is built")
+	}
+	// A roster listing the participant with no address. The predicate is
+	// therefore non-nil and answers false, which the hooks must refuse — and
+	// they can only refuse it if NewRouter handed them the predicate at all.
+	routers := NewRouter(cfg, st, rosterListing(t, testPeer), nil)
+	t.Cleanup(routers.CancelPulls)
+
+	// The request's own address is a documentation-range literal, so the real
+	// guard this router carries admits it without resolving a name and the
+	// refusal below can only be the roster's answer.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/negotiations/initiate",
+		strings.NewReader(`{"providerId":"`+testPeer+`","offerId":"o",`+
+			`"datasetId":"d","connectorAddress":"`+testSendableAddress+`"}`))
+	routers.Initiate.Negotiation.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "connector_address") {
+		t.Errorf("initiate = %d %s; NewRouter did not hand the hook the roster address predicate",
+			rec.Code, rec.Body)
 	}
 }
