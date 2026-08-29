@@ -258,7 +258,9 @@ asking. Asking is an operator action, and it lives on the consumer's
 management listener.
 
 The reply carries the provider's address as the roster gives it, which is the
-address the negotiation below uses.
+address the negotiation below uses, and the format its distribution
+advertises, which the transfer below takes. Nothing in this exchange is a
+value the reader has to have been told.
 
 ```sh
 CATALOG=$(curl -sf "http://127.0.0.1:8181/catalog?providerId=urn:participant:provider" \
@@ -266,7 +268,8 @@ CATALOG=$(curl -sf "http://127.0.0.1:8181/catalog?providerId=urn:participant:pro
 ADDRESS=$(printf '%s' "$CATALOG" | sed -n 's/.*"connectorAddress":"\([^"]*\)".*/\1/p')
 OFFER=$(printf '%s' "$CATALOG" |
 	sed -n 's/.*"id":"urn:dataset:sample","offerId":"\([^"]*\)".*/\1/p' | head -1)
-if [ -z "$OFFER" ] || [ -z "$ADDRESS" ]; then
+FORMAT=$(printf '%s' "$CATALOG" | sed -n 's/.*"format":"\([^"]*\)".*/\1/p' | head -1)
+if [ -z "$OFFER" ] || [ -z "$ADDRESS" ] || [ -z "$FORMAT" ]; then
 	echo "discovery did not return what the negotiation needs" >&2
 	printf '%s\n' "$CATALOG" >&2
 	exit 1
@@ -306,9 +309,10 @@ echo "    agreement $AGREEMENT"
 
 ## Transfer the file, and check that it arrived
 
-`format` is written out here rather than discovered. The catalog advertises a
-placeholder rather than a real distribution format, so this is one value that
-still travels out of band — the gap is recorded in `docs/follow-ups.md`.
+The format comes from the catalog, like the offer and the address. A
+counterparty is not obliged to advertise one this connector can read; when it
+does not, the lookup reports the pair without a format and the value has to be
+supplied by hand, which is where every reader was before discovery existed.
 
 The consumer writes what it pulls under its own data directory, under a name
 it assigns. A download still in flight is named so that it can be told apart
@@ -318,7 +322,7 @@ from a finished one, which is what the search below excludes.
 curl -sf -X POST http://127.0.0.1:8181/transfers/initiate \
 	-H "Authorization: Bearer $MGMT_TOKEN" \
 	-H 'Content-Type: application/json' \
-	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$AGREEMENT\",\"format\":\"HTTP-PULL\",\"connectorAddress\":\"$ADDRESS\"}" \
+	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$AGREEMENT\",\"format\":\"$FORMAT\",\"connectorAddress\":\"$ADDRESS\"}" \
 	>/dev/null
 
 RECEIVED=""

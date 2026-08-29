@@ -3770,9 +3770,65 @@ from `README.md` and `CLAUDE.md` instead, and naming what CI runs.
 **Trade-off accepted.** The reader still cannot use `127.0.0.1`: §23.6's
 guard is untouched, and the document now says so before the step rather than
 after the `400`. `format` still travels out of band, since the catalog
-advertises a placeholder. The two-strangers bootstrap that P3 of the gap
+advertises a placeholder — closed by §40, which is the next thing that
+happened. The two-strangers bootstrap that P3 of the gap
 analysis calls "done" is still done on one machine, so a green quickstart job
 is not evidence that roster distribution is solved — it is the same dodge
 `demo/run.sh` makes, now running in CI. And the document is a second
 onboarding configuration alongside `config.example.yaml`, with nothing holding
 the two consistent.
+
+---
+
+## 40. The catalog advertises the format it serves
+
+**Decision.** A distribution advertises `HTTP-PULL`, the token `POST
+/transfers/initiate` takes, in place of the `dsbox:unspecified` placeholder.
+The catalog client reads it and the lookup reports it per pair, so `make demo`
+and `docs/quickstart.md` take the value from the counterparty instead of
+carrying it.
+
+**Rationale.** The placeholder named its own expiry. Its comment said the
+value changes when the transfer milestone makes a real one true, and that
+milestone landed: `data_handler.go` serves a dataset with a `source_file` over
+HTTP-PULL to a counterparty holding a started transfer. Nobody went back.
+§38.8 then deferred decoding `distribution` on exactly that ground — reading
+the advertised value would have supplied a string the transfer hook cannot use
+— so the deferral's stated reason expired with the placeholder.
+
+What it buys is the last value an exchange took out of band. §38 removed the
+offer identifier and the address; the format outlived them, and a quickstart
+that says "you have to know this token" is consulting written into a document.
+
+**40.1 Changing the advertised value cannot break the catalog suite.** The
+TCK's own `catalog/dataset-schema.json`, read out of the pinned image, requires
+a distribution's `format` and constrains it to `{"type": "string"}`. It checks
+that there is one, never which. So the token is this implementation's, a
+counterparty is under no obligation to know it, and the provider still accepts
+any non-empty format on the wire — `transfer_handler.go` argues that
+separately, and this section does not disturb it.
+
+**40.2 The array is strict and the entries are not.** `distribution` is
+decoded as an array because the same schema declares it one and requires it,
+which is the footing `dataset` and `hasPolicy` already stand on. The entries
+are kept as raw messages and read one at a time: they are where the JSON-LD
+variation lives, and §38's measurement — that not reading `@context`, `@type`
+and `distribution` was what made the lean type work against real documents —
+was about their interiors rather than about the array. An entry this connector
+cannot read costs that entry's format and nothing else.
+
+**40.3 A missing format is not a failure.** A dataset whose format cannot be
+read is still negotiable, and the lookup omits the field rather than reporting
+it blank, so an operator sees a value missing instead of a value that is
+empty. That is the position every caller was in before this was decoded at
+all: they supply the token by hand. Refusing the pair instead would take
+discovery away from a counterparty over a field the operator can fill in.
+
+**Trade-off accepted.** A counterparty reading our catalog gets a token from
+this implementation's own vocabulary, which is what the absence of a DSP
+distribution-format vocabulary leaves available. The value now appears in the
+emitted document, in the decode tests, and in two harnesses; the test that
+asserts what goes on the wire compares against the literal rather than the
+constant, because comparing an emitted value against the constant that
+produced it cannot fail — which is how the first version of that assertion was
+written, and mutation is what found it.

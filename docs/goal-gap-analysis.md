@@ -77,6 +77,9 @@ another `dsbox` and the TCK. And the transfer half of an exchange still takes
 `format` out of band, because the catalog advertises a placeholder format
 this connector's own transfer hook cannot use; §38.8 records why decoding it
 today would supply a string that fails.)*
+*(2026-08-29: no longer. The catalog advertises the format the data plane
+serves and the lookup reports it, so `make demo` and `docs/quickstart.md` read
+the value instead of carrying it. `DECISIONS.md` §40.)*
 
 ### P2. It moves the right bytes, and keeps no record that it did
 
@@ -221,8 +224,8 @@ This is the promise "dataspace" makes, and no milestone owns it.
   *(2026-08-29: no longer the only one. `docs/quickstart.md` is an onboarding
   document CI executes, and it configures a served dataset. Two counts in this
   bullet were already stale when written: `source_file` appears in
-  `config.example.yaml`, and the reader's remaining out-of-band value is
-  `format`, not that field.)*
+  `config.example.yaml`, and the reader's remaining out-of-band value was
+  `format`, not that field — and §40 closed that one later the same day.)*
 - **"Ten minutes" has never been defined.** "ten minutes" appears once each
   in `README.md`, `CLAUDE.md`, `DECISIONS.md`, and `docs/follow-ups.md`, and
   `DECISIONS.md` reaches for "the ten-minute promise" twice more — always as

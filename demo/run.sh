@@ -124,12 +124,14 @@ wait_ready 9281 consumer
 # offer identifier is derived by a convention private to this implementation,
 # so a consumer that has not been told it out of band can only learn it here.
 #
-# What this does not remove: format below is still hardcoded, because the
-# catalog advertises a placeholder rather than a transfer format this connector
-# can honour. The design's section 2.2 records why. Nor does it change how the
-# agreement ids are read further down — those sed calls still depend on the
-# field order of the agreements response, exactly as they did before, and this
-# script stays a demonstration rather than a client anyone should copy.
+# The transfer format is read here too, which it was not before: the catalog
+# advertised a placeholder, so this script had to know a value the provider
+# had never told it.
+#
+# What this still does not change is how the agreement ids are read further
+# down — those sed calls depend on the field order of the agreements response,
+# exactly as they did before, and this script stays a demonstration rather
+# than a client anyone should copy.
 echo "==> discovery"
 catalog=$(curl -sf "http://127.0.0.1:9281/catalog?providerId=urn:participant:provider" \
 	-H "Authorization: Bearer demo-management-token")
@@ -138,7 +140,11 @@ offer=$(printf '%s' "$catalog" |
 	sed -n 's/.*"id":"urn:dataset:sample","offerId":"\([^"]*\)".*/\1/p' | head -1)
 resume_offer=$(printf '%s' "$catalog" |
 	sed -n 's/.*"id":"urn:dataset:sample-resume","offerId":"\([^"]*\)".*/\1/p' | head -1)
-if [ -z "$offer" ] || [ -z "$resume_offer" ] || [ -z "$address" ]; then
+# The transfer format comes out of the catalog now rather than being written
+# here. It was the last value this script supplied that the provider had never
+# told it.
+format=$(printf '%s' "$catalog" | sed -n 's/.*"format":"\([^"]*\)".*/\1/p' | head -1)
+if [ -z "$offer" ] || [ -z "$resume_offer" ] || [ -z "$address" ] || [ -z "$format" ]; then
 	echo "discovery did not return what the negotiations need" >&2
 	printf '%s\n' "$catalog" >&2
 	exit 1
@@ -179,7 +185,7 @@ echo "==> transfer"
 curl -sf -X POST http://127.0.0.1:9281/transfers/initiate \
 	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
-	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$agreement\",\"format\":\"HTTP-PULL\",\"connectorAddress\":\"$address\"}" \
+	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$agreement\",\"format\":\"$format\",\"connectorAddress\":\"$address\"}" \
 	>/dev/null
 
 echo "==> waiting for the file"
@@ -239,7 +245,7 @@ echo "==> transfer (resume scenario)"
 curl -sf -X POST http://127.0.0.1:9281/transfers/initiate \
 	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
-	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$resume_agreement\",\"format\":\"HTTP-PULL\",\"connectorAddress\":\"$address\"}" \
+	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$resume_agreement\",\"format\":\"$format\",\"connectorAddress\":\"$address\"}" \
 	>/dev/null
 
 echo "==> waiting for the resumed file"

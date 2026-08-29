@@ -40,11 +40,24 @@ const (
 	// which storage decides the identifier instead.
 	offerIDSuffix = "#offer"
 
-	// unspecifiedFormat is a placeholder. DSP does not define the distribution
-	// format vocabulary, and advertising a real transfer format such as
-	// HttpData-PULL would claim a transfer capability this connector does not
-	// have. The value changes when the transfer milestone makes a real one true.
-	unspecifiedFormat = "dsbox:unspecified"
+	// servedFormat is what a distribution advertises, and it is the value
+	// POST /transfers/initiate takes. The same token on both halves is the
+	// whole point: a consumer reads it out of the catalog instead of being
+	// told it out of band.
+	//
+	// It was `dsbox:unspecified` while this connector had no data plane,
+	// because advertising a transfer capability it did not have would have
+	// been a claim rather than a placeholder — and that comment said the
+	// value changes when a real one becomes true. data_handler.go is where
+	// it became true.
+	//
+	// DSP does not define the vocabulary, and the TCK's own
+	// `catalog/dataset-schema.json` requires a distribution's format while
+	// constraining it to `{"type": "string"}` — it checks that there is one,
+	// never which. So this token is this implementation's, a counterparty is
+	// not obliged to know it, and the provider still accepts any non-empty
+	// format on the wire for the reason transfer_handler.go states.
+	servedFormat = "HTTP-PULL"
 
 	// useAction expands to http://www.w3.org/ns/odrl/2/use, the exact value the
 	// TCK's own reference dataset uses.
@@ -191,7 +204,7 @@ func buildDataset(publicURL string, d config.Dataset) Dataset {
 		}},
 		Distribution: []Distribution{{
 			Type:   DistributionType,
-			Format: unspecifiedFormat,
+			Format: servedFormat,
 			AccessService: DataService{
 				ID:          endpoint,
 				Type:        DataServiceType,
@@ -221,13 +234,12 @@ func findDataset(cfg config.Config, id string) (Dataset, bool) {
 // which is DECISIONS.md section 24.7's rule for splitting a type by direction.
 // OfferRef is the existing precedent for a lean decode-only sibling.
 //
-// @context, @type and distribution are not decoded, and not reading them is
-// what makes this type work against a real counterparty: they carry the
-// JSON-LD shape variation, and discovery needs none of them. distribution
-// carries format, which POST /transfers/initiate requires -- that is a
-// deferral rather than a design argument, and the design's section 2.2 records
-// why it is safe: this connector advertises a placeholder format that is not
-// the value the transfer hook takes.
+// @context and @type are not decoded, and not reading them is what makes this
+// type work against a real counterparty: they carry JSON-LD shape variation
+// and discovery needs neither. distribution is read now, for the format POST
+// /transfers/initiate requires — the deferral recorded here previously rested
+// on this connector advertising a placeholder, which it no longer does — but
+// read at arm's length; see remoteDataset.
 //
 // Strict, like every inbound decode in this package. DECISIONS.md section 20
 // accepts that arbitrary JSON-LD input is not handled, and the TCK's own
@@ -245,6 +257,36 @@ type remoteCatalog struct {
 type remoteDataset struct {
 	ID        string        `json:"@id"`
 	HasPolicy []remoteOffer `json:"hasPolicy"`
+	// Distribution carries the format. The array itself is decoded strictly,
+	// like every other inbound shape here and like the TCK's dataset schema
+	// declares it — required, an array, at least one entry. The entries are
+	// kept raw because they are where the JSON-LD variation lives, and one
+	// entry this connector cannot read must cost that entry's format rather
+	// than the whole lookup: a dataset whose format is unreadable is still
+	// negotiable, and an operator can still supply the value by hand.
+	Distribution []json.RawMessage `json:"distribution"`
+}
+
+// remoteDistribution is the only part of a distribution this connector reads.
+type remoteDistribution struct {
+	Format string `json:"format"`
+}
+
+// format returns the first format this dataset advertises that can be read,
+// or the empty string. Absence is not an error: it is the situation every
+// caller was in before this was decoded at all, and the response says so by
+// omitting the field rather than by carrying a blank one.
+func (d remoteDataset) format() string {
+	for _, raw := range d.Distribution {
+		var dist remoteDistribution
+		if err := json.Unmarshal(raw, &dist); err != nil {
+			continue
+		}
+		if dist.Format != "" {
+			return dist.Format
+		}
+	}
+	return ""
 }
 
 type remoteOffer struct {
@@ -257,6 +299,10 @@ type remoteOffer struct {
 type datasetOffer struct {
 	DatasetID string `json:"id"`
 	OfferID   string `json:"offerId"`
+	// Format is what POST /transfers/initiate takes. Omitted rather than
+	// blank when the counterparty advertised none this connector could read,
+	// so an operator sees a value missing instead of a value that is empty.
+	Format string `json:"format,omitempty"`
 }
 
 // catalogLookupResponse is what the management route answers with. It carries
@@ -281,8 +327,9 @@ func (c remoteCatalog) pairs() ([]datasetOffer, int) {
 			skipped++
 			continue
 		}
+		format := d.format()
 		for _, o := range d.HasPolicy {
-			out = append(out, datasetOffer{DatasetID: d.ID, OfferID: o.ID})
+			out = append(out, datasetOffer{DatasetID: d.ID, OfferID: o.ID, Format: format})
 		}
 	}
 	return out, skipped

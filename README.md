@@ -39,7 +39,10 @@ stating rather than leaving to the table's shape. This connector now asks a
 counterparty for its catalog as well as answering one: `GET /catalog` on the
 management listener resolves a roster participant to an address, sends a
 catalog request, and reports back the negotiable pairs it found
-(`DECISIONS.md` section 38). Version metadata keeps the marking and means it —
+(`DECISIONS.md` section 38) — each with the transfer format its distribution
+advertises, which section 40 made a real value rather than a placeholder, so
+an exchange no longer takes a token the reader had to be told.
+Version metadata keeps the marking and means it —
 this connector serves a version document and requests none, so those rows say
 different things and the table should not be read as symmetric. The `CAT`
 suite covers only the half that was there before, because the TCK plays the

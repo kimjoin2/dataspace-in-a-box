@@ -116,7 +116,11 @@ func TestDatasetDerivedIdentifiers(t *testing.T) {
 	}
 
 	dist := m["distribution"].([]any)[0].(map[string]any)
-	if got, want := dist["format"], unspecifiedFormat; got != want {
+	// The literal, not servedFormat: comparing the emitted value against the
+	// constant that produced it cannot fail. What this pins is the token on
+	// the wire, which is what a counterparty reads and what POST
+	// /transfers/initiate is handed back.
+	if got, want := dist["format"], "HTTP-PULL"; got != want {
 		t.Errorf("format = %v, want %q", got, want)
 	}
 	svc := dist["accessService"].(map[string]any)

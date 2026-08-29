@@ -16,9 +16,10 @@ import (
 )
 
 // The counterparty's document is decoded strictly, the way every inbound
-// message in this package is. What makes a lean type work here is not
-// tolerance but omission: @context, @type and distribution are the fields
-// whose JSON-LD shape varies, and discovery needs none of them.
+// message in this package is. What makes a lean type work here is omission
+// rather than tolerance: @context and @type are the fields whose JSON-LD
+// shape varies and that discovery does not need. distribution is needed, for
+// the format, and is read at arm's length instead — see the tests below it.
 func TestRemoteCatalogDecodesWhatDiscoveryNeeds(t *testing.T) {
 	t.Parallel()
 	const doc = `{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],
@@ -37,7 +38,7 @@ func TestRemoteCatalogDecodesWhatDiscoveryNeeds(t *testing.T) {
 	if skipped != 0 {
 		t.Errorf("skipped = %d, want none", skipped)
 	}
-	want := []datasetOffer{{DatasetID: "urn:dataset:sample", OfferID: "urn:dataset:sample#offer"}}
+	want := []datasetOffer{{DatasetID: "urn:dataset:sample", OfferID: "urn:dataset:sample#offer", Format: "dsbox:unspecified"}}
 	if len(pairs) != len(want) || pairs[0] != want[0] {
 		t.Errorf("pairs = %+v, want %+v", pairs, want)
 	}
@@ -571,5 +572,91 @@ func TestCatalogLookupSaysItDidNotWalkTheSubCatalogs(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "sub_catalogs") {
 		t.Errorf("the catalog advertised sub-catalogs and the log does not say they went unwalked: %s", buf.String())
+	}
+}
+
+// The format is what POST /transfers/initiate takes, and reading it here is
+// the difference between a reader who is told the value and one who is not.
+func TestTheFormatIsReadFromTheDistribution(t *testing.T) {
+	t.Parallel()
+	const doc = `{"participantId":"urn:participant:provider",
+	  "dataset":[{"@id":"urn:dataset:sample",
+	    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
+	    "distribution":[{"@type":"Distribution","format":"HTTP-PULL"}]}]}`
+	var c remoteCatalog
+	if err := json.Unmarshal([]byte(doc), &c); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	pairs, _ := c.pairs()
+	if len(pairs) != 1 || pairs[0].Format != "HTTP-PULL" {
+		t.Errorf("pairs = %+v, want one carrying format HTTP-PULL", pairs)
+	}
+}
+
+// The entries are where the JSON-LD variation lives, so one this connector
+// cannot read costs that entry rather than the document. A counterparty that
+// writes accessService as a bare string and a distribution as something else
+// entirely still yields a negotiable pair.
+func TestAnUnreadableDistributionEntryDoesNotCostTheLookup(t *testing.T) {
+	t.Parallel()
+	const doc = `{"participantId":"urn:participant:provider",
+	  "dataset":[{"@id":"urn:dataset:sample",
+	    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
+	    "distribution":["urn:some-reference",{"format":"HTTP-PULL"}]}]}`
+	var c remoteCatalog
+	if err := json.Unmarshal([]byte(doc), &c); err != nil {
+		t.Fatalf("a distribution entry this connector cannot read failed the whole document: %v", err)
+	}
+	pairs, _ := c.pairs()
+	if len(pairs) != 1 || pairs[0].Format != "HTTP-PULL" {
+		t.Errorf("pairs = %+v, want the readable entry's format", pairs)
+	}
+}
+
+// Absence is not a failure. A counterparty is not obliged to advertise a
+// format this connector can read, and a dataset whose format is missing is
+// still negotiable — the operator supplies the value, exactly as every
+// operator did before any of this was decoded.
+func TestADatasetWithNoReadableFormatIsStillNegotiable(t *testing.T) {
+	t.Parallel()
+	const doc = `{"participantId":"urn:participant:provider",
+	  "dataset":[{"@id":"urn:dataset:sample",
+	    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
+	    "distribution":[{"@type":"Distribution"}]}]}`
+	var c remoteCatalog
+	if err := json.Unmarshal([]byte(doc), &c); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	pairs, skipped := c.pairs()
+	if skipped != 0 {
+		t.Errorf("skipped = %d; a missing format is not a reason to drop a dataset", skipped)
+	}
+	if len(pairs) != 1 || pairs[0].Format != "" {
+		t.Fatalf("pairs = %+v, want one carrying no format", pairs)
+	}
+	// Omitted rather than blank, so an operator reading the response sees a
+	// value that is missing instead of one that is empty.
+	body, err := json.Marshal(pairs[0])
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(body), "format") {
+		t.Errorf("response carries an empty format: %s", body)
+	}
+}
+
+// Strict where the schema is explicit: the TCK's dataset schema declares
+// distribution an array and requires it, the same footing dataset and
+// hasPolicy stand on, so a document that makes it an object is refused rather
+// than half-read.
+func TestADistributionThatIsNotAnArrayIsRefused(t *testing.T) {
+	t.Parallel()
+	const doc = `{"participantId":"urn:participant:provider",
+	  "dataset":[{"@id":"urn:dataset:sample",
+	    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
+	    "distribution":{"format":"HTTP-PULL"}}]}`
+	var c remoteCatalog
+	if err := json.Unmarshal([]byte(doc), &c); err == nil {
+		t.Error("a distribution that is not an array was accepted")
 	}
 }
