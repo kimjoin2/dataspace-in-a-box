@@ -48,3 +48,41 @@ jobs:
           path: |
             tck-output.txt
             tck-connector.txt
+
+  # The quickstart is the only artifact here that can run on a macOS runner:
+  # the demo and the TCK are both Compose, and those runners have no Docker.
+  # It is also the only one that needs to — the earlier harnesses keep the
+  # host network out of the path by giving both connectors container names,
+  # and a reader following docs/quickstart.md puts it squarely back in. The
+  # address discovery, the listeners, and the loopback refusal are all
+  # host-network behaviour, and this is where the two platforms can differ.
+  quickstart:
+    strategy:
+      # Both legs run even when one fails: which platforms a change broke is
+      # the whole question here, and cancelling the other leg hides half the
+      # answer.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: Run the quickstart from the document
+        run: make quickstart
+      # The generated script and both connector logs, because a failure here
+      # is read against all three: the script is what actually ran, and the
+      # logs carry the reason a connector refused something — the management
+      # API deliberately does not put that in its response.
+      - name: Upload quickstart output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: quickstart-output-${{ matrix.os }}
+          path: |
+            quickstart.sh
+            quickstart-run/provider.log
+            quickstart-run/consumer.log
+          if-no-files-found: ignore
