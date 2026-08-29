@@ -645,18 +645,120 @@ func TestADatasetWithNoReadableFormatIsStillNegotiable(t *testing.T) {
 	}
 }
 
-// Strict where the schema is explicit: the TCK's dataset schema declares
-// distribution an array and requires it, the same footing dataset and
-// hasPolicy stand on, so a document that makes it an object is refused rather
-// than half-read.
-func TestADistributionThatIsNotAnArrayIsRefused(t *testing.T) {
+// Tolerated here, unlike dataset and hasPolicy. The DSP context scopes
+// distribution's @container: @set to a node typed Dataset, so a dataset
+// written without @type collapses a lone distribution to a bare object -- and
+// @type is what this decode type declines to read.
+func TestASingleDistributionObjectIsRead(t *testing.T) {
 	t.Parallel()
 	const doc = `{"participantId":"urn:participant:provider",
 	  "dataset":[{"@id":"urn:dataset:sample",
 	    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
 	    "distribution":{"format":"HTTP-PULL"}}]}`
 	var c remoteCatalog
-	if err := json.Unmarshal([]byte(doc), &c); err == nil {
-		t.Error("a distribution that is not an array was accepted")
+	if err := json.Unmarshal([]byte(doc), &c); err != nil {
+		t.Fatalf("a collapsed distribution refused the whole catalog: %v", err)
+	}
+	pairs, _ := c.pairs()
+	if len(pairs) != 1 || pairs[0].Format != "HTTP-PULL" {
+		t.Errorf("pairs = %+v, want the collapsed entry's format", pairs)
+	}
+}
+
+// The cost of refusing the shape above is not one dataset: it is the
+// document. This is the case that made the array strict version a regression.
+func TestOneCollapsedDatasetDoesNotVoidItsSiblings(t *testing.T) {
+	t.Parallel()
+	const doc = `{"participantId":"urn:participant:provider",
+	  "dataset":[{"@id":"urn:dataset:collapsed",
+	              "hasPolicy":[{"@id":"urn:dataset:collapsed#offer"}],
+	              "distribution":{"format":"HTTP-PULL"}},
+	             {"@id":"urn:dataset:ordinary","@type":"Dataset",
+	              "hasPolicy":[{"@id":"urn:dataset:ordinary#offer"}],
+	              "distribution":[{"@type":"Distribution","format":"HTTP-PULL"}]}]}`
+	var c remoteCatalog
+	if err := json.Unmarshal([]byte(doc), &c); err != nil {
+		t.Fatalf("one collapsed dataset refused the whole catalog: %v", err)
+	}
+	pairs, _ := c.pairs()
+	if len(pairs) != 2 {
+		t.Errorf("pairs = %+v, want both datasets", pairs)
+	}
+}
+
+// A shape with nothing to read is not a refusal either: the format is absent,
+// which pairs() already reports by omitting it.
+func TestADistributionThatIsNeitherArrayNorObjectIsSurvivable(t *testing.T) {
+	t.Parallel()
+	for _, shape := range []string{`"urn:some-reference"`, `1`, `null`, `{}`} {
+		doc := `{"participantId":"urn:participant:provider",
+		  "dataset":[{"@id":"urn:dataset:sample",
+		    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
+		    "distribution":` + shape + `}]}`
+		var c remoteCatalog
+		if err := json.Unmarshal([]byte(doc), &c); err != nil {
+			t.Errorf("distribution %s refused the catalog: %v", shape, err)
+			continue
+		}
+		pairs, _ := c.pairs()
+		if len(pairs) != 1 || pairs[0].Format != "" {
+			t.Errorf("distribution %s: pairs = %+v, want one carrying no format", shape, pairs)
+		}
+	}
+}
+
+// Given a choice, report the one this connector can carry out. Reporting the
+// first would hand an operator a token the transfer fails on while a usable
+// one sat beside it.
+func TestAUsableFormatWinsOverAnAdvertisedOne(t *testing.T) {
+	t.Parallel()
+	const doc = `{"participantId":"urn:participant:provider",
+	  "dataset":[{"@id":"urn:dataset:sample",
+	    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
+	    "distribution":[{"format":"AmazonS3-PUSH"},{"format":"HTTP-PULL"}]}]}`
+	var c remoteCatalog
+	if err := json.Unmarshal([]byte(doc), &c); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	pairs, _ := c.pairs()
+	if len(pairs) != 1 || pairs[0].Format != "HTTP-PULL" {
+		t.Errorf("pairs = %+v, want the format this connector can carry", pairs)
+	}
+}
+
+// And when none of it is usable, say what is on offer rather than nothing.
+func TestAnUnusableFormatIsStillReported(t *testing.T) {
+	t.Parallel()
+	const doc = `{"participantId":"urn:participant:provider",
+	  "dataset":[{"@id":"urn:dataset:sample",
+	    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
+	    "distribution":[{"format":"AmazonS3-PUSH"}]}]}`
+	var c remoteCatalog
+	if err := json.Unmarshal([]byte(doc), &c); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	pairs, _ := c.pairs()
+	if len(pairs) != 1 || pairs[0].Format != "AmazonS3-PUSH" {
+		t.Errorf("pairs = %+v, want the advertised format reported", pairs)
+	}
+}
+
+// The first entry wins only if it has a format. A distribution that describes
+// how to reach the data without naming a format is legitimate, and the one
+// after it is where the answer is.
+func TestAnEntryWithoutAFormatYieldsToTheNextOne(t *testing.T) {
+	t.Parallel()
+	const doc = `{"participantId":"urn:participant:provider",
+	  "dataset":[{"@id":"urn:dataset:sample",
+	    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
+	    "distribution":[{"@type":"Distribution","accessService":"urn:service"},
+	                    {"@type":"Distribution","format":"HTTP-PULL"}]}]}`
+	var c remoteCatalog
+	if err := json.Unmarshal([]byte(doc), &c); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	pairs, _ := c.pairs()
+	if len(pairs) != 1 || pairs[0].Format != "HTTP-PULL" {
+		t.Errorf("pairs = %+v, want the later entry's format", pairs)
 	}
 }

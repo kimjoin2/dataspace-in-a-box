@@ -203,7 +203,7 @@ func parseInfo(info string) (lang, title string, expand bool) {
 		case f == "expand":
 			expand = true
 		case strings.HasPrefix(f, "title="):
-			title = strings.Trim(strings.TrimPrefix(f, "title="), `"'`)
+			title = strings.TrimPrefix(f, "title=")
 		case i == 0:
 			lang = f
 		}

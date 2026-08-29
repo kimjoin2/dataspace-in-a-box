@@ -150,7 +150,8 @@ being left to be inferred:
 
 - **Why publish.** There is no release, no tag, and no deployment this
   project is aware of beyond its own harnesses. That is weaker than "no
-  users": the pitch is clone-and-run in ten minutes and `dsp_addr` defaults to
+  users": the pitch is clone-and-run with no outside help, `docs/quickstart.md`
+  is a path CI keeps working, and `dsp_addr` defaults to
   `0.0.0.0:8080`, so a reader may already be running `main` on a reachable
   machine without this project knowing. What tips it is the other side —
   anyone evaluating this connector needs to know what it does not yet defend

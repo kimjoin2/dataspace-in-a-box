@@ -110,4 +110,32 @@ func TestTheQuickstartDocumentExtracts(t *testing.T) {
 	if !strings.Contains(script, "diff -q") {
 		t.Error("the quickstart no longer compares the file that arrived against the one that was sent")
 	}
+	// The point of the document is that a reader is told nothing they have to
+	// know in advance. The transfer format was the value that stayed out of
+	// band longest, so a literal one here is the regression worth naming: the
+	// exchange would still work and the claim would quietly be false.
+	if strings.Contains(script, "HTTP-PULL") {
+		t.Error("the quickstart hardcodes a transfer format instead of reading it from the catalog")
+	}
+	// The roster embeds keys and an address earlier steps computed, so its
+	// block has to expand. Quoted, it would write the variable names.
+	if !strings.Contains(script, "cat > quickstart-run/roster.json <<EOF\n") {
+		t.Error("the roster block is not expanding; the keys and address would be written literally")
+	}
+	// The file that moves has nothing to expand, so it must not: an expanding
+	// block is where a backtick or a dollar sign in content gets run or eaten.
+	if !strings.Contains(script, "cat > quickstart-run/sample.csv <<'EOF'\n") {
+		t.Error("the sample file block is expanding; its content is data and should stay literal")
+	}
+}
+
+// A fence is at least three backticks. This document's prose opens lines with
+// inline code spans, and one of those must stay prose rather than swallowing
+// everything after it into the script.
+func TestASingleBacktickDoesNotOpenABlock(t *testing.T) {
+	t.Parallel()
+	script := extractOrFail(t, "`dsops` builds it.\n\nrm -rf /\n")
+	if strings.Contains(script, "rm -rf /") {
+		t.Errorf("a line beginning with an inline code span opened a block:\n%s", script)
+	}
 }

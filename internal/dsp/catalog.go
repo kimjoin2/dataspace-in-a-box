@@ -257,14 +257,22 @@ type remoteCatalog struct {
 type remoteDataset struct {
 	ID        string        `json:"@id"`
 	HasPolicy []remoteOffer `json:"hasPolicy"`
-	// Distribution carries the format. The array itself is decoded strictly,
-	// like every other inbound shape here and like the TCK's dataset schema
-	// declares it — required, an array, at least one entry. The entries are
-	// kept raw because they are where the JSON-LD variation lives, and one
-	// entry this connector cannot read must cost that entry's format rather
-	// than the whole lookup: a dataset whose format is unreadable is still
-	// negotiable, and an operator can still supply the value by hand.
-	Distribution []json.RawMessage `json:"distribution"`
+	// Distribution is kept whole and opaque, not declared an array, and that
+	// is a deliberate departure from how dataset and hasPolicy are read.
+	//
+	// It was an array first, and measurement refused documents that had
+	// decoded before: the DSP context scopes distribution's @container: @set
+	// to a node typed Dataset, so a dataset written without @type collapses a
+	// lone distribution to a bare object — and @type is precisely what this
+	// type declines to decode. One such dataset voided every other dataset in
+	// the same catalog.
+	//
+	// §38.5's argument for strictness does not reach here. There, tolerating
+	// a single object could manufacture an offer with a phantom @id, a value
+	// an operator pastes into an initiate call. The worst a tolerated
+	// distribution yields is a format string — and a missing one is already
+	// survivable, which is what Format's omitempty says.
+	Distribution json.RawMessage `json:"distribution"`
 }
 
 // remoteDistribution is the only part of a distribution this connector reads.
@@ -272,21 +280,46 @@ type remoteDistribution struct {
 	Format string `json:"format"`
 }
 
-// format returns the first format this dataset advertises that can be read,
-// or the empty string. Absence is not an error: it is the situation every
-// caller was in before this was decoded at all, and the response says so by
-// omitting the field rather than by carrying a blank one.
+// format returns a format this dataset advertises that can be read, or the
+// empty string. Absence is not an error: it is the situation every caller was
+// in before this was decoded at all, and the response says so by omitting the
+// field rather than by carrying a blank one.
+//
+// A format this connector can actually carry out wins over one it cannot.
+// Reporting the first advertised value would hand an operator a token the
+// transfer then fails on while a usable one sat beside it in the same
+// document. What is advertised is still reported when none of it is usable —
+// discovery's job is to say what is on offer, not to hide it.
 func (d remoteDataset) format() string {
-	for _, raw := range d.Distribution {
+	advertised := ""
+	for _, raw := range d.distributions() {
 		var dist remoteDistribution
-		if err := json.Unmarshal(raw, &dist); err != nil {
-			continue
-		}
-		if dist.Format != "" {
+		// The error is discarded rather than branched on: an entry this
+		// connector cannot read leaves Format empty, which is exactly what
+		// the check below already skips. A separate error branch would be a
+		// path no test could tell from this one. dist is declared inside the
+		// loop so a half-populated value cannot outlive its iteration.
+		_ = json.Unmarshal(raw, &dist)
+		switch {
+		case dist.Format == "":
+		case dist.Format == servedFormat:
 			return dist.Format
+		case advertised == "":
+			advertised = dist.Format
 		}
 	}
-	return ""
+	return advertised
+}
+
+// distributions returns the distribution nodes to read, whether the
+// counterparty wrote an array or the single object the context collapses one
+// to. Anything else yields nothing to read rather than refusing the catalog.
+func (d remoteDataset) distributions() []json.RawMessage {
+	var many []json.RawMessage
+	if err := json.Unmarshal(d.Distribution, &many); err == nil {
+		return many
+	}
+	return []json.RawMessage{d.Distribution}
 }
 
 type remoteOffer struct {

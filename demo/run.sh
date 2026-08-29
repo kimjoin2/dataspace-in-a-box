@@ -143,8 +143,17 @@ resume_offer=$(printf '%s' "$catalog" |
 # The transfer format comes out of the catalog now rather than being written
 # here. It was the last value this script supplied that the provider had never
 # told it.
-format=$(printf '%s' "$catalog" | sed -n 's/.*"format":"\([^"]*\)".*/\1/p' | head -1)
-if [ -z "$offer" ] || [ -z "$resume_offer" ] || [ -z "$address" ] || [ -z "$format" ]; then
+#
+# Anchored to its own dataset, like the offer ids above. An unanchored pattern
+# reads whichever format appears last in the response, which is a different
+# dataset's -- and when a dataset advertises none, it silently borrows a
+# neighbour's instead of leaving the value empty for the check below.
+format=$(printf '%s' "$catalog" |
+	sed -n 's/.*"id":"urn:dataset:sample","offerId":"[^"]*","format":"\([^"]*\)".*/\1/p')
+resume_format=$(printf '%s' "$catalog" |
+	sed -n 's/.*"id":"urn:dataset:sample-resume","offerId":"[^"]*","format":"\([^"]*\)".*/\1/p')
+if [ -z "$offer" ] || [ -z "$resume_offer" ] || [ -z "$address" ] ||
+	[ -z "$format" ] || [ -z "$resume_format" ]; then
 	echo "discovery did not return what the negotiations need" >&2
 	printf '%s\n' "$catalog" >&2
 	exit 1
@@ -245,7 +254,7 @@ echo "==> transfer (resume scenario)"
 curl -sf -X POST http://127.0.0.1:9281/transfers/initiate \
 	-H "Authorization: Bearer demo-management-token" \
 	-H 'Content-Type: application/json' \
-	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$resume_agreement\",\"format\":\"$format\",\"connectorAddress\":\"$address\"}" \
+	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$resume_agreement\",\"format\":\"$resume_format\",\"connectorAddress\":\"$address\"}" \
 	>/dev/null
 
 echo "==> waiting for the resumed file"

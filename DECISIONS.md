@@ -3622,7 +3622,9 @@ paths are appended to and there is nothing for a version document to
 resolve. That protocol stays served-only and `README.md` says so in words
 rather than leaving it to the table's shape.
 
-`distribution`, and therefore `format`, is deferred rather than argued away.
+`distribution`, and therefore `format`, is deferred rather than argued away
+ — closed by §40, which decoded it once the placeholder below stopped being
+one.
 `transferInitiateBody` requires `format` and `format` lives in
 `dataset[].distribution[].format`, so the transfer half of an exchange still
 takes a value out of band. Deferring is safe for a concrete reason: this
@@ -3652,7 +3654,9 @@ tck` is a regression check for this section and not evidence for it. That is
 §36.13's situation arriving through a different door: there the harnesses
 could not express the input, here the suite plays the role this section
 implements. `make demo` does exercise the client end to end and is not in
-CI, so `go test` carries everything that must not regress unattended.
+CI, so `go test` carries everything that must not regress unattended. (§39 put
+a native two-connector exchange in CI, so that last clause is no longer the
+whole story: `go test` and the quickstart job carry it between them.)
 
 `TestNewRouterReturnsInitiateHandlersWithAuthenticationOff` now asserts the
 catalog lookup handler is non-nil as well, by the same argument that put the
@@ -3676,7 +3680,8 @@ counterparty's holdings and leaves theirs where it found them.
 decoding refuses documents some connectors may emit, which §20 already
 accepted and which the schemas above bound. And the ten-minute claim this
 milestone serves is improved rather than satisfied, because `format` still
-travels out of band.
+travels out of band. (§39 replaced that claim with one CI checks, and §40
+closed the `format` half of this sentence.)
 
 ---
 
@@ -3767,6 +3772,13 @@ prose is the same rule; the gate's expected-count map is its stated exception
 and a step ceiling is not. The claim was made checkable by deleting the number
 from `README.md` and `CLAUDE.md` instead, and naming what CI runs.
 
+Two older sections still argue from "the ten-minute promise" — §7's stack
+rationale and §17's case against a container prerequisite. The phrase is
+theirs and the arguments are untouched; what it named is now the path
+`docs/quickstart.md` carries and CI runs. `SECURITY.md`'s exposure argument
+used the phrase too and has been reworded, because it was making the claim
+rather than reasoning from it.
+
 **Trade-off accepted.** The reader still cannot use `127.0.0.1`: §23.6's
 guard is untouched, and the document now says so before the step rather than
 after the `400`. `format` still travels out of band, since the catalog
@@ -3808,14 +3820,30 @@ counterparty is under no obligation to know it, and the provider still accepts
 any non-empty format on the wire — `transfer_handler.go` argues that
 separately, and this section does not disturb it.
 
-**40.2 The array is strict and the entries are not.** `distribution` is
-decoded as an array because the same schema declares it one and requires it,
-which is the footing `dataset` and `hasPolicy` already stand on. The entries
-are kept as raw messages and read one at a time: they are where the JSON-LD
-variation lives, and §38's measurement — that not reading `@context`, `@type`
-and `distribution` was what made the lean type work against real documents —
-was about their interiors rather than about the array. An entry this connector
-cannot read costs that entry's format and nothing else.
+**40.2 Neither the array nor the entries are strict, and the first version of
+this section was wrong about that.** `distribution` was decoded as an array,
+on the argument that the TCK's schema declares it one and requires it, which is
+the footing `dataset` and `hasPolicy` stand on. Measurement refused that:
+documents that decoded before this section decoded stopped decoding after it,
+and the cost was never one dataset — one collapsed dataset voided every other
+dataset in the same catalog.
+`docs/superpowers/reports/2026-08-29-distribution-decode-regression.md` is the
+measurement.
+
+The reason is the design's own choice. The DSP context scopes `distribution`'s
+`@container: @set` to a node typed `Dataset`, so a dataset written without
+`@type` collapses a lone distribution to a bare object — and `@type` is exactly
+what this decode type declines to read, for the reason §38 gives. Strictness
+about the array was therefore a rule about a shape this connector had already
+decided not to see.
+
+§38.5's argument for strictness does not reach here, which is what makes this
+a departure rather than a contradiction. There, tolerating a single object
+could manufacture an offer carrying a phantom `@id` — a value an operator
+pastes into an initiate call. The worst a tolerated distribution yields is a
+format string, and 40.3 already rules a missing one survivable. So the field is
+kept whole and opaque: an array is read as its entries, a single object as
+itself, and anything else yields nothing to read rather than a refusal.
 
 **40.3 A missing format is not a failure.** A dataset whose format cannot be
 read is still negotiable, and the lookup omits the field rather than reporting
@@ -3824,6 +3852,21 @@ empty. That is the position every caller was in before this was decoded at
 all: they supply the token by hand. Refusing the pair instead would take
 discovery away from a counterparty over a field the operator can fill in.
 
+**40.4 A usable format wins over an advertised one.** A dataset may advertise
+several distributions, and reporting the first would hand an operator a token
+the transfer then fails on while a usable one sat beside it in the same
+document. `servedFormat` wins when it is present; otherwise what is advertised
+is reported, because discovery's job is to say what is on offer rather than to
+hide it.
+
+**40.5 The harnesses read each format anchored to its own dataset.** The first
+version matched any `"format"` in the reply, which under a greedy pattern is
+the last one — a different dataset's. Worse, a dataset advertising none would
+borrow a neighbour's silently, so the emptiness check that is supposed to send
+an operator to supply the value by hand could never fire. Both `demo/run.sh`
+and `docs/quickstart.md` now anchor on the dataset identifier, the way they
+already did for the offer.
+
 **Trade-off accepted.** A counterparty reading our catalog gets a token from
 this implementation's own vocabulary, which is what the absence of a DSP
 distribution-format vocabulary leaves available. The value now appears in the
@@ -3831,4 +3874,8 @@ emitted document, in the decode tests, and in two harnesses; the test that
 asserts what goes on the wire compares against the literal rather than the
 constant, because comparing an emitted value against the constant that
 produced it cannot fail — which is how the first version of that assertion was
-written, and mutation is what found it.
+written, and mutation is what found it. Three of this section's claims were
+wrong when first written and are corrected above rather than quietly amended:
+the array's strictness, the choice among several formats, and what the
+harnesses' extraction actually reads. Each was found by running the thing, not
+by reading it.

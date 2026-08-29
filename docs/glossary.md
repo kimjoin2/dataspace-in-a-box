@@ -150,8 +150,8 @@ about; more than one is open at a time. `SECURITY.md` and `docs/follow-ups.md`
 each carry their own.
 
 **out of band** — a value the protocols do not carry, so a human has to move
-it. The roster signer's public key is the standing example; `format` is
-another.
+it. The roster signer's public key is the standing example. `format` was
+another until section 40 made the catalog advertise the value it serves.
 
 *Fixed by:* `config.example.yaml`'s roster section, which calls the signer key
 distribution "still an out-of-band problem", and cited as the definition by

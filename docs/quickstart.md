@@ -193,13 +193,19 @@ data_dir: quickstart-run/data/consumer
 The management listener answers an unauthenticated readiness probe, and it
 stays on loopback because that is where the operator drives it from.
 
-The ports are checked before anything starts, and that ordering is the point.
+The management ports are checked before anything starts, and that ordering
+is the point.
 The probe is unauthenticated, so a connector left running from an earlier
 attempt answers for one that has just died on a port collision — and the dead
 one logs that it started, and that it is listening, before it logs that it
 could not bind. Asking afterwards cannot tell those apart reliably: the
 answer arrives instantly, and whether the shell has yet noticed its own child
 died is a race. Asking first has no race in it.
+
+Only the management ports are probed, because they are the ones that answer a
+readiness request. A collision on a DSP port is not caught here; it surfaces
+when the connector dies at startup and the log below says which listener and
+which address.
 
 ```sh
 for port in 8081 8181; do
@@ -268,7 +274,8 @@ CATALOG=$(curl -sf "http://127.0.0.1:8181/catalog?providerId=urn:participant:pro
 ADDRESS=$(printf '%s' "$CATALOG" | sed -n 's/.*"connectorAddress":"\([^"]*\)".*/\1/p')
 OFFER=$(printf '%s' "$CATALOG" |
 	sed -n 's/.*"id":"urn:dataset:sample","offerId":"\([^"]*\)".*/\1/p' | head -1)
-FORMAT=$(printf '%s' "$CATALOG" | sed -n 's/.*"format":"\([^"]*\)".*/\1/p' | head -1)
+FORMAT=$(printf '%s' "$CATALOG" |
+	sed -n 's/.*"id":"urn:dataset:sample","offerId":"[^"]*","format":"\([^"]*\)".*/\1/p')
 if [ -z "$OFFER" ] || [ -z "$ADDRESS" ] || [ -z "$FORMAT" ]; then
 	echo "discovery did not return what the negotiation needs" >&2
 	printf '%s\n' "$CATALOG" >&2
@@ -313,6 +320,12 @@ The format comes from the catalog, like the offer and the address. A
 counterparty is not obliged to advertise one this connector can read; when it
 does not, the lookup reports the pair without a format and the value has to be
 supplied by hand, which is where every reader was before discovery existed.
+
+Each value is read anchored to its own dataset. A pattern that merely looks for
+a format finds whichever appears last in the reply, which belongs to some other
+dataset — and a dataset advertising none would then borrow a neighbour's
+silently, so the check above would never fire and the sentence before this one
+would be false.
 
 The consumer writes what it pulls under its own data directory, under a name
 it assigns. A download still in flight is named so that it can be told apart
