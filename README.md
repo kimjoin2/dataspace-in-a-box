@@ -46,7 +46,8 @@ Version metadata keeps the marking and means it —
 this connector serves a version document and requests none, so those rows say
 different things and the table should not be read as symmetric. The `CAT`
 suite covers only the half that was there before, because the TCK plays the
-consumer in it; the client's evidence is `go test` and `make demo`.
+consumer in it; the client's evidence is `go test`, `make demo`, and
+`make quickstart` — all three of which CI runs.
 
 Current TCK pass rate: **65 of 65 tests total** (`MET` 1 of 1, `CAT` 3 of 3,
 `CN` 15 of 15, `CN_C` 16 of 16, `TP` 15 of 15, `TP_C` 15 of 15). All 65 are
@@ -66,7 +67,12 @@ receives, or asserts a byte, so a green suite is not evidence that data moves.
 That evidence is `make demo`, which stands two connectors up with distinct
 identities and a shared roster, has them authenticate, negotiate an agreement,
 run a transfer, and move a real file — then diffs what arrived against what
-was sent and exits non-zero if they differ.
+was sent and exits non-zero if they differ. It also interrupts a transfer and
+resumes it — a path the handler tests cover in pieces, and this is the only
+place those pieces run together across two processes and a real connection.
+CI runs it, and runs [`docs/quickstart.md`](docs/quickstart.md) alongside it
+as native processes rather than containers, so neither depends on someone
+remembering to.
 
 A protocol counts as done only when its TCK suite is added to the gate's
 expected-count map, so this table cannot drift ahead of reality.

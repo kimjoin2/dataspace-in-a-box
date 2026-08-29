@@ -577,7 +577,8 @@ runtime jar. `make tck` is a regression check for this milestone and not
 evidence for it.
 
 `make demo` is not in CI either: the pipeline runs `go vet`, the race suite,
-and the TCK. So the demo's evidence is only as good as someone running it, and
+and the TCK. *(2026-08-29: `DECISIONS.md` §39 and §41 added a quickstart job
+and a demo job, so the pipeline now runs both.)* So the demo's evidence is only as good as someone running it, and
 `go test` carries everything that must not regress unattended. That is a
 finding about the pipeline rather than about this milestone; ordered item 5
 owns it.

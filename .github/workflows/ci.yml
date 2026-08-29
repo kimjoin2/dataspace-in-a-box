@@ -49,6 +49,35 @@ jobs:
             tck-output.txt
             tck-connector.txt
 
+  # The demo is the only thing that exercises a transfer being interrupted and
+  # resumed, and a Range request serving the remainder. No TCK suite sends or
+  # asserts a byte, and the quickstart moves a file in one go, so before this
+  # job that whole path was proven only when someone ran it by hand.
+  #
+  # ubuntu only: it is Compose, and GitHub's macOS runners have no Docker —
+  # which is the same fact that makes the quickstart the artifact that runs
+  # there instead.
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: Move a file between two connectors, and resume an interrupted one
+        run: make demo
+      # run.sh's cleanup trap writes this on every exit path, so a failure
+      # after the connectors are up leaves both their logs here — the only
+      # record of what was on the wire. A failure before that leaves whatever
+      # Compose had to say, which is still the thing to read.
+      - name: Upload the demo log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-log
+          path: demo/demo.log
+          if-no-files-found: ignore
+
   # The quickstart is the only artifact here that can run on a macOS runner:
   # the demo and the TCK are both Compose, and those runners have no Docker.
   # It is also the only one that needs to — the earlier harnesses keep the

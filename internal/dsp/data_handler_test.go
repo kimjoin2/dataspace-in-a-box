@@ -155,7 +155,8 @@ func TestDataPullServesTheConfiguredFile(t *testing.T) {
 	// it the response is chunked, and a consumer then records no expected
 	// size for a fresh pull — which is what makes a later resume look like a
 	// changed representation. make demo is the only other harness that would
-	// notice, and it does not run in CI.
+	// notice, and it catches this one exchange at a time rather than the
+	// shape of every response.
 	if cl := rec.Header().Get("Content-Length"); cl != strconv.Itoa(len(servedBytes)) {
 		t.Errorf("Content-Length = %q, want %d", cl, len(servedBytes))
 	}

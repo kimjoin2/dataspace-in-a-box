@@ -3645,7 +3645,7 @@ argument, and a field required only when authentication is off is a rule
 with no reader today. `docs/follow-ups.md` records what that leaves behind.
 
 Putting `make demo` in CI is not taken; ordered item 5 is the item that
-defines what CI measures.
+defines what CI measures. (§41 took it, once item 5 had defined that.)
 
 **38.9 `go test` is the whole gate, and this time the reason is new.** The
 TCK's catalog suite plays the consumer and the pinned image carries no
@@ -3655,8 +3655,9 @@ tck` is a regression check for this section and not evidence for it. That is
 could not express the input, here the suite plays the role this section
 implements. `make demo` does exercise the client end to end and is not in
 CI, so `go test` carries everything that must not regress unattended. (§39 put
-a native two-connector exchange in CI, so that last clause is no longer the
-whole story: `go test` and the quickstart job carry it between them.)
+a native two-connector exchange in CI and §41 put this one there too, so that
+last clause no longer holds at all: `go test`, the quickstart job, and the demo
+job carry it between them.)
 
 `TestNewRouterReturnsInitiateHandlersWithAuthenticationOff` now asserts the
 catalog lookup handler is non-nil as well, by the same argument that put the
@@ -3706,10 +3707,12 @@ rots the same way with one more step between the reader and the proof: CI
 would check the script while the reader pastes the prose. Making the document
 itself the input removes the copy that can drift.
 
-It also closes the gap `make demo` left. The demo has never been in CI, so
+It also closes the gap `make demo` left. The demo had never been in CI, so
 §38.9 could say that `go test` carries everything that must not regress
-unattended — true, and it meant the only evidence bytes actually move ran
-nowhere automatic. The quickstart job is that evidence under a gate.
+unattended — true when written, and it meant the only evidence bytes actually
+move ran nowhere automatic. The quickstart job is that evidence under a gate.
+(§41 later put the demo itself there, which closes the half this job does not
+reach: an interrupted transfer and its resumption.)
 
 **39.1 A file block is literal unless it asks not to be.** `title=` blocks
 become quoted heredocs; `expand` opts into an unquoted one. Measured, not
@@ -3874,8 +3877,9 @@ stand in for that. One asserts the quickstart's extraction is anchored, in the
 same test that already reads the document. The other pins the field order both
 patterns depend on, which is the more fragile thing: reordering `datasetOffer`
 would break both harnesses silently, and nothing in Go reads that response
-back. `demo/run.sh`'s own pattern is still unasserted, and `make demo` is not
-in CI, so that half rests on review.
+back. `demo/run.sh`'s own pattern is still unasserted, so that half rests on
+review — though §41 put `make demo` in CI, so a run that breaks is at least
+seen.
 
 **40.6 A distribution's format is read by its exact term, from a map.** Not
 decoded into a struct, and both halves of that were measured rather than
@@ -3911,3 +3915,42 @@ extraction actually reads, and how a format is read out of a node. Each was
 found by running the thing, not by reading it — and the last of them was
 introduced by a correction to the others, which is the argument for measuring
 a fix as well as a feature.
+
+---
+
+## 41. The demo runs in CI
+
+**Decision.** A fourth job runs `make demo` on an Ubuntu runner, and uploads
+`demo/demo.log` whether it passed or not.
+
+**Rationale.** Interruption, resumption, and a `Range` request serving the
+remainder are covered by handler tests — `data_handler_test.go` and
+`transfer_consumer_handler_test.go` between them exercise the ranged pull, the
+simulated sever, and the resume from an existing partial file. What was not
+covered is those pieces running together: two processes, a real connection, a
+suspend and restart between them. The quickstart moves its file in one go and
+no TCK suite sends or asserts a byte, so that composition was proven only when
+someone ran the demo by hand — which is the concrete half of what §38.9 meant
+by `go test` carrying everything that must not regress unattended.
+
+Ubuntu only. The demo is Compose and GitHub's macOS runners have no Docker,
+which is the same fact that makes the quickstart the artifact that runs there
+(§39.4).
+
+**What was checked before adding it.** The harness was run from a `git archive`
+of the tracked tree, so nothing it needs comes from a working directory: the
+archived `demo/` carries its compose file and its two configurations, and
+`run.sh` builds `dsops`, the identities, the roster, and both data files
+itself. The run finished in the time a Go build in Docker takes, well inside a
+job's budget. The Linux-versus-macOS behaviour that this could have tripped on
+is already handled — `run.sh` relaxes the participant key mode because the
+distroless image runs as a different UID than the file's owner, a failure a
+real Linux Docker host enforces and Docker Desktop's macOS VM does not.
+`test/tck/run.sh` carries the same fix, and being in CI is where it was found.
+
+**Trade-off accepted.** The image build is paid twice, once here and once in
+the TCK job, because the two run in parallel. And this job does not make the
+demo's own dodge any less of one: `run.sh` still generates both participants'
+keys and the operator's on a single machine, so a green demo is no more
+evidence that roster distribution is solved than a green quickstart is — the
+same caveat §39 states.

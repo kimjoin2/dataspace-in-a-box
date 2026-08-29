@@ -2032,7 +2032,7 @@ Add an entry to "What can verify each remaining milestone": discovery is the
 second milestone the TCK cannot verify, after the data plane, and for a
 different reason — the suite plays the role this milestone implements. Note
 that `make demo` is not in CI, so `go test` carries what must not regress
-unattended.
+unattended. *(2026-08-29: `DECISIONS.md` §41 put it there.)*
 
 Checked against: the TCK image carrying no consumer-role catalog test, and
 `.github/workflows/ci.yml` running only the unit and TCK jobs.

@@ -376,11 +376,16 @@ there and cannot see the half being added: `make tck` is a regression check,
 not evidence. Unlike the data plane, discovery needs no new harness — `make
 demo` already stands both connectors up, and its negotiate rounds now obtain
 their offer identifiers by asking, which makes the client load-bearing rather
-than demonstrated. But `make demo` is not in CI: the pipeline runs `go vet`,
-the race suite, and the TCK. So the demo's evidence is only as good as
-someone running it, and `go test` is what carries this milestone unattended.
+than demonstrated. But `make demo` was not in CI when this was written: the
+pipeline ran `go vet`, the race suite, and the TCK. So the demo's evidence was
+only as good as someone running it, and `go test` was what carried this
+milestone unattended.
 That is a finding about the pipeline rather than about the milestone, and
 ordered item 5 of `docs/goal-gap-analysis.md` owns it.
+
+*(2026-08-29: owned and closed. `DECISIONS.md` §39 put a native two-connector
+exchange in CI and §41 put `make demo` there as well, so the demo's evidence no
+longer depends on someone running it.)*
 
 ## The order
 
