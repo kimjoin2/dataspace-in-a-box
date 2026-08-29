@@ -1,7 +1,9 @@
 # dataspace-in-a-box
 
-A minimum operational dataspace: clone, run, working in ten minutes, no
-consulting required. An independent DSP 2025-1 implementation — not a wrapper
+A minimum operational dataspace: clone, run, and move a file between two
+connectors with no outside help. `docs/quickstart.md` is that path and CI runs
+every command in it; keep it that way rather than describing the path
+somewhere else. An independent DSP 2025-1 implementation — not a wrapper
 around EDC.
 
 Full design decisions and their rationale live in `DECISIONS.md`. Read it before
@@ -62,4 +64,6 @@ is how a protocol is declared done. (The gate is `cmd/tckgate`; see
 
 - Test: `go test ./...`
 - TCK: `make tck` (runs the harness, then the gate)
+- Quickstart: `make quickstart` (assembles the script from `docs/quickstart.md`
+  and runs it — two native connectors, one file moved)
 - Build: `make build`

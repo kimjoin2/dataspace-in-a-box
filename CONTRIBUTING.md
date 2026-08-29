@@ -59,9 +59,13 @@ each release can carry the Apache 2.0 conversion grant described in
 ## Getting started
 
 ```bash
-make build   # build the binary
-make test    # unit tests
-make tck     # run the official DSP TCK and the compliance gate
+make build       # build the binary
+make test        # unit tests
+make tck         # run the official DSP TCK and the compliance gate
+make quickstart  # run docs/quickstart.md end to end
 ```
 
-`make tck` needs Docker.
+`make tck` needs Docker. `make quickstart` does not — it runs two connectors
+as native processes, and it is the same document a reader follows, so a change
+that breaks it breaks their first hour. Edit `docs/quickstart.md` rather than
+the script it generates.

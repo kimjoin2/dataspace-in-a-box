@@ -3677,3 +3677,102 @@ decoding refuses documents some connectors may emit, which §20 already
 accepted and which the schemas above bound. And the ten-minute claim this
 milestone serves is improved rather than satisfied, because `format` still
 travels out of band.
+
+---
+
+## 39. The quickstart is the script CI runs
+
+**Decision.** `docs/quickstart.md` carries the path a reader follows to stand
+two connectors up as native processes and move a file between them.
+`cmd/mdscript` assembles a shell script from that document's fenced blocks,
+and a CI job runs it on Linux and on macOS. There is no second copy of the
+commands.
+
+**Rationale.** Before this, nothing in the repository told an operator how to
+run the product: `README.md` described what it does, `CONTRIBUTING.md`
+described how to build and test it, and `config.example.yaml` annotated
+settings for a connector the reader had no instructions to start. The gap
+analysis recorded that the example config was the only onboarding document
+there was.
+
+A document CI cannot run rots silently, and the reader is the one who finds
+out. Keeping the commands in a separate script that the document describes
+rots the same way with one more step between the reader and the proof: CI
+would check the script while the reader pastes the prose. Making the document
+itself the input removes the copy that can drift.
+
+It also closes the gap `make demo` left. The demo has never been in CI, so
+§38.9 could say that `go test` carries everything that must not regress
+unattended — true, and it meant the only evidence bytes actually move ran
+nowhere automatic. The quickstart job is that evidence under a gate.
+
+**39.1 A file block is literal unless it asks not to be.** `title=` blocks
+become quoted heredocs; `expand` opts into an unquoted one. Measured, not
+predicted: a prototype built from this repository's own configuration prose
+was corrupted three ways, each exiting zero and producing a file the connector
+accepted — a backtick in a comment ran as a command, a token containing two
+dollar signs became the shell's process id, and a line ending in a backslash
+joined the heredoc terminator and swallowed the block that followed. Quoting
+removes all three by construction. Expansion is still needed for the roster,
+which embeds two public keys, an address, and an expiry computed by earlier
+steps, and for the two configurations. Environment overrides were considered
+for those: they cover the configurations, and there is no override for the
+roster's *content*, so the mode is needed regardless — and moving four fields
+out of the configurations would teach a file that cannot start on its own.
+
+**39.2 The address comes from a platform-forked shell line, not a
+subcommand.** A `dsops addr` was designed, built, and rejected. Its proposed
+justification was that a verification step — bind the address, connect to it,
+print it only if that worked — would fail loudly where a runner image changed.
+Measurement found the verification fires on one state, a deleted kernel route,
+that has to be produced by hand: an interface that is down with its address
+retained, a carrier-less bridge, and a duplicate address all bind. Worse, it
+inverted what it was meant to prevent — `hostname -I` skips interfaces that
+are not up and Go's `net.InterfaceAddrs` does not, so on a host whose unused
+bridge sorts first the shell line is right, the subcommand is wrong, and the
+bind check certifies the wrong answer. `dsops` is chartered for the key
+material connectors authenticate with; an address is not that, and a real
+deployment names a proxy hostname rather than a private address.
+
+**39.3 Ports are checked before the connectors start, not after.** The
+readiness probe is unauthenticated by design, so a connector left running from
+an earlier attempt answers for one that has just died on a port collision —
+and the dead one logs that it started and that it is listening before it logs
+that it could not bind. A liveness check after the probe was written first and
+then measured: it did not fire, because the answer arrives instantly and
+whether the shell has yet reaped its own child is a race. Asking first has no
+race in it, and it reports the collision at the point of the mistake.
+
+**39.4 The macOS runner is proof, not symmetry.** The demo and the TCK keep
+the host network out of the path by giving both connectors container names,
+which is how the metadata milestone closed the macOS-versus-Linux networking
+risk it had identified. A reader following this document puts the host network
+back in: address discovery, the listeners, and the loopback refusal are all
+host-network behaviour. The quickstart is also the only artifact here that
+*can* run on a macOS runner, since those runners have no Docker — which is why
+the GNU-versus-BSD `date` forks in the other two harnesses stay unproven, and
+why that is a platform limit rather than an inconsistency with this decision.
+
+**Considered and rejected: a bound on how many steps the document has.** The
+milestone was named "define and measure ten minutes", and a gate holding a
+ceiling was the obvious reading of it. It is the shape `cmd/tckgate` already
+discarded — that gate's first version passed when at least one whitelisted
+test was seen, and was replaced with exact equality because a suite that
+produces some of its results reports green. A document has no counterpart: it
+cannot truncate silently, and a missing block is a diff its author wrote. The
+number would also be the sole author's to raise, and it is satisfiable by
+moving hard steps out of the document, so it improves as the reader's
+experience gets worse. `CONTRIBUTING.md`'s rule against writing a count into
+prose is the same rule; the gate's expected-count map is its stated exception
+and a step ceiling is not. The claim was made checkable by deleting the number
+from `README.md` and `CLAUDE.md` instead, and naming what CI runs.
+
+**Trade-off accepted.** The reader still cannot use `127.0.0.1`: §23.6's
+guard is untouched, and the document now says so before the step rather than
+after the `400`. `format` still travels out of band, since the catalog
+advertises a placeholder. The two-strangers bootstrap that P3 of the gap
+analysis calls "done" is still done on one machine, so a green quickstart job
+is not evidence that roster distribution is solved — it is the same dodge
+`demo/run.sh` makes, now running in CI. And the document is a second
+onboarding configuration alongside `config.example.yaml`, with nothing holding
+the two consistent.

@@ -1,7 +1,10 @@
 # dataspace-in-a-box
 
 A minimum operational dataspace. The goal: one binary, one config file, one
-SQLite file — clone, run, and have something working in about ten minutes.
+SQLite file — clone, run, and move a file between two connectors without
+outside help. [`docs/quickstart.md`](docs/quickstart.md) is that path, and CI
+runs every command in it, on Linux and on macOS, from the document itself. So
+it is a claim the build keeps true rather than one this page makes.
 
 This is an independent implementation of the
 [Dataspace Protocol 2025-1](https://eclipse-dataspace-protocol-base.github.io/DataspaceProtocol/2025-1/),
@@ -118,8 +121,9 @@ minter's, though it stops climbing at the hour beyond which a verifier
 refuses a credential outright, plus that same minute of leeway
 (`DECISIONS.md` section 37).
 
-    make demo   # two connectors, one negotiated agreement, one file moved
-    make tck    # the compliance gate: 65 of 65, 0 outside it
+    make quickstart  # the reader's path, run from docs/quickstart.md itself
+    make demo        # the same exchange, packaged under Docker Compose
+    make tck         # the compliance gate: 65 of 65, 0 outside it
 
 There is no release yet, and gaps are worth knowing before anyone mistakes
 this for finished.
@@ -222,6 +226,18 @@ sees a failed pull has no endpoint to retry it with, which is
 closed here. Nor is the retention rule for the partial files an abandoned
 pull leaves behind, which is the first entry an operator moving real data
 should read in [`docs/follow-ups.md`](docs/follow-ups.md).
+
+**The web UI in Scope below does not exist.** Not one HTML, CSS, or
+JavaScript file, and no `go:embed` anywhere. It stays in Scope because it is
+still meant to be built and to be operable rather than a status display — an
+operator who has to reach this connector through `curl` is an operator who
+did not need the promise this project makes. But `DECISIONS.md` sections 7
+and 19 describe it as settled architecture and hang a browser test layer on
+it, and until it is built those are statements about code that is not there.
+Section 19 has a second layer in the same condition, unrelated to the UI: its
+in-process multi-connector tests cannot be written while
+`mintOutboundCredential` is a package variable, because two routers in one
+process would share one identity.
 
 Everything else known and unfixed is in [`docs/follow-ups.md`](docs/follow-ups.md),
 with the reasoning for each, and the order the remaining milestones should be

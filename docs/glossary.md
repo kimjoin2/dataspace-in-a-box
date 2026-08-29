@@ -21,9 +21,10 @@ that is worth knowing too, and it is an invitation to fix it.
 ## How the work is built and judged
 
 **the harness** — a rig that stands a connector up and runs something
-end-to-end against it: `test/tck/run.sh` with its compose file, and
-`demo/run.sh` with its own. Neither is a Go test fixture; no `harness`
-identifier exists in the Go source.
+end-to-end against it: `test/tck/run.sh` with its compose file, `demo/run.sh`
+with its own, and the script `cmd/mdscript` assembles from
+`docs/quickstart.md`, which uses no compose at all. None is a Go test fixture;
+no `harness` identifier exists in the Go source.
 
 *Fixed by:* `CLAUDE.md`'s command list against `Makefile` — `make tck` runs the
 harness, then the gate.
@@ -48,9 +49,22 @@ are ordinary English and neither is `cmd/tckgate`.
 `TP`, `TP_C`. A suite is what the TCK runs; the gate is what decides whether
 its results are acceptable.
 
-**the milestone** — a unit of work large enough to get its own design spec and
-implementation plan under `docs/superpowers/`, and a numbered `DECISIONS.md`
-section once it lands. *Fixed by:* `docs/milestone-sequence.md`.
+**the milestone** — a unit of work that gets a numbered `DECISIONS.md` section
+once it lands. *Fixed by:* `docs/milestone-sequence.md`.
+
+*Read with care.* That document also promises each milestone its own design
+spec and implementation plan under `docs/superpowers/`, and says in the same
+breath that it lists only protocol and authorization work — it has no entry
+for onboarding, discovery, the management surface, the UI, observability, or
+release. The promise is scoped to the milestones it lists. Section 39 was
+built and run before it was written down, and has neither.
+
+**the quickstart** — `docs/quickstart.md`, and specifically the fact that it is
+executable: `cmd/mdscript` turns its fenced blocks into the script CI runs, so
+the document and the test are one artifact. A block tagged `sh` is a command;
+a block tagged `title=` writes a file, literally unless it also says `expand`.
+*Fixed by:* `cmd/mdscript/main.go`'s package comment and `Makefile`'s
+`quickstart` target.
 
 ## Words used in security arguments
 

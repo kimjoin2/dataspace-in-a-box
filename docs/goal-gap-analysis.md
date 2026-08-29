@@ -218,12 +218,23 @@ This is the promise "dataspace" makes, and no milestone owns it.
   it). `consumer_transfer_policies` is missing there too. The example config
   is the only onboarding document that exists, and it does not describe how
   to turn the product on.
+  *(2026-08-29: no longer the only one. `docs/quickstart.md` is an onboarding
+  document CI executes, and it configures a served dataset. Two counts in this
+  bullet were already stale when written: `source_file` appears in
+  `config.example.yaml`, and the reader's remaining out-of-band value is
+  `format`, not that field.)*
 - **"Ten minutes" has never been defined.** "ten minutes" appears once each
   in `README.md`, `CLAUDE.md`, `DECISIONS.md`, and `docs/follow-ups.md`, and
   `DECISIONS.md` reaches for "the ten-minute promise" twice more — always as
   motivation, never as a condition anything tests. Whether
   "working" means the process boots or two independent participants exchanged
   a file is not written down, so the claim cannot be true or false.
+  *(2026-08-29: settled by removing the number rather than measuring it. The
+  claim in `README.md` and `CLAUDE.md` is now that CI runs every command in
+  `docs/quickstart.md`, which is a condition the build tests. "Working" means
+  two connectors on one host move a file whose bytes are compared — not the
+  two-strangers bootstrap this section's "Done looks like" names, which the
+  quickstart still does on one machine.)*
 
 Done looks like: two operators who have never met, working from the
 documentation alone, bootstrap, revoke, and discover.

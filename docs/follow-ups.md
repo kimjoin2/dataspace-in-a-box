@@ -132,15 +132,22 @@ worth doing when there is a real TCK run available to verify it against.
 **Two `dsbox` instances on `127.0.0.1` cannot negotiate with each other.**
 `dev_mode` (`internal/config/config.go:401-402`) relaxes only the `https`
 requirement on `public_url`; it does not reach `isDisallowedCallbackIP`
-(`internal/dsp/callback.go:192-195`), so an initiate call naming
+(`internal/dsp/callback.go:222-225`), so an initiate call naming
 `connectorAddress: http://127.0.0.1:8090` is rejected `400` — on the
 management listener now (`DECISIONS.md` §35.1), which changes who makes the
 call and not what it is told. Pre-existing —
 §23.6 chose that guard's reach deliberately, and widening it is a design
 decision rather than a cleanup, which is why this is recorded and not fixed
-here. It still deserves attention: for a project promising "clone, run,
-working in ten minutes", two instances on localhost is the first thing a
-reader tries, and the failure gives them a `400` with no hint of why.
+here. It still deserves attention: two instances on localhost is the first
+thing a reader tries, and the failure gives them a `400` with no hint of why.
+
+*Documented, not fixed (2026-08-29).* `docs/quickstart.md` now says before the
+step rather than after the failure that loopback is refused, why no deployment
+can make it safe, and that a private address is what works — and it names the
+connector logs as where the reason is, since the response withholds it on
+purpose. The guard is untouched and the design decision §23.6 defers is still
+open. What changed is that a reader meets it as an instruction instead of as a
+`400`, which lowers the cost of leaving it open rather than settling it.
 
 ## From the transfer process (provider, Phase A) milestone (2026-08)
 
