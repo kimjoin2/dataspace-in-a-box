@@ -3867,6 +3867,36 @@ an operator to supply the value by hand could never fire. Both `demo/run.sh`
 and `docs/quickstart.md` now anchor on the dataset identifier, the way they
 already did for the offer.
 
+No configuration in this repository can tell the fixed pattern from the bug,
+because the provider advertises one format for every dataset it serves — so
+reverting the anchor leaves `make quickstart` and `make demo` green. Two tests
+stand in for that. One asserts the quickstart's extraction is anchored, in the
+same test that already reads the document. The other pins the field order both
+patterns depend on, which is the more fragile thing: reordering `datasetOffer`
+would break both harnesses silently, and nothing in Go reads that response
+back. `demo/run.sh`'s own pattern is still unasserted, and `make demo` is not
+in CI, so that half rests on review.
+
+**40.6 A distribution's format is read by its exact term, from a map.** Not
+decoded into a struct, and both halves of that were measured rather than
+reasoned. Go matches struct field names case-insensitively, so a struct reads
+`Format` and `FORMAT` as the DSP term they are not — JSON-LD terms are
+case-sensitive, and a miscased key was able to outrank a correctly keyed one
+in the same array. And a node carrying `format` twice, which a producer emits
+when it has both a string and an `@id` form, populates a struct from the first
+and then errors: an ignored error reports the value the document itself
+overrode. A map takes the last, which is what a duplicate means.
+
+That second half is the more useful record, because it came from getting it
+wrong. An earlier revision of this section deleted the error branch on the
+argument that a failed decode leaves the field empty anyway, so no test could
+tell the two apart. Mutation had reported that nothing died — which meant the
+behaviour was untested, not that it was indistinguishable, and the difference
+was never checked. It is distinguishable: `{"format":"HTTP-PULL","format":
+{"@id":"HttpData-PULL"}}` reported `HTTP-PULL`, the worst value available,
+since it is `servedFormat` and would tell an operator this connector can carry
+a transfer the document does not describe.
+
 **Trade-off accepted.** A counterparty reading our catalog gets a token from
 this implementation's own vocabulary, which is what the absence of a DSP
 distribution-format vocabulary leaves available. The value now appears in the
@@ -3874,8 +3904,10 @@ emitted document, in the decode tests, and in two harnesses; the test that
 asserts what goes on the wire compares against the literal rather than the
 constant, because comparing an emitted value against the constant that
 produced it cannot fail — which is how the first version of that assertion was
-written, and mutation is what found it. Three of this section's claims were
+written, and mutation is what found it. Four of this section's claims were
 wrong when first written and are corrected above rather than quietly amended:
-the array's strictness, the choice among several formats, and what the
-harnesses' extraction actually reads. Each was found by running the thing, not
-by reading it.
+the array's strictness, the choice among several formats, what the harnesses'
+extraction actually reads, and how a format is read out of a node. Each was
+found by running the thing, not by reading it — and the last of them was
+introduced by a correction to the others, which is the argument for measuring
+a fix as well as a feature.

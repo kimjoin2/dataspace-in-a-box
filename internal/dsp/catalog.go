@@ -275,11 +275,6 @@ type remoteDataset struct {
 	Distribution json.RawMessage `json:"distribution"`
 }
 
-// remoteDistribution is the only part of a distribution this connector reads.
-type remoteDistribution struct {
-	Format string `json:"format"`
-}
-
 // format returns a format this dataset advertises that can be read, or the
 // empty string. Absence is not an error: it is the situation every caller was
 // in before this was decoded at all, and the response says so by omitting the
@@ -293,22 +288,39 @@ type remoteDistribution struct {
 func (d remoteDataset) format() string {
 	advertised := ""
 	for _, raw := range d.distributions() {
-		var dist remoteDistribution
-		// The error is discarded rather than branched on: an entry this
-		// connector cannot read leaves Format empty, which is exactly what
-		// the check below already skips. A separate error branch would be a
-		// path no test could tell from this one. dist is declared inside the
-		// loop so a half-populated value cannot outlive its iteration.
-		_ = json.Unmarshal(raw, &dist)
+		f := distributionFormat(raw)
 		switch {
-		case dist.Format == "":
-		case dist.Format == servedFormat:
-			return dist.Format
+		case f == "":
+		case f == servedFormat:
+			return f
 		case advertised == "":
-			advertised = dist.Format
+			advertised = f
 		}
 	}
 	return advertised
+}
+
+// distributionFormat reads one distribution node's format, or reports none.
+//
+// The node is read as a map keyed by its exact terms rather than decoded into
+// a struct, and both halves of that are load-bearing. Go's decoder matches
+// field names case-insensitively, so a struct reads `Format` and `FORMAT` as
+// the DSP term they are not — JSON-LD terms are case-sensitive. And on a node
+// carrying `format` twice, which a producer emits when it has both a string
+// and an `@id` form, a struct is populated by the first and then errors: an
+// ignored error reports a value the document itself overrode. A map takes the
+// last, which is what the duplicate means, and an unreadable last value is
+// reported as no format rather than as the earlier one.
+func distributionFormat(raw json.RawMessage) string {
+	var node map[string]json.RawMessage
+	if json.Unmarshal(raw, &node) != nil {
+		return ""
+	}
+	var format string
+	if json.Unmarshal(node["format"], &format) != nil {
+		return ""
+	}
+	return format
 }
 
 // distributions returns the distribution nodes to read, whether the

@@ -762,3 +762,76 @@ func TestAnEntryWithoutAFormatYieldsToTheNextOne(t *testing.T) {
 		t.Errorf("pairs = %+v, want the later entry's format", pairs)
 	}
 }
+
+// A node carrying the term twice is what a producer emits when it has both a
+// string form and an @id form. The last is what the duplicate means, so an
+// unreadable last value is no format -- not the earlier one, which the
+// document itself overrode. Reporting the earlier one would be the worst
+// answer available here: it is servedFormat, so an operator would be told
+// this connector can carry a transfer the document does not describe.
+func TestADuplicatedFormatTakesTheLastAndReportsNoneIfItCannotBeRead(t *testing.T) {
+	t.Parallel()
+	const doc = `{"participantId":"urn:participant:provider",
+	  "dataset":[{"@id":"urn:dataset:sample",
+	    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
+	    "distribution":{"format":"HTTP-PULL","format":{"@id":"HttpData-PULL"}}}]}`
+	var c remoteCatalog
+	if err := json.Unmarshal([]byte(doc), &c); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	pairs, _ := c.pairs()
+	if len(pairs) != 1 || pairs[0].Format != "" {
+		t.Errorf("pairs = %+v, want one carrying no format", pairs)
+	}
+}
+
+// JSON-LD terms are case-sensitive, and Go's struct decoding is not. A node
+// keyed Format or FORMAT does not carry the DSP term and must not be read as
+// though it did -- least of all when it would outrank a correctly keyed one.
+func TestAMiscasedFormatKeyIsNotTheDSPTerm(t *testing.T) {
+	t.Parallel()
+	for _, shape := range []string{
+		`{"Format":"AmazonS3-PUSH"}`,
+		`{"FORMAT":"HTTP-PULL"}`,
+		`[{"format":"AmazonS3-PUSH"},{"Format":"HTTP-PULL"}]`,
+	} {
+		doc := `{"participantId":"urn:participant:provider",
+		  "dataset":[{"@id":"urn:dataset:sample",
+		    "hasPolicy":[{"@id":"urn:dataset:sample#offer"}],
+		    "distribution":` + shape + `}]}`
+		var c remoteCatalog
+		if err := json.Unmarshal([]byte(doc), &c); err != nil {
+			t.Errorf("distribution %s refused the catalog: %v", shape, err)
+			continue
+		}
+		pairs, _ := c.pairs()
+		if len(pairs) != 1 {
+			t.Fatalf("distribution %s: pairs = %+v", shape, pairs)
+		}
+		if pairs[0].Format == "HTTP-PULL" {
+			t.Errorf("distribution %s: read a miscased key as the DSP term", shape)
+		}
+	}
+}
+
+// Both shell harnesses read this response with sed, anchored on the dataset
+// identifier, and that pattern depends on these three fields appearing in
+// this order. Reordering the struct would break demo/run.sh and
+// docs/quickstart.md silently: they would read an empty value and report that
+// discovery returned nothing, which names the wrong cause. Nothing else in
+// the repository would notice, because Go never reads this response back.
+func TestTheLookupResponseKeepsTheFieldOrderTheHarnessesRead(t *testing.T) {
+	t.Parallel()
+	body, err := json.Marshal(datasetOffer{
+		DatasetID: "urn:dataset:sample",
+		OfferID:   "urn:dataset:sample#offer",
+		Format:    "HTTP-PULL",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	const want = `{"id":"urn:dataset:sample","offerId":"urn:dataset:sample#offer","format":"HTTP-PULL"}`
+	if string(body) != want {
+		t.Errorf("pair marshalled as\n  %s\nwant\n  %s", body, want)
+	}
+}

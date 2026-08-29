@@ -6,6 +6,15 @@ reason and it is not the entries: `remoteDataset.Distribution []json.RawMessage`
 makes the *array* strict, and `distribution` is the one field a JSON-LD producer
 most often emits as something other than an array.
 
+> **Vintage.** This measures `d81281c^` against `d81281c`. It is kept as it was
+> written, and parts of it are deliberately no longer true of `main`: the fix
+> and the corrections that followed it changed how a format is chosen and how
+> it is read. Its section 4 ("an unreadable entry never produced a wrong
+> format, only none") is false at `main` for a node carrying `format` twice —
+> that is what `DECISIONS.md` §40.6 records — and its section 5 quotes the
+> unanchored extraction that §40.5 replaced. Read it for what it measured, not
+> for what the code does now.
+
 This report measures rather than argues. Every row below is the output of
 running the document through the connector's own decode path.
 

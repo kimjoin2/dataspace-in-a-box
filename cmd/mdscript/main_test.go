@@ -127,6 +127,15 @@ func TestTheQuickstartDocumentExtracts(t *testing.T) {
 	if !strings.Contains(script, "cat > quickstart-run/sample.csv <<'EOF'\n") {
 		t.Error("the sample file block is expanding; its content is data and should stay literal")
 	}
+	// The format is read with a pattern anchored on the dataset identifier.
+	// An unanchored one finds whichever format appears last in the reply,
+	// which belongs to a different dataset, and a dataset advertising none
+	// then borrows a neighbour's. No configuration in this repository can
+	// tell the two apart — the provider advertises one format for every
+	// dataset it serves — so the shape is pinned here instead.
+	if !strings.Contains(script, `"id":"urn:dataset:sample","offerId":"[^"]*","format":`) {
+		t.Error("the quickstart reads the format with a pattern that is not anchored to its dataset")
+	}
 }
 
 // A fence is at least three backticks. This document's prose opens lines with
