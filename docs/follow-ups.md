@@ -9,14 +9,13 @@ telling you something — either it does not matter, or it needs its own decisio
 
 ## From the catalog milestone (2026-08)
 
-**`whitelist` terminology outlived the whitelist.** The gate now holds an
-`expected` map of per-suite result counts, not a list of prefixes.
-`cmd/tckgate/main_test.go` still names a test
-`TestFailureOutsideTheWhitelistIsIgnored`, and `CLAUDE.md`'s "Build order"
-section still describes the gate as a per-suite whitelist without mentioning
-that the count is exact. Neither is wrong, only imprecise — an exact-count gate
-is a whitelist carrying counts. Worth correcting the next time either file is
-edited for another reason.
+**`whitelist` terminology outlived the whitelist.** *Mostly closed by the
+glossary work.* The gate holds an `expected` map of per-suite result counts,
+not a list of prefixes. `CLAUDE.md`'s "Build order" section and `README.md`'s
+two mentions now say so. What remains is the test name
+`TestFailureOutsideTheWhitelistIsIgnored` in `cmd/tckgate/main_test.go`:
+renaming a test is a wider edit than a wording fix, and the name is imprecise
+rather than wrong, so it waits for the next change to that package.
 
 **`DECISIONS.md` §22.4 omits a carve-out the code implements.** The decision
 reads as though any catalog request carrying `filter` is rejected. The

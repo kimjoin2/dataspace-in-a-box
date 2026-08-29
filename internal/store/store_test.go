@@ -1252,7 +1252,7 @@ func TestListTransfersReturnsBothRolesInOrder(t *testing.T) {
 // TestOpenMigratesADatabaseMissingTheDataColumns covers the ALTER branch
 // nothing else in this repository reaches. The five data columns are in
 // consumerTransferSchema *and* in migrate's loop, so every other test and
-// both gates build them from the CREATE literal and never run an ALTER at
+// both harnesses build them from the CREATE literal and never run an ALTER at
 // all. The branch that does run is the one every existing deployment takes
 // on its first boot after an upgrade, and it is the branch where a mistake
 // is expensive: addColumnIfMissing keys off the pragma name, so a name that

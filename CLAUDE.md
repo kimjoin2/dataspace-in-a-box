@@ -53,9 +53,10 @@ rate before the next begins.
 
 metadata → catalog → contract negotiation → transfer process
 
-The CI gate is a per-suite whitelist: only the suites whose protocol is
-implemented are required to pass. Adding a suite to the whitelist is how a
-protocol is declared done.
+The CI gate holds a per-suite map of expected result counts: only the suites
+whose protocol is implemented are required to pass. Adding a suite to that map
+is how a protocol is declared done. (The gate is `cmd/tckgate`; see
+`docs/glossary.md` for the words this repository loads.)
 
 ## Commands
 

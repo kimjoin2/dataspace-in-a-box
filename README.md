@@ -29,7 +29,7 @@ the gaps are named rather than left to be found.
 | Transfer process | `TP` (provider role) | gated in CI, 15 of 15 |
 | Transfer process | `TP_C` (consumer role) | gated in CI, 15 of 15 |
 
-Every suite the TCK runs is now in the gate's whitelist.
+Every suite the TCK runs is now in the gate's expected-count map.
 
 The catalog row lost its *served only* marking, and the reason is worth
 stating rather than leaving to the table's shape. This connector now asks a
@@ -63,7 +63,7 @@ run a transfer, and move a real file — then diffs what arrived against what
 was sent and exits non-zero if they differ.
 
 A protocol counts as done only when its TCK suite is added to the gate's
-whitelist, so this table cannot drift ahead of reality.
+expected-count map, so this table cannot drift ahead of reality.
 
 Connectors now authenticate to each other. Every DSP endpoint except the
 version document requires a JWT signed EdDSA over Ed25519 by a participant in

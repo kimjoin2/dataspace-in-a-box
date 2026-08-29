@@ -977,8 +977,8 @@ func TestPullPublishesWhenNoLengthIsStated(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// No Content-Length: net/http sends this chunked, which is what this
 		// connector's own provider did before this milestone and what the
-		// TCK's own data endpoint does on every consumer-side pull a gate
-		// run makes. This is the branch `make tck` exercises.
+		// TCK's own data endpoint does on every consumer-side pull the TCK
+		// harness makes. This is the branch `make tck` exercises.
 		w.WriteHeader(http.StatusOK)
 		for i := 0; i < 4; i++ {
 			_, _ = w.Write([]byte(body[i*500 : (i+1)*500]))
