@@ -190,12 +190,35 @@ if [ -z "$agreement" ]; then
 fi
 echo "    agreement $agreement"
 
+# Retried, and only this call is. The provider pushes the agreement to the
+# consumer before it writes the agreement row that a transfer request is
+# checked against (DECISIONS.md 23.12 fixes that ordering, and 25.1 fixes the
+# 400), so a request sent the instant the agreement appears here can arrive
+# inside that window and be refused for an agreement that is about to exist.
+# Retrying is safe in exactly this case: a provider that says it has no record
+# did not accept, so there is no transfer to duplicate — which is the hazard
+# transfer_client.go names when it declines to retry in general. The TCK's own
+# harness retries a non-404 4xx on this path three times, which is why the
+# suite never sees this.
+initiate_transfer() {
+	i=0
+	while [ "$i" -lt 5 ]; do
+		if curl -sf -X POST http://127.0.0.1:9281/transfers/initiate \
+			-H "Authorization: Bearer demo-management-token" \
+			-H 'Content-Type: application/json' \
+			-d "$1" >/dev/null 2>&1; then
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	echo "the transfer request was refused on every attempt" >&2
+	$compose logs >&2
+	exit 1
+}
+
 echo "==> transfer"
-curl -sf -X POST http://127.0.0.1:9281/transfers/initiate \
-	-H "Authorization: Bearer demo-management-token" \
-	-H 'Content-Type: application/json' \
-	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$agreement\",\"format\":\"$format\",\"connectorAddress\":\"$address\"}" \
-	>/dev/null
+initiate_transfer "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$agreement\",\"format\":\"$format\",\"connectorAddress\":\"$address\"}"
 
 echo "==> waiting for the file"
 i=0
@@ -251,11 +274,7 @@ fi
 echo "    agreement $resume_agreement"
 
 echo "==> transfer (resume scenario)"
-curl -sf -X POST http://127.0.0.1:9281/transfers/initiate \
-	-H "Authorization: Bearer demo-management-token" \
-	-H 'Content-Type: application/json' \
-	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$resume_agreement\",\"format\":\"$resume_format\",\"connectorAddress\":\"$address\"}" \
-	>/dev/null
+initiate_transfer "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$resume_agreement\",\"format\":\"$resume_format\",\"connectorAddress\":\"$address\"}"
 
 echo "==> waiting for the resumed file"
 i=0

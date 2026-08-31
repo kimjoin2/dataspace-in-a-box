@@ -327,16 +327,32 @@ dataset — and a dataset advertising none would then borrow a neighbour's
 silently, so the check above would never fire and the sentence before this one
 would be false.
 
+This one call is retried, and it is worth knowing why if you are writing a
+client. The provider hands the consumer an agreement before it has finished
+recording that agreement on its own side, so a transfer request sent the
+instant the agreement appears can be refused for something that is about to
+exist. Retrying is safe here in a way it is not in general: a provider that
+says it has no record did not accept, so there is nothing to duplicate.
+
 The consumer writes what it pulls under its own data directory, under a name
 it assigns. A download still in flight is named so that it can be told apart
 from a finished one, which is what the search below excludes.
 
 ```sh
-curl -sf -X POST http://127.0.0.1:8181/transfers/initiate \
-	-H "Authorization: Bearer $MGMT_TOKEN" \
-	-H 'Content-Type: application/json' \
-	-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$AGREEMENT\",\"format\":\"$FORMAT\",\"connectorAddress\":\"$ADDRESS\"}" \
-	>/dev/null
+i=0
+while [ "$i" -lt 5 ]; do
+	curl -sf -X POST http://127.0.0.1:8181/transfers/initiate \
+		-H "Authorization: Bearer $MGMT_TOKEN" \
+		-H 'Content-Type: application/json' \
+		-d "{\"providerId\":\"urn:participant:provider\",\"agreementId\":\"$AGREEMENT\",\"format\":\"$FORMAT\",\"connectorAddress\":\"$ADDRESS\"}" \
+		>/dev/null 2>&1 && break
+	i=$((i + 1))
+	sleep 1
+done
+if [ "$i" -ge 5 ]; then
+	echo "the provider refused the transfer request on every attempt" >&2
+	exit 1
+fi
 
 RECEIVED=""
 i=0

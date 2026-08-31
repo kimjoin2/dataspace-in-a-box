@@ -149,6 +149,32 @@ purpose. The guard is untouched and the design decision §23.6 defers is still
 open. What changed is that a reader meets it as an instruction instead of as a
 `400`, which lowers the cost of leaving it open rather than settling it.
 
+**The provider announces an agreement before it records one.** In
+`internal/dsp/negotiation_handler.go`, the `pushAgreement` branch calls
+`pushAndStore` — which pushes the `AgreementMessage` and only then writes
+`AGREED` — and the agreement row itself is written after that, by
+`CreateAgreementIfNegotiationAgreed`. So a consumer that acts the instant it
+receives the agreement can send a `TransferRequestMessage` before the row the
+transfer path checks exists, and §25.1's `400` says its request is wrong when
+the truth is "not yet".
+
+Measured, not inferred: `make demo` failed this way once in three runs while
+each run took upward of a hundred seconds because Docker builds were cold, and
+was green four times for four when warm. Inserting a delay between the push and
+the row write reproduces the identical log line deterministically. Both
+harnesses now retry that one call, which is what the TCK's own client already
+does — `HttpFunctions.postJson` retries a non-404 4xx three times, which is why
+no suite has ever seen this.
+
+Not fixed, and the obvious fixes are all blocked. Writing the state before the
+push is §23.12, which records that it regressed `CN:03-03` when tried. Changing
+the status is §25.1, an explicit decision, and buys nothing anyway: this
+connector as consumer never retries a transfer request at all
+(`internal/dsp/transfer_client.go`), for a reason of its own. Writing the row
+before the push reopens the stale-row race §30.3 closed. What is left is
+narrowing the window — `SetState` and the insert could be one transaction,
+which would close the second half of it — and that is unmeasured.
+
 ## From the transfer process (provider, Phase A) milestone (2026-08)
 
 **The 200 ms `transferStepDelay`'s margin is measured for later steps and
